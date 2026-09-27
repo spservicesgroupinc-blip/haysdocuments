@@ -1,6 +1,20 @@
 @import "tailwindcss";
 
 /* ---------------------------------------------------------------------------
+ * Brand tokens
+ *
+ * One brand red and one logo ink, defined once and referenced by the app, the
+ * generated PDFs (`COLOR_RED` / `COLOR_DARK` in services/pdfService.ts) and the
+ * Apps Script sheet header. `--color-brand` is intentionally identical to
+ * Tailwind's `red-600` so existing `bg-red-600` call sites are already on-brand.
+ * ------------------------------------------------------------------------ */
+@theme {
+  --color-brand: #dc2626;
+  --color-brand-hover: #b91c1c;
+  --color-ink: #1a1a1a;
+}
+
+/* ---------------------------------------------------------------------------
  * Base typography and control polish
  * ------------------------------------------------------------------------ */
 @layer base {

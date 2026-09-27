@@ -358,7 +358,7 @@ function applySheetFormatting_(sheet, headers) {
   headerRange
     .setFontWeight('bold')
     .setFontColor('#ffffff')
-    .setBackground('#b91c1c')
+    .setBackground('#dc2626')
     .setVerticalAlignment('middle')
     .setWrap(false);
   sheet.setRowHeight(1, 28);

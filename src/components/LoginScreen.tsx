@@ -12,6 +12,7 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { fetchRegistrationInfo, type RegistrationInfo } from '../services/appsScriptService';
+import { BrandLogo } from './BrandLogo';
 
 export interface RegisterFormValues {
   name: string;
@@ -189,13 +190,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       <div className="w-full max-w-[400px]">
         {/* Brand */}
         <div className="flex flex-col items-center mb-7">
-          <div className="w-12 h-12 rounded-xl bg-red-600 flex items-center justify-center">
-            <span className="text-white font-bold text-lg tracking-tight">H+</span>
-          </div>
-          <h1 className="mt-4 text-[20px] font-semibold text-slate-900 tracking-tight">
-            Hays &amp; Sons
-          </h1>
-          <p className="mt-1 text-[13px] text-slate-500">Restoration Document Suite</p>
+          <BrandLogo size={38} className="justify-center" />
+          <p className="mt-2.5 text-[13px] text-slate-500">Restoration Document Suite</p>
         </div>
 
         {/* Card */}

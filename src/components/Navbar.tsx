@@ -12,6 +12,7 @@ import {
   Check,
 } from 'lucide-react';
 import { isDesktop } from '../services/desktopBridge';
+import { BrandLogo } from './BrandLogo';
 
 interface NavbarProps {
   jobNumber: string;
@@ -81,17 +82,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       <div className="max-w-[1400px] mx-auto px-5">
         <div className="flex items-center justify-between gap-4 h-16">
           {/* Brand */}
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-9 h-9 rounded-lg bg-red-600 flex items-center justify-center shrink-0">
-              <span className="text-white font-bold text-sm tracking-tight">H+</span>
-            </div>
-            <div className="min-w-0 leading-tight">
-              <p className="text-[15px] font-semibold text-slate-900 tracking-tight truncate">
-                Hays &amp; Sons
-              </p>
-              <p className="text-[11px] text-slate-500 truncate">Restoration Document Suite</p>
-            </div>
-          </div>
+          <BrandLogo size={34} sublabel="Restoration Document Suite" />
 
           {/* Job context */}
           <div className="hidden lg:flex items-center gap-2 min-w-0 rounded-lg border border-slate-200 bg-slate-50/80 px-3 h-9">

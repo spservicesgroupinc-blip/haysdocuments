@@ -8,17 +8,41 @@ Google Sheets database header (`apps-script/Code.gs`).
 
 ## 1. Logo
 
-The mark is **typographic only** — there is no image asset, SVG or favicon in the repository.
+The identity is a **red bar paired with a heavy black plus** — the "H+" mark — followed by the tight
+`Hays+Sons` wordmark. It is vector geometry, so the app, the print packet and the icons all render
+the same artwork.
 
 | Element | Specification | Source |
 | --- | --- | --- |
-| Mark | Rounded square, `rounded-lg` (8px), 36x36px | `src/components/Navbar.tsx` |
-| Mark fill | Brand red `#DC2626` | |
-| Mark glyph | `H+`, white, `font-bold`, 14px, `tracking-tight` | |
-| Wordmark | "Hays & Sons" — 15px, `font-semibold`, `tracking-tight`, `slate-900` | |
-| Sub-label | "Restoration Document Suite" — 11px, `slate-500` | |
+| Mark | Red bar `0,0 14x42` + black plus (stem `36,0 14x42`, crossbar `14,14 51x14`) on a 65x42 canvas | `src/components/BrandLogo.tsx` |
+| Bar fill | Brand red `#DC2626` | |
+| Plus fill | Logo ink `#1A1A1A` — white on dark surfaces | |
+| Crossbar joint | Crossbar starts at `x=14`, exactly where the bar ends — **flush, no gap** | |
+| Wordmark | `Hays+Sons` — 0.44x the mark height, `font-extrabold`, `tracking-tight` | |
+| Sub-label | "Restoration Document Suite" — 0.31x the mark height, `slate-500` | |
+| Favicon / icon source | Mark centred on a square, transparent field | `public/logo.svg` |
 
-The glyph is a text node rather than vector art, so it renders slightly differently per platform.
+Rules that keep the mark coherent:
+
+- The bar and the plus are **exactly the same height** and share one stroke width (14 units).
+- The plus crossbar runs **flush into the bar** — separate them and the "H" reading is lost.
+- The mark is **never** wrapped in a rounded square and **never** inverted to white-on-red.
+- The wordmark has **no spaces** around the `+`.
+
+The lockup is exported from `BrandLogo.tsx` (props: `size`, `withWordmark`, `sublabel`, `tone`). No
+webfont is loaded, so the wordmark renders in the system sans and varies slightly per OS; the supplied
+artwork uses a geometric face, so a licensed font swap is a change here plus the PDF font embed.
+
+`drawHeaderLogo()` in `services/pdfService.ts` draws the identical geometry scaled to a 22pt height,
+using the position by position rectangle coordinates, so the packet header and the app header match.
+
+### Icon variants
+
+`npm run icons` generates the favicon, PWA and desktop icons from `public/logo.svg` (see
+`pwa-assets.config.ts`). Every raster variant sits on a **white** field: the mark's plus is near-black
+and its bar is red, so a transparent icon would lose the plus on a dark wallpaper or taskbar and the
+mark would read as a lone red bar. The in-app mark (`BrandLogo.tsx`) and the SVG favicon stay
+transparent, because they sit on surfaces the app controls.
 
 ---
 
@@ -49,16 +73,20 @@ Deliberately narrow: **one brand red plus the neutral `slate` ramp**, with three
 | Unsaved / caution | `amber-500` | `#F59E0B` | Unsaved dot, developer-mode warning |
 | Error | `rose-700` | `#BE123C` | Error copy |
 
-### Known inconsistency — three reds
+### Brand red — unified
 
 | Surface | Red | Source |
 | --- | --- | --- |
-| Web app | `#DC2626` | Tailwind `red-600` |
-| Generated PDFs | `#D91A1A` | `rgb(0.85, 0.1, 0.1)` in `pdfService.ts` |
-| Google Sheet header | `#B91C1C` | `applySheetFormatting_` in `Code.gs` |
+| Web app | `#DC2626` | `--color-brand` in `src/index.css` |
+| Generated PDFs | `#DC2626` | `COLOR_RED` in `pdfService.ts` |
+| Google Sheet header | `#DC2626` | `applySheetFormatting_` in `Code.gs` |
 
-Printed collateral therefore does not match the app exactly. **Recommendation:** collapse to a single
-brand red token and reference it from all three surfaces.
+These were previously three different reds (`red-600`, `#D91A1A`, `#B91C1C`), which is why printed
+collateral never matched the app. They are now one token. `--color-brand` is deliberately equal to
+Tailwind's `red-600`, so existing `bg-red-600` call sites are already correct and need no migration.
+
+Logo ink is `#1A1A1A` (`--color-ink`), shared by the plus and the wordmark so the mark reads as one
+unit. `COLOR_DARK` in `pdfService.ts` now uses the same value.
 
 ---
 

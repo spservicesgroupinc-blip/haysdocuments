@@ -74,9 +74,12 @@ const HEADER_RULE_Y = 720;
 const FOOTER_RULE_Y = 40;
 const ELLIPSIS = '\u2026';
 
-// Hays + Sons brand color palette
-const COLOR_RED = rgb(0.85, 0.1, 0.1);
-const COLOR_DARK = rgb(0.12, 0.12, 0.12);
+// Hays + Sons brand palette — one brand red, one ink. Mirrors the tokens in
+// index.css (`--color-brand` / `--color-ink`) and components/BrandLogo.tsx.
+// COLOR_RED used to be rgb(0.85, 0.1, 0.1) (#D91A1A), which is why the printed
+// packet never quite matched the app; it is now the same #DC2626 the UI uses.
+const COLOR_RED = rgb(220 / 255, 38 / 255, 38 / 255); // #DC2626
+const COLOR_DARK = rgb(26 / 255, 26 / 255, 26 / 255); // #1A1A1A — text ink and the logo plus
 const COLOR_GRAY = rgb(0.4, 0.4, 0.4);
 const COLOR_BORDER = rgb(0.65, 0.65, 0.65);
 const COLOR_HIGHLIGHT = rgb(1, 0.96, 0.55); // Yellow highlight seen in original documents
@@ -201,15 +204,25 @@ function drawHeaderLogo(
   fontReg: PDFFont,
   branchInfo: RestorationJobData['branch']
 ) {
-  // Red "H" mark
-  page.drawRectangle({ x: 40, y: 730, width: 10, height: 32, color: COLOR_RED });
-  page.drawRectangle({ x: 58, y: 730, width: 10, height: 32, color: COLOR_RED });
-  page.drawRectangle({ x: 50, y: 742, width: 8, height: 8, color: COLOR_RED });
+  // Brand mark: red bar + heavy black plus at the same height, whose crossbar
+  // runs flush into the bar — no gap — so bar + crossbar + stem also read as an
+  // "H". The geometry is the web mark (components/BrandLogo.tsx, a 65 x 42
+  // canvas) scaled to a 22pt height, so the packet header and the app header are
+  // literally the same art.
+  const markBaseY = 735.4;
+  const markHeight = 22;
+  const markStroke = 7.3; // 14/42 of the mark height — bar width equals plus stroke width.
+  page.drawRectangle({ x: 40, y: markBaseY, width: markStroke, height: markHeight, color: COLOR_RED });
+  page.drawRectangle({ x: 58.9, y: markBaseY, width: markStroke, height: markHeight, color: COLOR_DARK });
+  // Crossbar: starts exactly where the red bar ends (x = 40 + markStroke) so the
+  // two shapes touch, and runs 26.7pt to the right edge of the mark.
+  page.drawRectangle({ x: 47.3, y: markBaseY + 7.3, width: 26.7, height: markStroke, color: COLOR_DARK });
 
-  // Logo text
-  page.drawText('Hays + Sons', { x: 74, y: 746, size: 18, font: fontBold, color: COLOR_DARK });
+  // Wordmark — set tight, with no spaces around the "+", and spaced off the
+  // mark's right edge (74.0) by the same 6.5pt gap the app lockup uses.
+  page.drawText('Hays+Sons', { x: 81, y: 746, size: 18, font: fontBold, color: COLOR_DARK });
   page.drawText('Your Disaster Recovery Professionals', {
-    x: 75,
+    x: 81,
     y: 734,
     size: 7.5,
     font: fontReg,

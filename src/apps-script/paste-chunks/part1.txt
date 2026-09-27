@@ -106,13 +106,8 @@ var DEFAULTS = {
   LOCKOUT_MINUTES: 15,
   // --- Self-service registration ------------------------------------------------
   MIN_PASSWORD_LENGTH: 8,
-  // When the mode is 'invite', the code is the ONLY thing between the public
-  // web-app URL and the customer records, so it must resist guessing.
   MIN_REGISTRATION_CODE_LENGTH: 12,
   REGISTRATION_DEFAULT_ROLE: 'editor',
-  // 'open'   - anyone with the web app URL can create an account (default)
-  // 'invite' - an invite code is required
-  // 'off'    - no sign-up at all
   REGISTRATION_MODE: 'open'
 };
 
@@ -139,10 +134,7 @@ var JOB_HEADERS = [
 /** Append-only audit trail. */
 var LOG_HEADERS = ['Timestamp', 'User', 'Action', 'RecordId', 'JobNumber', 'Detail'];
 
-/**
- * Application accounts. Passwords are NEVER stored in plain text: the sheet
- * holds a per-user random salt plus an iterated HMAC-SHA256 derivation.
- */
+/** Application accounts. */
 var USER_HEADERS = [
   'Email',
   'Name',
@@ -163,7 +155,7 @@ var ROLE_VALUES = ['admin', 'editor', 'viewer'];
 
 var STATUS_VALUES = ['Draft', 'Active', 'On Hold', 'Complete', 'Cancelled'];
 
-/* Fields that round-trip as 'number | empty-string' in the front-end. Blank must stay blank - never 0. */
+/* Fields that round-trip as 'number | empty-string' in the front-end. */
 var NUMERIC_OR_BLANK_PATHS = [
   'insurance.roughEstimateAmount',
   'financials.totalApprovedRcv',
@@ -185,7 +177,7 @@ var NUMERIC_PATHS = {
   'financials.completeDays': 60
 };
 
-/** Boolean fields. Strings such as "FALSE" must NOT become true. */
+/** Boolean fields. */
 var BOOLEAN_PATHS = [
   'mortgage.hasMortgage',
   'changeOrder.isInsuranceRelated',
@@ -201,29 +193,10 @@ var ENUM_PATHS = {
   'checklist.hasDeductibleBeenCollected': { values: ['Yes', 'No', 'Pending'], fallback: 'No' }
 };
 
-/** Guaranteed sub-objects are provided by emptyRecordTemplate_(). */
-
 /* ---------------------------------------------------------------------------
- * 2. PROVISIONING  - run this once
+ * 2. PROVISIONING & SCHEMA
  * ------------------------------------------------------------------------ */
 
-/**
- * Creates (or repairs) the ENTIRE database in one call: the spreadsheet, the
- * Jobs, AuditLog, Users, Sessions and README sheets, all headers, formatting,
- * hidden credential columns and configuration.
- *
- * Idempotent and order-independent - safe to run as the very first action after
- * pasting this file into a new Apps Script project, and safe to run again later
- * to repair or upgrade.
- *
- * Optionally seeds the first administrator in the same step:
- *   setupDatabase('you@example.com', 'Your Name', 'a-strong-password')
- *
- * @param {string} [adminEmail]    Optional email for the first administrator.
- * @param {string} [adminName]     Optional display name for that administrator.
- * @param {string} [adminPassword] Optional password, 8+ characters.
- * @return {Object} summary describing what was provisioned.
- */
 function setupDatabase(adminEmail, adminName, adminPassword) {
   var props = PropertiesService.getScriptProperties();
   var created = false;
@@ -254,7 +227,6 @@ function setupDatabase(adminEmail, adminName, adminPassword) {
   var usersResult = ensureSheet_(spreadsheet, usersSheetName, USER_HEADERS);
   var sessionsResult = ensureSheet_(spreadsheet, sessionsSheetName, SESSION_HEADERS);
 
-  // Persist configuration.
   props.setProperty(PROP.DB_SPREADSHEET_ID, spreadsheet.getId());
   props.setProperty(PROP.DB_SHEET_NAME, jobSheetName);
   props.setProperty(PROP.LOG_SHEET_NAME, logSheetName);
@@ -279,7 +251,6 @@ function setupDatabase(adminEmail, adminName, adminPassword) {
   applySheetFormatting_(usersSheet, USER_HEADERS);
   applySheetFormatting_(sessionsSheet, SESSION_HEADERS);
 
-  // Credentials and live sessions must never be casually visible.
   hideColumns_(usersSheet, USER_HEADERS, ['Salt', 'PasswordHash']);
   hideColumns_(sessionsSheet, SESSION_HEADERS, ['Token']);
 
@@ -303,14 +274,6 @@ function setupDatabase(adminEmail, adminName, adminPassword) {
     webAppUrl: ScriptApp.getService().getUrl()
   };
 
-  if (userCount === 0) {
-    Logger.log(
-      'No application users exist yet. Run createUser("you@example.com", "Your Name", "a-strong-password") ' +
-        'from the editor to create the first account, then log in through the app.'
-    );
-  }
-
-  // Optional one-step bootstrap of the first administrator.
   var bootstrap = null;
   if (adminEmail && adminPassword) {
     bootstrap = createUser(adminEmail, adminName || adminEmail, adminPassword, 'admin');
@@ -329,13 +292,6 @@ function setupDatabase(adminEmail, adminName, adminPassword) {
   return summary;
 }
 
-/**
- * Guarantees the database exists before a request is served, so the very first
- * call to the web app provisions everything even if setupDatabase() was never
- * run by hand. Only runs when no spreadsheet has been recorded yet.
- *
- * @return {boolean} true when provisioning happened during this call.
- */
 function ensureDatabaseReady_() {
   var props = PropertiesService.getScriptProperties();
   if (props.getProperty(PROP.DB_SPREADSHEET_ID)) return false;
@@ -355,7 +311,6 @@ function ensureDatabaseReady_() {
   }
 }
 
-/** Ensures a sheet exists with the given headers, adding any missing columns. */
 function ensureSheet_(spreadsheet, name, headers) {
   var sheet = spreadsheet.getSheetByName(name);
   if (!sheet) {
@@ -370,7 +325,6 @@ function ensureSheet_(spreadsheet, name, headers) {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
     columnsAdded = headers.length;
   } else {
-    // Keep the canonical order but never destroy an operator-added column.
     var present = {};
     for (var i = 0; i < existing.length; i++) {
       if (existing[i]) present[String(existing[i])] = true;
@@ -387,7 +341,6 @@ function ensureSheet_(spreadsheet, name, headers) {
   return { columnsAdded: columnsAdded };
 }
 
-/** Deletes the empty "Sheet1" that SpreadsheetApp.create() adds. */
 function removeDefaultSheet_(spreadsheet) {
   var sheets = spreadsheet.getSheets();
   for (var i = 0; i < sheets.length; i++) {
@@ -398,7 +351,6 @@ function removeDefaultSheet_(spreadsheet) {
   }
 }
 
-/** Cosmetic + protective formatting: header styling, text formats, widths. */
 function applySheetFormatting_(sheet, headers) {
   if (!sheet) return;
 
@@ -406,12 +358,11 @@ function applySheetFormatting_(sheet, headers) {
   headerRange
     .setFontWeight('bold')
     .setFontColor('#ffffff')
-    .setBackground('#b91c1c')
+    .setBackground('#dc2626')
     .setVerticalAlignment('middle')
     .setWrap(false);
   sheet.setRowHeight(1, 28);
 
-  // Force text format so Sheets never coerces ids, dates or JSON.
   var textColumns = ['RecordId', 'JobNumber', 'ClaimNumber', 'RecordJson', 'CreatedAt', 'UpdatedAt'];
   for (var i = 0; i < headers.length; i++) {
     if (textColumns.indexOf(headers[i]) !== -1) {
@@ -426,14 +377,12 @@ function applySheetFormatting_(sheet, headers) {
     else sheet.setColumnWidth(c + 1, Math.max(120, Math.min(220, name.length * 12 + 60)));
   }
 
-  // Hide implementation-only columns for a cleaner operator experience.
   var recordIdCol = headers.indexOf('RecordId');
   var jsonCol = headers.indexOf('RecordJson');
   if (recordIdCol !== -1) sheet.hideColumns(recordIdCol + 1);
   if (jsonCol !== -1) sheet.hideColumns(jsonCol + 1);
 }
 
-/** Hides the named columns, ignoring any that are not present. */
 function hideColumns_(sheet, headers, names) {
   if (!sheet) return;
   for (var i = 0; i < names.length; i++) {
@@ -445,4 +394,10 @@ function hideColumns_(sheet, headers, names) {
       Logger.log('Could not hide column ' + names[i] + ': ' + err);
     }
   }
+}
+
+function countDataRows_(sheet) {
+  if (!sheet) return 0;
+  var lastRow = sheet.getLastRow();
+  return lastRow < 2 ? 0 : lastRow - 1;
 }
