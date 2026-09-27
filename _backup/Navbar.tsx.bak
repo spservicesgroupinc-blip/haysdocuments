@@ -1,0 +1,243 @@
+import React, { useState } from 'react';
+import {
+  RotateCcw,
+  Sparkles,
+  CheckCircle2,
+  LogOut,
+  Building2,
+  ChevronDown,
+  Database,
+  Save,
+  Loader2,
+} from 'lucide-react';
+import { User } from 'firebase/auth';
+
+interface NavbarProps {
+  jobNumber: string;
+  customerName: string;
+  user: User | null;
+  isLoggingIn: boolean;
+  onLogin: () => void;
+  onLogout: () => void;
+  onSelectPreset: (presetKey: 'water' | 'storm' | 'fire') => void;
+  onReset: () => void;
+  /** Unsaved changes exist. */
+  isDirty: boolean;
+  isSavingJob: boolean;
+  savedJobsCount: number;
+  /** Email verified by the customer database, when signed in. */
+  databaseEmail: string | null;
+  isDatabaseConfigured: boolean;
+  onSaveJob: () => void;
+  onOpenJobLibrary: () => void;
+}
+
+export const Navbar: React.FC<NavbarProps> = ({
+  jobNumber,
+  customerName,
+  user,
+  isLoggingIn,
+  onLogin,
+  onLogout,
+  onSelectPreset,
+  onReset,
+  isDirty,
+  isSavingJob,
+  savedJobsCount,
+  databaseEmail,
+  isDatabaseConfigured,
+  onSaveJob,
+  onOpenJobLibrary,
+}) => {
+  const [showPresetsMenu, setShowPresetsMenu] = useState(false);
+
+  return (
+    <header className="sticky top-0 z-30 bg-slate-900 text-white shadow-md border-b border-slate-800">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex items-center justify-between h-16">
+          {/* Logo & Title */}
+          <div className="flex items-center space-x-3">
+            <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-red-600 shadow-sm shadow-red-500/30">
+              <span className="text-white font-black text-xl tracking-tight">H+</span>
+            </div>
+            <div>
+              <div className="flex items-center space-x-2">
+                <span className="font-extrabold text-base tracking-wide text-white">
+                  HAYS + SONS
+                </span>
+                <span className="text-[11px] uppercase tracking-wider px-2 py-0.5 rounded bg-red-500/20 text-red-300 font-semibold border border-red-500/30">
+                  Fort Wayne
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 font-medium">
+                Single-Entry Document Automation Engine
+              </p>
+            </div>
+          </div>
+
+          {/* Current Job Pill (Tablet & Desktop) */}
+          <div className="hidden md:flex items-center bg-slate-800/80 rounded-lg px-3 py-1.5 border border-slate-700">
+            <Building2 className="w-4 h-4 text-red-400 mr-2" />
+            <div className="text-xs">
+              <span className="text-slate-400">Job: </span>
+              <span className="font-semibold text-white mr-2">{jobNumber || 'Unassigned'}</span>
+              <span className="text-slate-400">| Customer: </span>
+              <span className="font-semibold text-slate-200">{customerName || 'None'}</span>
+            </div>
+          </div>
+
+          {/* Right Action Tools */}
+          <div className="flex items-center space-x-2 sm:space-x-3">
+            {/* Presets Dropdown */}
+            <div className="relative">
+              <button
+                onClick={() => setShowPresetsMenu(!showPresetsMenu)}
+                type="button"
+                className="inline-flex items-center px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 text-slate-200 hover:bg-slate-700 hover:text-white border border-slate-700 transition-colors shadow-sm"
+                title="Fill fields with sample insurance claim data"
+              >
+                <Sparkles className="w-3.5 h-3.5 mr-1.5 text-amber-400" />
+                <span className="hidden sm:inline">Load Sample</span>
+                <ChevronDown className="w-3 h-3 ml-1 text-slate-400" />
+              </button>
+
+              {showPresetsMenu && (
+                <div
+                  className="absolute right-0 mt-2 w-64 bg-slate-800 border border-slate-700 rounded-xl shadow-xl py-1 z-40 text-xs animate-in fade-in"
+                  onClick={() => setShowPresetsMenu(false)}
+                >
+                  <div className="px-3 py-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-700">
+                    Select Claim Scenario
+                  </div>
+                  <button
+                    onClick={() => onSelectPreset('water')}
+                    className="w-full text-left px-3 py-2 text-slate-200 hover:bg-slate-700 hover:text-white transition flex flex-col"
+                  >
+                    <span className="font-bold text-white">Megan Wilson (Water Damage)</span>
+                    <span className="text-[11px] text-slate-400">Berne, IN • Supply Line • $24,850 RCV</span>
+                  </button>
+                  <button
+                    onClick={() => onSelectPreset('storm')}
+                    className="w-full text-left px-3 py-2 text-slate-200 hover:bg-slate-700 hover:text-white transition flex flex-col"
+                  >
+                    <span className="font-bold text-white">Robert Taylor (Wind/Storm)</span>
+                    <span className="text-[11px] text-slate-400">Fort Wayne, IN • Tree Impact • $34,200 RCV</span>
+                  </button>
+                  <button
+                    onClick={() => onSelectPreset('fire')}
+                    className="w-full text-left px-3 py-2 text-slate-200 hover:bg-slate-700 hover:text-white transition flex flex-col"
+                  >
+                    <span className="font-bold text-white">Sarah Miller (Kitchen Fire)</span>
+                    <span className="text-[11px] text-slate-400">Auburn, IN • Reconstruct • $58,900 RCV</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Save to customer database */}
+            <button
+              onClick={onSaveJob}
+              type="button"
+              disabled={isSavingJob || !isDatabaseConfigured}
+              title={
+                isDatabaseConfigured
+                  ? isDirty
+                    ? 'Save this job to the customer database (you have unsaved changes)'
+                    : 'Saved — click to save again'
+                  : 'Customer database not configured — see apps-script/README.md'
+              }
+              className="relative inline-flex items-center px-3 py-1.5 text-xs font-bold rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+            >
+              {isSavingJob ? (
+                <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+              ) : (
+                <Save className="w-3.5 h-3.5 mr-1.5" />
+              )}
+              <span className="hidden sm:inline">{isSavingJob ? 'Saving…' : 'Save'}</span>
+              {isDirty && !isSavingJob && (
+                <span
+                  className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-amber-400 border border-slate-900"
+                  title="Unsaved changes"
+                />
+              )}
+            </button>
+
+            {/* Customer & job library */}
+            <button
+              onClick={onOpenJobLibrary}
+              type="button"
+              title={
+                databaseEmail
+                  ? `Saved jobs — signed in as ${databaseEmail}`
+                  : 'Open the saved customer & job library'
+              }
+              className="inline-flex items-center px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 text-slate-200 hover:bg-slate-700 hover:text-white border border-slate-700 transition-colors shadow-sm"
+            >
+              <Database className="w-3.5 h-3.5 mr-1.5 text-sky-400" />
+              <span className="hidden sm:inline">Jobs</span>
+              {savedJobsCount > 0 && (
+                <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-slate-700 text-[10px] font-bold text-slate-200">
+                  {savedJobsCount}
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={onReset}
+              type="button"
+              className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white border border-slate-700 transition-colors shadow-sm"
+              title="Clear all inputs for a new restoration job"
+            >
+              <RotateCcw className="w-3.5 h-3.5 mr-1 text-slate-400" />
+              <span className="hidden sm:inline">New Job</span>
+            </button>
+
+            {/* Google Workspace Auth Pill */}
+            {user ? (
+              <div className="flex items-center space-x-2 bg-emerald-950/40 border border-emerald-500/30 rounded-lg px-2.5 py-1 text-xs">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="hidden sm:inline text-emerald-300 max-w-[120px] truncate">
+                  {user.displayName || user.email}
+                </span>
+                <button
+                  onClick={onLogout}
+                  className="text-slate-400 hover:text-white p-0.5 rounded transition"
+                  title="Sign out of Google"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={onLogin}
+                disabled={isLoggingIn}
+                type="button"
+                className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-lg bg-white text-slate-900 hover:bg-slate-100 transition shadow-sm"
+              >
+                <svg className="w-3.5 h-3.5 mr-1.5" viewBox="0 0 24 24">
+                  <path
+                    fill="#4285F4"
+                    d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.8-2.4 3.65v3.03h3.88c2.27-2.09 3.665-5.17 3.665-9.12z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.03c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.26v3.13C3.27 21.37 7.36 24 12 24z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.28 14.29c-.25-.72-.38-1.49-.38-2.29s.13-1.57.38-2.29V6.58H1.26C.46 8.17 0 9.99 0 12s.46 3.83 1.26 5.42l4.02-3.13z"
+                  />
+                  <path
+                    fill="#EA4335"
+                    d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.36 0 3.27 2.63 1.26 6.58l4.02 3.13c.95-2.83 3.6-4.96 6.72-4.96z"
+                  />
+                </svg>
+                {isLoggingIn ? 'Connecting...' : 'Google Sync'}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </header>
+  );
+};

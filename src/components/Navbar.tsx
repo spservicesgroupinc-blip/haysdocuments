@@ -1,0 +1,296 @@
+import React, { useState } from 'react';
+import { User } from 'firebase/auth';
+import {
+  Database,
+  Save,
+  Loader2,
+  RotateCcw,
+  LogOut,
+  ChevronDown,
+  Cloud,
+  AlertCircle,
+  Check,
+} from 'lucide-react';
+import { isDesktop } from '../services/desktopBridge';
+
+interface NavbarProps {
+  jobNumber: string;
+  customerName: string;
+  user: User | null;
+  isLoggingIn: boolean;
+  onLogin: () => void;
+  onLogout: () => void;
+  onReset: () => void;
+  /** Unsaved changes exist. */
+  isDirty: boolean;
+  isSavingJob: boolean;
+  savedJobsCount: number;
+  /** Email verified by the customer database, when signed in. */
+  databaseEmail: string | null;
+  isDatabaseConfigured: boolean;
+  /** True when the developer shared-secret bypass is active (no sign-in). */
+  isDeveloperBypass: boolean;
+  onSaveJob: () => void;
+  /** Opens the Saved Customers home page. */
+  onOpenSavedCustomers: () => void;
+  /** Signs the application user out of the database session. */
+  onSignOut: () => void;
+  /** Records queued locally that still need to reach the database. */
+  pendingSyncCount?: number;
+  /** True while the device has no connectivity. */
+  isOffline?: boolean;
+}
+
+const BTN_BASE =
+  'inline-flex items-center justify-center gap-1.5 rounded-lg text-[13px] font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/40 disabled:opacity-45 disabled:cursor-not-allowed';
+
+export const Navbar: React.FC<NavbarProps> = ({
+  jobNumber,
+  customerName,
+  user,
+  isLoggingIn,
+  onLogin,
+  onLogout,
+  onReset,
+  isDirty,
+  isSavingJob,
+  savedJobsCount,
+  databaseEmail,
+  isDatabaseConfigured,
+  isDeveloperBypass,
+  onSaveJob,
+  onOpenSavedCustomers,
+  onSignOut,
+  pendingSyncCount = 0,
+  isOffline = false,
+}) => {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const desktopBuild = isDesktop();
+
+  const hasCustomer = Boolean(customerName.trim());
+  const accountLabel = user?.displayName || user?.email || 'Google account';
+
+  const saveTitle = !isDatabaseConfigured
+    ? 'Customer database not connected — see apps-script/README.md'
+    : isDirty
+    ? 'Save changes to the customer database'
+    : 'Saved — save again to overwrite';
+
+  return (
+    <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200">
+      <div className="max-w-[1400px] mx-auto px-5">
+        <div className="flex items-center justify-between gap-4 h-16">
+          {/* Brand */}
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-lg bg-red-600 flex items-center justify-center shrink-0">
+              <span className="text-white font-bold text-sm tracking-tight">H+</span>
+            </div>
+            <div className="min-w-0 leading-tight">
+              <p className="text-[15px] font-semibold text-slate-900 tracking-tight truncate">
+                Hays &amp; Sons
+              </p>
+              <p className="text-[11px] text-slate-500 truncate">Restoration Document Suite</p>
+            </div>
+          </div>
+
+          {/* Job context */}
+          <div className="hidden lg:flex items-center gap-2 min-w-0 rounded-lg border border-slate-200 bg-slate-50/80 px-3 h-9">
+            <span
+              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                hasCustomer ? (isDirty ? 'bg-amber-500' : 'bg-emerald-500') : 'bg-slate-300'
+              }`}
+              aria-hidden
+            />
+            <span className="text-[13px] font-medium text-slate-900 truncate max-w-[220px]">
+              {hasCustomer ? customerName : 'New job'}
+            </span>
+            <span className="text-slate-300 select-none">·</span>
+            <span className="text-[12px] text-slate-500 tabular-nums truncate">
+              {jobNumber || 'no job #'}
+            </span>
+            {isDirty && (
+              <span className="text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
+                Unsaved
+              </span>
+            )}
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-2 shrink-0">
+            {(isOffline || pendingSyncCount > 0) && (
+              <span
+                title={
+                  isOffline
+                    ? 'Offline — changes are saved on this device and sync automatically'
+                    : `${pendingSyncCount} change${pendingSyncCount === 1 ? '' : 's'} waiting to sync`
+                }
+                className="hidden sm:inline-flex items-center gap-1.5 h-9 px-2.5 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-[11px] font-semibold"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" aria-hidden />
+                {isOffline ? 'Offline' : `${pendingSyncCount} to sync`}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={onOpenSavedCustomers}
+              title={databaseEmail ? `Saved customers — signed in as ${databaseEmail}` : 'Open the saved customers page'}
+              className={`${BTN_BASE} h-9 px-3 border border-slate-200 text-slate-700 hover:bg-slate-50 hover:text-slate-900`}
+            >
+              <Database className="w-4 h-4 text-slate-400" />
+              <span className="hidden sm:inline">Customers</span>
+              {savedJobsCount > 0 && (
+                <span className="ml-0.5 min-w-[18px] h-[18px] px-1 rounded bg-slate-200 text-slate-700 text-[11px] font-bold flex items-center justify-center tabular-nums">
+                  {savedJobsCount}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={onSaveJob}
+              disabled={isSavingJob || !isDatabaseConfigured}
+              title={saveTitle}
+              className={`${BTN_BASE} h-9 px-3.5 bg-red-600 text-white hover:bg-red-700 shadow-sm`}
+            >
+              {isSavingJob ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : isDirty ? (
+                <Save className="w-4 h-4" />
+              ) : (
+                <Check className="w-4 h-4" />
+              )}
+              <span>{isSavingJob ? 'Saving' : 'Save'}</span>
+            </button>
+
+            {/* Account / overflow */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsMenuOpen((open) => !open)}
+                title="Account and job actions"
+                aria-expanded={isMenuOpen}
+                className={`${BTN_BASE} h-9 w-9 border border-slate-200 text-slate-600 hover:bg-slate-50`}
+              >
+                <ChevronDown className={`w-4 h-4 transition-transform ${isMenuOpen ? 'rotate-180' : ''}`} />
+              </button>
+
+              {isMenuOpen && (
+                <>
+                  <button
+                    type="button"
+                    aria-hidden
+                    tabIndex={-1}
+                    onClick={() => setIsMenuOpen(false)}
+                    className="fixed inset-0 z-40 cursor-default"
+                  />
+                  <div className="absolute right-0 top-11 z-50 w-72 rounded-xl border border-slate-200 bg-white shadow-lg overflow-hidden">
+                    {/* Connection status */}
+                    <div className="px-3.5 py-3 border-b border-slate-100">
+                      <div className="flex items-start gap-2.5">
+                        {isDatabaseConfigured ? (
+                          <span
+                            className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${
+                              isDeveloperBypass ? 'bg-amber-500' : 'bg-emerald-500'
+                            }`}
+                          />
+                        ) : (
+                          <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
+                        )}
+                        <div className="min-w-0">
+                          <p className="text-[13px] font-semibold text-slate-900">
+                            {isDatabaseConfigured ? 'Job database connected' : 'Job database not connected'}
+                          </p>
+                          <p className="text-[11px] text-slate-500 truncate">
+                            {isDeveloperBypass
+                              ? 'Developer mode — sign-in bypassed'
+                              : databaseEmail || (isDatabaseConfigured ? 'Not signed in' : 'Set VITE_APPS_SCRIPT_URL')}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Google Drive / Sheets */}
+                    <div className="px-3.5 py-3 border-b border-slate-100">
+                      <div className="flex items-start gap-2.5">
+                        <Cloud className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                        <div className="min-w-0">
+                          <p className="text-[13px] font-semibold text-slate-900">Google Drive &amp; Sheets</p>
+                          <p className="text-[11px] text-slate-500 truncate">
+                            {desktopBuild
+                              ? 'Use the browser version to connect'
+                              : user
+                                ? accountLabel
+                                : 'Not connected'}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMenuOpen(false);
+                          user ? onLogout() : onLogin();
+                        }}
+                        disabled={isLoggingIn || desktopBuild}
+                        title={
+                          desktopBuild
+                            ? 'Google sign-in is available in the browser version of the app'
+                            : undefined
+                        }
+                        className={`${BTN_BASE} mt-2.5 w-full h-8 border border-slate-200 text-slate-700 hover:bg-slate-50`}
+                      >
+                        {isLoggingIn ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : user ? (
+                          <LogOut className="w-3.5 h-3.5" />
+                        ) : null}
+                        {isLoggingIn ? 'Connecting…' : user ? 'Disconnect' : 'Connect Google account'}
+                      </button>
+                    </div>
+
+                    {/* New job */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMenuOpen(false);
+                        onReset();
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3.5 py-3 text-left hover:bg-slate-50 transition-colors"
+                    >
+                      <RotateCcw className="w-4 h-4 text-slate-400" />
+                      <span className="min-w-0">
+                        <span className="block text-[13px] font-semibold text-slate-900">Start a new job</span>
+                        <span className="block text-[11px] text-slate-500">
+                          Clears the current record
+                        </span>
+                      </span>
+                    </button>
+
+                    {/* Application sign out */}
+                    {databaseEmail && !isDeveloperBypass && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMenuOpen(false);
+                          onSignOut();
+                        }}
+                        className="w-full flex items-center gap-2.5 px-3.5 py-3 text-left hover:bg-slate-50 transition-colors border-t border-slate-100"
+                      >
+                        <LogOut className="w-4 h-4 text-slate-400" />
+                        <span className="min-w-0">
+                          <span className="block text-[13px] font-semibold text-slate-900">Sign out</span>
+                          <span className="block text-[11px] text-slate-500 truncate">
+                            {databaseEmail}
+                          </span>
+                        </span>
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+  );
+};

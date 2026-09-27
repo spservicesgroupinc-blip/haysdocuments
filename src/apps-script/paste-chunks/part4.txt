@@ -1,0 +1,363 @@
+
+/**
+ * Opens or closes self-service sign-up from the login page. Run from the editor.
+ *
+ *   setRegistrationCode('a-long-shared-invite-code')                    // open
+ *   setRegistrationCode('a-long-shared-invite-code', 'haysandsons.com') // open, domain-limited
+ *   setRegistrationCode('')                                             // close again
+ *
+ * The code is a shared secret: anyone who has it AND the web-app URL can create
+ * an account. Treat it like a password, keep it at least
+ * DEFAULTS.MIN_REGISTRATION_CODE_LENGTH characters, and rotate it by calling
+ * this again. Self-registered accounts never receive the admin role.
+ *
+ * @param {string} code            The invite code. Empty string disables sign-up.
+ * @param {string} [allowedDomains] Optional comma-separated email domains, e.g. 'haysandsons.com'.
+ * @param {string} [defaultRole]   Optional role for new accounts. 'admin' is refused.
+ * @return {Object} the resulting registration state.
+ */
+function setRegistrationCode(code, allowedDomains, defaultRole) {
+  var props = PropertiesService.getScriptProperties();
+  var value = String(code || '').trim();
+
+  if (!value) {
+    props.deleteProperty(PROP.REGISTRATION_CODE);
+    props.setProperty(PROP.REGISTRATION_MODE, 'off');
+    Logger.log('Self-service registration is now DISABLED.');
+    return getRegistrationInfo();
+  }
+
+  if (value.length < DEFAULTS.MIN_REGISTRATION_CODE_LENGTH) {
+    throw appError_(
+      'weak_registration_code',
+      'Choose an invite code of at least ' + DEFAULTS.MIN_REGISTRATION_CODE_LENGTH +
+        ' characters. It is the only thing standing between the public web-app URL and your customer records.'
+    );
+  }
+
+  props.setProperty(PROP.REGISTRATION_CODE, value);
+  props.setProperty(PROP.REGISTRATION_MODE, 'invite');
+
+  if (allowedDomains === undefined || allowedDomains === null || String(allowedDomains).trim() === '') {
+    props.deleteProperty(PROP.REGISTRATION_EMAIL_DOMAINS);
+  } else {
+    props.setProperty(PROP.REGISTRATION_EMAIL_DOMAINS, String(allowedDomains).trim());
+  }
+
+  if (defaultRole) {
+    var role = oneOf_(defaultRole, ROLE_VALUES, DEFAULTS.REGISTRATION_DEFAULT_ROLE);
+    if (role === 'admin') {
+      Logger.log('Refusing "admin" as a self-registration role; using "editor" instead.');
+      role = 'editor';
+    }
+    props.setProperty(PROP.REGISTRATION_DEFAULT_ROLE, role);
+  }
+
+  var state = getRegistrationInfo();
+  Logger.log('Self-service registration is now ENABLED.');
+  return state;
+}
+
+/** Reports the registration configuration without revealing the invite code. */
+function getRegistrationInfo() {
+  var info = api_registrationInfo_();
+  info.howToShare =
+    'Give the person the app URL and the invite code, then they choose "Create account" on the login page.';
+  Logger.log(JSON.stringify(info, null, 2));
+  return info;
+}
+
+/**
+ * A high-entropy invite code drawn from the platform UUID generator.
+ * Grouped with dashes so it can be read off a screen and typed by hand.
+ */
+function generateInviteCode_() {
+  var raw = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '').slice(0, 32);
+  return raw.slice(0, 8) + '-' + raw.slice(8, 16) + '-' + raw.slice(16, 24) + '-' + raw.slice(24, 32);
+}
+
+/**
+ * Turns self-service sign-up ON. Takes NO arguments on purpose.
+ *
+ * The Apps Script editor's Run button cannot pass arguments to a function, so
+ * setRegistrationCode(code, domains) is awkward to invoke by hand. This wrapper
+ * generates a strong invite code, stores it and logs it - select this function
+ * in the dropdown, click Run, then read View > Logs and share the code.
+ *
+ * Takes effect immediately with no redeploy: Script Properties are shared
+ * between the editor and the deployed web app.
+ *
+ * @return {Object} the registration state, including the generated invite code.
+ */
+function enableRegistration() {
+  return setRegistrationMode('open');
+}
+
+/** Turns self-service sign-up OFF. Takes NO arguments on purpose. */
+function disableRegistration() {
+  return setRegistrationMode('off');
+}
+
+/**
+ * Sets the registration mode explicitly.
+ *
+ * This takes an argument, so calling it by hand needs a temporary wrapper -
+ * prefer enableRegistration() / disableRegistration() from the Run button.
+ *
+ * @param {string} mode 'open' (anyone), 'invite' (code required) or 'off'.
+ * @return {Object} the resulting registration state.
+ */
+function setRegistrationMode(mode) {
+  var props = PropertiesService.getScriptProperties();
+  var wanted = String(mode || '').trim().toLowerCase();
+  if (wanted !== 'open' && wanted !== 'invite' && wanted !== 'off') {
+    throw appError_('invalid_mode', 'Registration mode must be "open", "invite" or "off".');
+  }
+
+  if (wanted === 'invite' && !registrationCode_()) {
+    throw appError_(
+      'invite_code_required',
+      'Invite mode needs a code. Run useInviteCode() for a generated one, or call ' +
+        'setRegistrationCode(code) with at least ' + DEFAULTS.MIN_REGISTRATION_CODE_LENGTH + ' characters.'
+    );
+  }
+
+  props.setProperty(PROP.REGISTRATION_MODE, wanted);
+  var state = getRegistrationInfo();
+
+  if (wanted === 'open') {
+    Logger.log(
+      '\nSelf-service sign-up is OPEN.\n\n' +
+        'ANYONE who has the web app URL can create an account from the login page.\n' +
+        'No invite code is required.\n\n' +
+        'Run disableRegistration() to close sign-up, or setRegistrationCode(code)\n' +
+        'to require an invite code instead.'
+    );
+  } else if (wanted === 'off') {
+    Logger.log('Self-service sign-up is OFF. Accounts can only be created with createUser().');
+  } else {
+    Logger.log('Self-service sign-up requires an invite code.');
+  }
+  return state;
+}
+
+/**
+ * Generates a fresh invite code, stores it and switches to invite mode.
+ * Takes NO arguments so it runs straight from the editor's Run button.
+ */
+function useInviteCode() {
+  var code = generateInviteCode_();
+  var state = setRegistrationCode(code);
+  state.inviteCode = code;
+  Logger.log(
+    '\nSelf-service sign-up now requires an invite code.\n\n' +
+      'Invite code - share this with the people who need accounts:\n\n    ' +
+      code +
+      '\n\nThey open the app, choose "Create account", and enter the code.\n' +
+      'Run this again to rotate the code, or disableRegistration() to stop sign-up.'
+  );
+  return state;
+}
+
+/** A plain-English description of the current sign-up policy, for the README tab. */
+function describeRegistrationMode_() {
+  var mode = registrationMode_();
+  if (mode === 'off') {
+    return 'OFF. New accounts can only be created from the editor with createUser().';
+  }
+  if (mode === 'invite') {
+    return 'INVITE ONLY. An invite code of at least ' + DEFAULTS.MIN_REGISTRATION_CODE_LENGTH +
+      ' characters is required. The role is never admin.';
+  }
+  return 'OPEN. Anyone who has the web app URL can create an account from the login page. The role is never admin.';
+}
+
+/** Lists accounts without exposing any credential material. */
+function listUsers() {
+  var sheet = usersSheet_();
+  var index = headerIndexFor_(sheet, USER_HEADERS);
+  var rows = dataRows_(sheet);
+
+  var out = rows.map(function (entry) {
+    return {
+      email: String(entry.values[index.Email] || ''),
+      name: String(entry.values[index.Name] || ''),
+      role: String(entry.values[index.Role] || ''),
+      active: toBool_(entry.values[index.Active]),
+      created: String(entry.values[index.CreatedAt] || ''),
+      lastLogin: String(entry.values[index.LastLoginAt] || '')
+    };
+  });
+
+  Logger.log(JSON.stringify(out, null, 2));
+  return out;
+}
+
+/** Enables or disables an account without deleting it. */
+function setUserActive(email, isActive) {
+  var target = String(email || '').trim().toLowerCase();
+  var sheet = usersSheet_();
+  var index = headerIndexFor_(sheet, USER_HEADERS);
+  var rows = dataRows_(sheet);
+
+  for (var i = 0; i < rows.length; i++) {
+    if (String(rows[i].values[index.Email] || '').trim().toLowerCase() === target) {
+      sheet.getRange(rows[i].rowNumber, index.Active + 1).setValue(!!isActive);
+      Logger.log((isActive ? 'Enabled ' : 'Disabled ') + target);
+      return { email: target, active: !!isActive };
+    }
+  }
+  throw appError_('not_found', 'No account found for ' + target);
+}
+
+/** Removes expired sessions. Safe to run on a daily time-driven trigger. */
+function cleanupSessions() {
+  var sheet = sessionsSheet_();
+  var index = headerIndexFor_(sheet, SESSION_HEADERS);
+  var rows = dataRows_(sheet);
+  var now = Date.now();
+  var removed = 0;
+
+  // Walk backwards so row deletions do not shift later indices.
+  for (var i = rows.length - 1; i >= 0; i--) {
+    var expires = new Date(String(rows[i].values[index.ExpiresAt] || ''));
+    if (isNaN(expires.getTime()) || expires.getTime() <= now) {
+      sheet.deleteRow(rows[i].rowNumber);
+      removed++;
+    }
+  }
+
+  Logger.log('cleanupSessions removed ' + removed + ' expired session(s).');
+  return { removed: removed };
+}
+
+/** Signs every session out. Useful after a suspected compromise. */
+function revokeAllSessions() {
+  var sheet = sessionsSheet_();
+  var removed = Math.max(sheet.getLastRow() - 1, 0);
+  if (removed > 0) sheet.deleteRows(2, removed);
+  Logger.log('revokeAllSessions cleared ' + removed + ' session(s).');
+  return { removed: removed };
+}
+
+/* ---------------------------------------------------------------------------
+ * 6. ACTIONS
+ * ------------------------------------------------------------------------ */
+
+/** Upsert on RecordId. Appends when new, updates in place when it already exists. */
+function api_saveJob_(payload, user) {
+  return withLock_(function () {
+    var incoming = payload.job || payload.record;
+    if (!incoming || typeof incoming !== 'object') {
+      throw appError_('invalid_job', 'saveJob requires a "job" object.');
+    }
+
+    var record = normalizeRecord_(incoming);
+    var sheet = jobsSheet_();
+    var index = headerIndex_(sheet);
+    var rows = dataRows_(sheet);
+
+    var existingRowNumber = findRowNumber_(rows, index.RecordId, record.recordId);
+    var now = new Date().toISOString();
+
+    record.schemaVersion = currentSchemaVersion_();
+    record.updatedAt = now;
+    if (!record.dateCreated) record.dateCreated = today_();
+
+    var row = buildJobRow_(record, index, user.email);
+    var created = existingRowNumber === -1;
+
+    if (created) {
+      sheet.appendRow(row);
+    } else {
+      sheet.getRange(existingRowNumber, 1, 1, row.length).setValues([row]);
+    }
+
+    appendLog_(user.email, created ? 'create' : 'update', record.recordId, record.customer.jobNumber,
+      created ? 'Created record' : 'Updated record');
+
+    return { record: record, created: created, recordId: record.recordId };
+  });
+}
+
+/** Returns lightweight summaries (no RecordJson) for a library list. */
+function api_listJobs_(payload, user) {
+  var sheet = jobsSheet_();
+  var index = headerIndex_(sheet);
+  var rows = dataRows_(sheet);
+  var includeDeleted = payload.includeDeleted === true;
+  var limit = Number(payload.limit) > 0 ? Number(payload.limit) : 500;
+
+  var out = [];
+  for (var i = 0; i < rows.length && out.length < limit; i++) {
+    var row = rows[i].values;
+    var deleted = toBool_(row[index.Deleted]);
+    if (deleted && !includeDeleted) continue;
+    out.push(summaryFromRow_(row, index));
+  }
+
+  out.sort(function (a, b) { return String(b.updatedAt).localeCompare(String(a.updatedAt)); });
+  return { jobs: out, count: out.length };
+}
+
+/** Full record lookup by RecordId (preferred) or JobNumber. */
+function api_getJob_(payload, user) {
+  var sheet = jobsSheet_();
+  var index = headerIndex_(sheet);
+  var rows = dataRows_(sheet);
+  var record = findRecord_(rows, index, payload);
+
+  if (!record) throw appError_('not_found', 'That job could not be found.');
+
+  appendLog_(user.email, 'read', record.record.recordId, record.record.customer.jobNumber, 'Opened record');
+  return { job: record.record, updatedAt: record.record.updatedAt, updatedBy: String(record.row[index.UpdatedBy] || '') };
+}
+
+/** Soft delete by default; payload.hard === true removes the row. */
+function api_deleteJob_(payload, user) {
+  return withLock_(function () {
+    var sheet = jobsSheet_();
+    var index = headerIndex_(sheet);
+    var rows = dataRows_(sheet);
+    var found = findRecordRow_(rows, index, payload);
+
+    if (!found) throw appError_('not_found', 'That job could not be found.');
+
+    var recordId = String(found.values[index.RecordId] || '');
+    var jobNumber = String(found.values[index.JobNumber] || '');
+
+    if (payload.hard === true) {
+      sheet.deleteRow(found.rowNumber);
+      appendLog_(user.email, 'delete_hard', recordId, jobNumber, 'Row permanently removed');
+      return { deleted: true, hard: true, recordId: recordId };
+    }
+
+    sheet.getRange(found.rowNumber, index.Deleted + 1).setValue(true);
+    sheet.getRange(found.rowNumber, index.UpdatedAt + 1).setValue(new Date().toISOString());
+    sheet.getRange(found.rowNumber, index.UpdatedBy + 1).setValue(user.email);
+    appendLog_(user.email, 'delete', recordId, jobNumber, 'Soft deleted');
+    return { deleted: true, hard: false, recordId: recordId };
+  });
+}
+
+/** Free-text search across the index columns. */
+function api_searchJobs_(payload, user) {
+  var query = String(payload.query || '').trim().toLowerCase();
+  var listed = api_listJobs_({ includeDeleted: payload.includeDeleted, limit: payload.limit }, user);
+  if (!query) return listed;
+
+  var matches = listed.jobs.filter(function (job) {
+    var haystack = [
+      job.jobNumber,
+      job.jobName,
+      job.customerName,
+      job.email,
+      job.lossAddress,
+      job.carrier,
+      job.claimNumber
+    ].join(' ').toLowerCase();
+    return haystack.indexOf(query) !== -1;
+  });
+
+  return { jobs: matches, count: matches.length, query: query };
+}

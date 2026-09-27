@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Hays + Sons">
+  <!-- Brand mark: rounded square, brand red #DC2626, white "H+" glyph drawn as rectangles (no fonts). -->
+  <rect width="512" height="512" rx="112" fill="#DC2626"/>
+  <g fill="#FFFFFF">
+    <!-- H -->
+    <rect x="100" y="156" width="48" height="200"/>
+    <rect x="212" y="156" width="48" height="200"/>
+    <rect x="100" y="232" width="160" height="48"/>
+    <!-- + -->
+    <rect x="340" y="196" width="48" height="120"/>
+    <rect x="316" y="232" width="96" height="48"/>
+  </g>
+</svg>

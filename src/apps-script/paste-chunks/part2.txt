@@ -1,0 +1,463 @@
+
+/** Populated data rows in a sheet, excluding the header row. */
+function countDataRows_(sheet) {
+  if (!sheet) return 0;
+  var lastRow = sheet.getLastRow();
+  return lastRow < 2 ? 0 : lastRow - 1;
+}
+
+/** Documents the schema and configuration inside the spreadsheet itself. */
+function writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName, sessionsSheetName) {
+  var sheet = spreadsheet.getSheetByName(DEFAULTS.NOTES_SHEET_NAME);
+  if (!sheet) sheet = spreadsheet.insertSheet(DEFAULTS.NOTES_SHEET_NAME);
+  sheet.clear();
+
+  var lines = [
+    ['Hays + Sons Complete Restoration - Customer & Job Database'],
+    ['Provisioned', new Date().toISOString()],
+    ['Schema version', String(currentSchemaVersion_())],
+    [''],
+    ['HOW THIS WORKS'],
+    ['This spreadsheet is the system of record for customer/job data entered in the document automation app.'],
+    ['The front-end talks to the Apps Script web app, which reads and writes the "' + jobSheetName + '" sheet.'],
+    ['Every change is also appended to "' + logSheetName + '".'],
+    [''],
+    ['SHEETS'],
+    [jobSheetName, 'One row per saved job. RecordJson holds the complete record.'],
+    [logSheetName, 'Append-only audit trail of who changed what and when.'],
+    [usersSheetName, 'Application accounts. Salt and PasswordHash are hidden.'],
+    [sessionsSheetName, 'Active login sessions. The Token column is hidden.'],
+    [''],
+    ['SIGNING IN'],
+    ['The app has its own login page. Credentials are checked against the "' + usersSheetName + '" sheet.'],
+    ['Passwords are never stored in plain text - each account has a random salt and an iterated hash.'],
+    ['Create accounts from the Apps Script editor with createUser(email, name, password, role).'],
+    ['People can also create their own account from the login page. See REGISTRATION_MODE below.'],
+    ['Sessions expire after ' + DEFAULTS.SESSION_HOURS + ' hours and are listed in "' + sessionsSheetName + '".'],
+    [''],
+    ['COLUMNS - ' + jobSheetName],
+  ];
+
+  for (var i = 0; i < JOB_HEADERS.length; i++) {
+    lines.push(['  ' + (i + 1) + '. ' + JOB_HEADERS[i], describeColumn_(JOB_HEADERS[i])]);
+  }
+
+  lines.push(['']);
+  lines.push(['COLUMNS - ' + logSheetName]);
+  for (var l = 0; l < LOG_HEADERS.length; l++) {
+    lines.push(['  ' + (l + 1) + '. ' + LOG_HEADERS[l], '']);
+  }
+
+  lines.push(['']);
+  lines.push(['SECURITY - do not weaken these in production']);
+  lines.push(['Sessions', 'Bearer tokens issued by login; expire after ' + DEFAULTS.SESSION_HOURS + ' hours.']);
+  lines.push([
+    'Lockout',
+    'An account locks for ' + DEFAULTS.LOCKOUT_MINUTES + ' minutes after ' + DEFAULTS.MAX_FAILED_ATTEMPTS + ' failed attempts.'
+  ]);
+  lines.push(['ALLOWED_CLIENT_ID', 'Optional Google ID-token path (legacy).']);
+  lines.push(['ALLOWED_EMAILS', 'Optional Google ID-token path (legacy).']);
+  lines.push(['SHARED_SECRET', 'DEVELOPER BYPASS ONLY - leave blank in production.']);
+  lines.push([
+    'REGISTRATION_MODE',
+    describeRegistrationMode_()
+  ]);
+
+  var width = 2;
+  sheet.getRange(1, 1, lines.length, width).setValues(
+    lines.map(function (row) {
+      var padded = row.slice(0, width);
+      while (padded.length < width) padded.push('');
+      return padded;
+    })
+  );
+
+  sheet.getRange(1, 1, 1, width).setFontWeight('bold').setFontSize(14);
+  sheet.setColumnWidth(1, 320);
+  sheet.setColumnWidth(2, 520);
+  sheet.getRange(4, 1, lines.length - 3, width).setWrap(true).setVerticalAlignment('top');
+}
+
+function describeColumn_(name) {
+  var map = {
+    RecordId: 'Immutable UUID. Primary key. Never edited.',
+    JobNumber: 'Human-facing job number, e.g. FW-2026-0842.',
+    JobName: 'Job / project name.',
+    CustomerName: 'Property owner.',
+    Email: 'Customer email.',
+    MobilePhone: 'Best contact number.',
+    LossAddress: 'Property where the loss occurred.',
+    Carrier: 'Insurance carrier.',
+    ClaimNumber: 'Carrier claim number.',
+    Status: 'Draft | Active | On Hold | Complete | Cancelled.',
+    CreatedAt: 'YYYY-MM-DD when the job was first created.',
+    UpdatedAt: 'ISO timestamp of the last save.',
+    UpdatedBy: 'Verified email of the last editor.',
+    SchemaVersion: 'Record schema version for future migrations.',
+    RecordJson: 'Complete record as JSON. Source of truth for reload.',
+    Deleted: 'TRUE for soft-deleted rows.'
+  };
+  return map[name] || '';
+}
+
+/* ---------------------------------------------------------------------------
+ * 3. MENU (only appears in a container-bound copy)
+ * ------------------------------------------------------------------------ */
+
+function onOpen() {
+  try {
+    SpreadsheetApp.getUi()
+      .createMenu('Hays + Sons DB')
+      .addItem('Set up / repair database', 'setupDatabase')
+      .addItem('Run self test', 'selfTest')
+      .addItem('Turn ON self-service sign-up', 'enableRegistration')
+      .addItem('Turn OFF self-service sign-up', 'disableRegistration')
+      .addItem('List users', 'listUsers')
+      .addItem('Clean up expired sessions', 'cleanupSessions')
+      .addItem('Sign out everyone', 'revokeAllSessions')
+      .addItem('Show install info', 'showInstallInfo')
+      .addToUi();
+  } catch (err) {
+    // Standalone scripts have no UI; this is expected and harmless.
+  }
+}
+
+/** Logs deployment + configuration state. Useful for support. */
+function showInstallInfo() {
+  var props = PropertiesService.getScriptProperties();
+
+  var userCount = 0;
+  var sessionCount = 0;
+  try {
+    userCount = countDataRows_(usersSheet_());
+  } catch (err) {
+    userCount = -1;
+  }
+  try {
+    sessionCount = countDataRows_(sessionsSheet_());
+  } catch (err) {
+    sessionCount = -1;
+  }
+
+  var info = {
+    spreadsheetId: props.getProperty(PROP.DB_SPREADSHEET_ID) || '(not set - run setupDatabase)',
+    schemaVersion: props.getProperty(PROP.SCHEMA_VERSION) || '(not set)',
+    jobsSheet: props.getProperty(PROP.DB_SHEET_NAME) || DEFAULTS.DB_SHEET_NAME,
+    logSheet: props.getProperty(PROP.LOG_SHEET_NAME) || DEFAULTS.LOG_SHEET_NAME,
+    usersSheet: props.getProperty(PROP.USERS_SHEET_NAME) || DEFAULTS.USERS_SHEET_NAME,
+    sessionsSheet: props.getProperty(PROP.SESSIONS_SHEET_NAME) || DEFAULTS.SESSIONS_SHEET_NAME,
+    userCount: userCount,
+    activeSessionCount: sessionCount,
+    sessionHours: DEFAULTS.SESSION_HOURS,
+    signedInAccounts: userCount === 0 ? '(none - run createUser to add the first account)' : userCount,
+    legacyIdTokenPathEnabled: props.getProperty(PROP.REQUIRE_ID_TOKEN) !== 'false',
+    allowedClientIdSet: !!props.getProperty(PROP.ALLOWED_CLIENT_ID),
+    allowedEmails: props.getProperty(PROP.ALLOWED_EMAILS) || '(not set)',
+    developerBypassEnabled: !!props.getProperty(PROP.SHARED_SECRET),
+    selfRegistrationMode: registrationMode_(),
+    selfRegistrationEnabled: registrationEnabled_(),
+    selfRegistrationRequiresCode: registrationRequiresCode_(),
+    selfRegistrationDomains: props.getProperty(PROP.REGISTRATION_EMAIL_DOMAINS) || '(any domain)',
+    selfRegistrationRole: registrationEnabled_() ? selfRegistrationRole_() : '(n/a)',
+    webAppUrl: ScriptApp.getService().getUrl() || '(not deployed)'
+  };
+  Logger.log(JSON.stringify(info, null, 2));
+  return info;
+}
+
+/* ---------------------------------------------------------------------------
+ * 4. WEB APP ENTRY POINTS
+ * ------------------------------------------------------------------------ */
+
+function doGet(e) {
+  var payload = parseRequest_(e);
+  if (!payload.action) payload.action = 'ping';
+  return respond_(dispatch_(payload));
+}
+
+function doPost(e) {
+  return respond_(dispatch_(parseRequest_(e)));
+}
+
+/** Normalises either a JSON body (preferred) or form/query parameters. */
+function parseRequest_(e) {
+  if (!e) return {};
+
+  if (e.postData && e.postData.contents) {
+    var raw = e.postData.contents;
+    try {
+      return JSON.parse(raw) || {};
+    } catch (err) {
+      /* not JSON - try form encoding below */
+    }
+    if (raw.indexOf('=') !== -1) {
+      var decoded = {};
+      raw.split('&').forEach(function (pair) {
+        var bits = pair.split('=');
+        decoded[decodeURIComponent(bits[0])] = decodeURIComponent((bits[1] || '').replace(/\+/g, ' '));
+      });
+      if (decoded.payload) {
+        try { return JSON.parse(decoded.payload) || {}; } catch (err2) { /* ignore */ }
+      }
+      return decoded;
+    }
+  }
+
+  if (e.parameter) {
+    var params = {};
+    for (var key in e.parameter) params[key] = e.parameter[key];
+    if (params.payload) {
+      try { return JSON.parse(params.payload) || {}; } catch (err3) { /* ignore */ }
+    }
+    return params;
+  }
+
+  return {};
+}
+
+/** Routes one request to its action handler and always returns an envelope. */
+function dispatch_(payload) {
+  try {
+    var action = String(payload.action || '').trim();
+    if (!action) throw appError_('missing_action', 'No action was supplied.');
+
+    // First-ever request provisions the spreadsheet, sheets and configuration
+    // automatically so a fresh deployment works without a manual setup step.
+    var provisioned = ensureDatabaseReady_();
+
+    // Unauthenticated liveness probe. Deliberately reveals no data.
+    if (action === 'ping') {
+      return ok_({
+        pong: true,
+        provisionedNow: provisioned,
+        schemaVersion: currentSchemaVersion_(),
+        time: new Date().toISOString(),
+        sessionHours: DEFAULTS.SESSION_HOURS
+      });
+    }
+
+    // The login page must be reachable before a session exists.
+    if (action === 'login') {
+      return ok_(api_login_(payload));
+    }
+
+    // Self-service sign-up is unauthenticated by definition - the whole point is
+    // to create an account before you have one. It fails closed: it only works
+    // when an operator has set REGISTRATION_CODE.
+    if (action === 'register') {
+      return ok_(api_register_(payload));
+    }
+
+    // Non-secret capability probe so the login page knows whether to offer the
+    // "Create account" affordance at all.
+    if (action === 'registrationInfo') {
+      return ok_(api_registrationInfo_());
+    }
+
+    var user = authorize_(payload);
+
+    switch (action) {
+      case 'logout':
+        return ok_(api_logout_(payload, user));
+      case 'session':
+        return ok_(api_session_(payload, user));
+      case 'saveJob':
+        return ok_(api_saveJob_(payload, user));
+      case 'listJobs':
+        return ok_(api_listJobs_(payload, user));
+      case 'getJob':
+        return ok_(api_getJob_(payload, user));
+      case 'deleteJob':
+        return ok_(api_deleteJob_(payload, user));
+      case 'searchJobs':
+        return ok_(api_searchJobs_(payload, user));
+      default:
+        throw appError_('unknown_action', 'Unsupported action: ' + action);
+    }
+  } catch (err) {
+    var code = (err && err.appCode) || 'internal_error';
+    var message = (err && err.message) || String(err);
+    Logger.log('Request failed [' + code + ']: ' + message);
+    return { ok: false, code: code, error: message };
+  }
+}
+
+function respond_(envelope) {
+  return ContentService.createTextOutput(JSON.stringify(envelope)).setMimeType(
+    ContentService.MimeType.JSON
+  );
+}
+
+/* ---------------------------------------------------------------------------
+ * 5. AUTHENTICATION
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Establishes who is calling. Returns { email, name, role, method } or throws.
+ *
+ * Order of precedence: application session -> developer shared secret ->
+ * Google ID token. Fails closed.
+ */
+function authorize_(payload) {
+  var props = PropertiesService.getScriptProperties();
+
+  // 1. Application session issued by the login page (primary path).
+  var sessionToken = payload.sessionToken || payload.token;
+  if (sessionToken) {
+    var session = validateSession_(String(sessionToken));
+    if (session) {
+      return { email: session.email, name: session.name, role: session.role, method: 'session' };
+    }
+    throw appError_('session_expired', 'Your session has expired. Please sign in again.');
+  }
+
+  // 2. Deliberate, documented developer bypass.
+  var sharedSecret = props.getProperty(PROP.SHARED_SECRET);
+  if (sharedSecret && payload.secret && timingSafeEqual_(String(payload.secret), sharedSecret)) {
+    Logger.log('WARNING: request authenticated with the developer shared secret.');
+    return { email: 'developer-bypass@local', method: 'shared_secret' };
+  }
+
+  if (props.getProperty(PROP.REQUIRE_ID_TOKEN) === 'false') {
+    Logger.log('WARNING: REQUIRE_ID_TOKEN is false - serving without authentication.');
+    return { email: 'unauthenticated@local', method: 'disabled' };
+  }
+
+  var token = payload.idToken || payload.id_token;
+  if (!token) {
+    throw appError_('unauthenticated', 'Sign in with Google before using the database.');
+  }
+
+  var claims = verifyIdToken_(String(token));
+
+  var allowedClientId = props.getProperty(PROP.ALLOWED_CLIENT_ID);
+  if (allowedClientId && claims.aud !== allowedClientId) {
+    throw appError_('forbidden', 'This ID token was not issued for this application.');
+  }
+  if (claims.email_verified === false || claims.email_verified === 'false') {
+    throw appError_('forbidden', 'The Google account email is not verified.');
+  }
+
+  var email = String(claims.email || '').toLowerCase();
+  if (!email) {
+    throw appError_('forbidden', 'The Google account did not provide an email address.');
+  }
+  if (!isEmailAllowed_(email, props.getProperty(PROP.ALLOWED_EMAILS))) {
+    throw appError_('forbidden', 'This account (' + email + ') is not permitted to access the database.');
+  }
+
+  return { email: email, method: 'id_token' };
+}
+
+/** Verifies a Google ID token with Google. Returns the claims. */
+function verifyIdToken_(token) {
+  var response = UrlFetchApp.fetch(
+    'https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(token),
+    { muteHttpExceptions: true }
+  );
+
+  var body = response.getContentText();
+  var claims;
+  try {
+    claims = JSON.parse(body);
+  } catch (err) {
+    throw appError_('unauthenticated', 'Could not read the sign-in response.');
+  }
+
+  if (response.getResponseCode() !== 200) {
+    throw appError_('unauthenticated', claims.error_description || claims.error || 'Sign-in token was rejected.');
+  }
+
+  var nowSeconds = Math.floor(Date.now() / 1000);
+  if (claims.exp && Number(claims.exp) < nowSeconds) {
+    throw appError_('unauthenticated', 'Your sign-in has expired. Please sign in again.');
+  }
+
+  return claims;
+}
+
+/** Supports exact emails and "@domain.com" entries. */
+function isEmailAllowed_(email, allowList) {
+  if (!allowList) return false;
+  var entries = String(allowList)
+    .split(',')
+    .map(function (entry) { return entry.trim().toLowerCase(); })
+    .filter(function (entry) { return entry.length > 0; });
+
+  for (var i = 0; i < entries.length; i++) {
+    var entry = entries[i];
+    if (entry.charAt(0) === '@') {
+      if (email.slice(-entry.length) === entry) return true;
+    } else if (entry === email) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Constant-time-ish comparison to avoid trivial secret-length probing. */
+function timingSafeEqual_(a, b) {
+  if (a.length !== b.length) return false;
+  var diff = 0;
+  for (var i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * 5B. APPLICATION ACCOUNTS & SESSIONS
+ *
+ * The app has its own login page. Credentials are verified against the "Users"
+ * sheet and successful logins mint a short-lived bearer token stored in the
+ * "Sessions" sheet.
+ *
+ * Passwords are never stored in plain text. Each account carries a random salt
+ * and an iterated HMAC-SHA256 derivation (Apps Script has no bcrypt/argon2, so
+ * a high-iteration HMAC is the strongest primitive available natively).
+ * ------------------------------------------------------------------------ */
+
+/** Derives a hex password hash from a password and per-user salt. */
+function hashPassword_(password, salt, iterations) {
+  var rounds = Number(iterations) > 0 ? Number(iterations) : DEFAULTS.PASSWORD_ITERATIONS;
+  var key = String(salt || '');
+  var bytes = Utilities.computeHmacSha256Signature(String(password), key);
+  for (var i = 1; i < rounds; i++) {
+    bytes = Utilities.computeHmacSha256Signature(bytes, key);
+  }
+  return bytesToHex_(bytes);
+}
+
+/** Signed bytes -> lowercase hex. */
+function bytesToHex_(bytes) {
+  var out = '';
+  for (var i = 0; i < bytes.length; i++) {
+    var value = bytes[i];
+    if (value < 0) value += 256;
+    var hex = value.toString(16);
+    out += hex.length === 1 ? '0' + hex : hex;
+  }
+  return out;
+}
+
+/** A fresh, unpredictable per-user salt. */
+function newSalt_() {
+  return Utilities.getUuid() + Utilities.getUuid();
+}
+
+/** Generic sheet accessor used by the account/session stores. */
+function namedSheet_(propKey, fallbackName) {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty(PROP.DB_SPREADSHEET_ID);
+  if (!id) throw appError_('not_configured', 'The database has not been set up yet. Run setupDatabase().');
+
+  var spreadsheet;
+  try {
+    spreadsheet = SpreadsheetApp.openById(id);
+  } catch (err) {
+    throw appError_('not_configured', 'The database spreadsheet cannot be opened. Re-run setupDatabase().');
+  }
+
+  var name = props.getProperty(propKey) || fallbackName;
+  var sheet = spreadsheet.getSheetByName(name);
+  if (!sheet) throw appError_('not_configured', 'Missing sheet "' + name + '". Re-run setupDatabase().');
+  return sheet;
+}

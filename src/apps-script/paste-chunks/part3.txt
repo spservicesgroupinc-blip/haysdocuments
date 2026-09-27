@@ -1,0 +1,467 @@
+
+function usersSheet_() {
+  return namedSheet_(PROP.USERS_SHEET_NAME, DEFAULTS.USERS_SHEET_NAME);
+}
+
+function sessionsSheet_() {
+  return namedSheet_(PROP.SESSIONS_SHEET_NAME, DEFAULTS.SESSIONS_SHEET_NAME);
+}
+
+/** Issues a bearer token and records the session. */
+function createSession_(user) {
+  var sheet = sessionsSheet_();
+  var index = headerIndexFor_(sheet, SESSION_HEADERS);
+
+  var token =
+    Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+  var now = new Date();
+  var expires = new Date(now.getTime() + DEFAULTS.SESSION_HOURS * 60 * 60 * 1000);
+
+  var row = [];
+  for (var i = 0; i < SESSION_HEADERS.length; i++) row.push('');
+  row[index.Token] = token;
+  row[index.Email] = user.email;
+  row[index.Name] = user.name;
+  row[index.Role] = user.role;
+  row[index.CreatedAt] = now.toISOString();
+  row[index.ExpiresAt] = expires.toISOString();
+  row[index.LastSeenAt] = now.toISOString();
+
+  sheet.appendRow(row);
+  return { token: token, expiresAt: expires.toISOString() };
+}
+
+/** Validates a token, expiring it on use if stale. Returns null when invalid. */
+function validateSession_(token) {
+  if (!token) return null;
+
+  var sheet = sessionsSheet_();
+  var index = headerIndexFor_(sheet, SESSION_HEADERS);
+  var rows = dataRows_(sheet);
+  var now = new Date();
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i].values;
+    if (String(row[index.Token] || '') !== String(token)) continue;
+
+    var expires = new Date(String(row[index.ExpiresAt] || ''));
+    if (isNaN(expires.getTime()) || expires.getTime() <= now.getTime()) {
+      try {
+        sheet.deleteRow(rows[i].rowNumber);
+      } catch (err) {
+        /* non-fatal */
+      }
+      return null;
+    }
+
+    try {
+      sheet.getRange(rows[i].rowNumber, index.LastSeenAt + 1).setValue(now.toISOString());
+    } catch (err) {
+      /* non-fatal */
+    }
+
+    return {
+      email: String(row[index.Email] || ''),
+      name: String(row[index.Name] || ''),
+      role: oneOf_(row[index.Role], ROLE_VALUES, 'editor')
+    };
+  }
+
+  return null;
+}
+
+/** Revokes a single session. */
+function deleteSession_(token) {
+  if (!token) return;
+  var sheet = sessionsSheet_();
+  var index = headerIndexFor_(sheet, SESSION_HEADERS);
+  var rows = dataRows_(sheet);
+  for (var i = 0; i < rows.length; i++) {
+    if (String(rows[i].values[index.Token] || '') === String(token)) {
+      sheet.deleteRow(rows[i].rowNumber);
+      return;
+    }
+  }
+}
+
+/** Records a failed attempt, locking the account after the configured limit. */
+function registerFailedAttempt_(sheet, index, rowNumber, row) {
+  try {
+    var attempts = Number(row[index.FailedAttempts] || 0) + 1;
+    sheet.getRange(rowNumber, index.FailedAttempts + 1).setValue(attempts);
+    if (attempts >= DEFAULTS.MAX_FAILED_ATTEMPTS) {
+      var until = new Date(Date.now() + DEFAULTS.LOCKOUT_MINUTES * 60 * 1000);
+      sheet.getRange(rowNumber, index.LockedUntil + 1).setValue(until.toISOString());
+    }
+  } catch (err) {
+    Logger.log('Could not record failed attempt: ' + err);
+  }
+}
+
+function clearFailedAttempts_(sheet, index, rowNumber) {
+  try {
+    sheet.getRange(rowNumber, index.FailedAttempts + 1).setValue(0);
+    sheet.getRange(rowNumber, index.LockedUntil + 1).setValue('');
+  } catch (err) {
+    /* non-fatal */
+  }
+}
+
+/**
+ * Verifies credentials and issues a session.
+ * Failures are deliberately uniform so the endpoint cannot be used to discover
+ * which email addresses have accounts.
+ */
+function api_login_(payload) {
+  return withLock_(function () {
+    var email = String(payload.email || '').trim().toLowerCase();
+    var password = String(payload.password || '');
+    if (!email || !password) {
+      throw appError_('invalid_credentials', 'Enter your email address and password.');
+    }
+
+    var sheet = usersSheet_();
+    var index = headerIndexFor_(sheet, USER_HEADERS);
+    var rows = dataRows_(sheet);
+
+    var found = null;
+    for (var i = 0; i < rows.length; i++) {
+      var rowEmail = String(rows[i].values[index.Email] || '').trim().toLowerCase();
+      if (rowEmail === email) {
+        found = rows[i];
+        break;
+      }
+    }
+
+    var genericFailure = appError_('invalid_credentials', 'Incorrect email address or password.');
+    if (!found) throw genericFailure;
+
+    var row = found.values;
+
+    if (!toBool_(row[index.Active])) {
+      throw appError_('account_disabled', 'This account is disabled. Contact an administrator.');
+    }
+
+    var lockedUntilRaw = String(row[index.LockedUntil] || '');
+    if (lockedUntilRaw) {
+      var lockedUntil = new Date(lockedUntilRaw);
+      if (!isNaN(lockedUntil.getTime()) && lockedUntil.getTime() > Date.now()) {
+        throw appError_('account_locked', 'Too many failed attempts. Please try again later.');
+      }
+    }
+
+    var salt = String(row[index.Salt] || '');
+    var expected = String(row[index.PasswordHash] || '');
+    var actual = hashPassword_(password, salt);
+
+    if (!expected || !timingSafeEqual_(actual, expected)) {
+      registerFailedAttempt_(sheet, index, found.rowNumber, row);
+      appendLog_(email, 'login_failed', '', '', 'Incorrect password');
+      throw genericFailure;
+    }
+
+    clearFailedAttempts_(sheet, index, found.rowNumber);
+
+    var name = String(row[index.Name] || email);
+    var role = oneOf_(row[index.Role], ROLE_VALUES, 'editor');
+    var session = createSession_({ email: email, name: name, role: role });
+
+    sheet.getRange(found.rowNumber, index.LastLoginAt + 1).setValue(new Date().toISOString());
+    appendLog_(email, 'login', '', '', 'Signed in');
+
+    return {
+      token: session.token,
+      expiresAt: session.expiresAt,
+      user: { email: email, name: name, role: role }
+    };
+  });
+}
+
+function api_logout_(payload, user) {
+  deleteSession_(payload.sessionToken || payload.token);
+  appendLog_(user.email, 'logout', '', '', 'Signed out');
+  return { signedOut: true };
+}
+
+function api_session_(payload, user) {
+  return { user: { email: user.email, name: user.name, role: user.role }, method: user.method };
+}
+
+/* --- Self-service registration -------------------------------------------
+ *
+ * This action is reachable WITHOUT credentials, because the whole point is to
+ * let someone create an account before they have one. Anyone who has the web
+ * app URL can therefore reach it, so the policy is explicit and configurable:
+ *
+ *   'open'   (DEFAULT) - anyone with the URL can create an account
+ *   'invite'           - an invite code (min 12 characters) is required, and is
+ *                        compared in constant time BEFORE any sheet lookup so
+ *                        the Users sheet cannot be enumerated without it
+ *   'off'              - sign-up is refused outright
+ *
+ * An optional email-domain allow-list narrows any of the three modes, and
+ * self-service can NEVER mint an administrator - the role is clamped to a
+ * non-admin value. Every attempt, successful or not, is written to the audit
+ * log.
+ *
+ *   enableRegistration()               -> open
+ *   disableRegistration()              -> off
+ *   useInviteCode()                    -> invite, with a freshly generated code
+ *   setRegistrationCode('a-long-code') -> invite, with a code you choose
+ * ------------------------------------------------------------------------ */
+
+/** The configured invite code, or '' when none is set. */
+function registrationCode_() {
+  var stored = PropertiesService.getScriptProperties().getProperty(PROP.REGISTRATION_CODE);
+  return String(stored || '').trim();
+}
+
+/**
+ * Resolves the effective registration mode: 'open', 'invite' or 'off'.
+ *
+ * REGISTRATION_MODE wins when it holds a recognised value. Otherwise an operator
+ * who has configured an invite code clearly wants the stricter path, and
+ * everyone else gets the documented default.
+ */
+function registrationMode_() {
+  var props = PropertiesService.getScriptProperties();
+  var explicit = String(props.getProperty(PROP.REGISTRATION_MODE) || '').trim().toLowerCase();
+  if (explicit === 'open' || explicit === 'invite' || explicit === 'off') return explicit;
+  return registrationCode_() ? 'invite' : DEFAULTS.REGISTRATION_MODE;
+}
+
+/** True when sign-up is available in any form. */
+function registrationEnabled_() {
+  return registrationMode_() !== 'off';
+}
+
+/** True when an invite code must be supplied. */
+function registrationRequiresCode_() {
+  return registrationMode_() === 'invite';
+}
+
+/** 'a.com, b.com' -> ['a.com', 'b.com'] (lower-cased, de-duplicated, '@' stripped). */
+function parseDomainList_(raw) {
+  var seen = {};
+  var out = [];
+  var parts = String(raw || '').split(/[,\s;]+/);
+  for (var i = 0; i < parts.length; i++) {
+    var domain = parts[i].trim().toLowerCase().replace(/^@/, '');
+    if (!domain || seen[domain]) continue;
+    seen[domain] = true;
+    out.push(domain);
+  }
+  return out;
+}
+
+/** Exact match on the part of the address after the final '@'. */
+function emailDomainAllowed_(email, domains) {
+  var at = String(email).lastIndexOf('@');
+  if (at === -1) return false;
+  var domain = String(email).slice(at + 1).toLowerCase();
+  for (var i = 0; i < domains.length; i++) {
+    if (domains[i] === domain) return true;
+  }
+  return false;
+}
+
+/**
+ * Single place to tighten the password rule for BOTH createUser and register,
+ * so the two paths can never drift apart.
+ */
+function assertStrongPassword_(password) {
+  var value = String(password || '');
+  if (value.length < DEFAULTS.MIN_PASSWORD_LENGTH) {
+    throw appError_(
+      'weak_password',
+      'Choose a password of at least ' + DEFAULTS.MIN_PASSWORD_LENGTH + ' characters.'
+    );
+  }
+  return value;
+}
+
+/** The role a self-registered account receives. Administrators are never minted here. */
+function selfRegistrationRole_() {
+  var props = PropertiesService.getScriptProperties();
+  var role = oneOf_(
+    props.getProperty(PROP.REGISTRATION_DEFAULT_ROLE),
+    ROLE_VALUES,
+    DEFAULTS.REGISTRATION_DEFAULT_ROLE
+  );
+  if (role === 'admin') role = 'editor';
+  return role;
+}
+
+/** Describes registration capability WITHOUT leaking the invite code. */
+function api_registrationInfo_() {
+  var props = PropertiesService.getScriptProperties();
+  var mode = registrationMode_();
+  var enabled = mode !== 'off';
+  return {
+    enabled: enabled,
+    mode: mode,
+    requiresInviteCode: mode === 'invite',
+    allowedDomains: parseDomainList_(props.getProperty(PROP.REGISTRATION_EMAIL_DOMAINS)),
+    defaultRole: enabled ? selfRegistrationRole_() : '',
+    minPasswordLength: DEFAULTS.MIN_PASSWORD_LENGTH,
+    sessionHours: DEFAULTS.SESSION_HOURS
+  };
+}
+
+/**
+ * Creates an account from the login page and signs the new user straight in.
+ * See the security notes above this section before changing anything here.
+ */
+function api_register_(payload) {
+  return withLock_(function () {
+    var props = PropertiesService.getScriptProperties();
+    var mode = registrationMode_();
+
+    if (mode === 'off') {
+      throw appError_(
+        'registration_disabled',
+        'Account creation is turned off. Ask an administrator to set up your account.'
+      );
+    }
+
+    var email = String(payload.email || '').trim().toLowerCase();
+    var name = String(payload.name || '').trim();
+    var password = String(payload.password || '');
+    var supplied = String(payload.inviteCode || payload.code || '').trim();
+
+    if (!email || email.indexOf('@') === -1) {
+      throw appError_('invalid_email', 'Enter a valid email address.');
+    }
+
+    if (mode === 'invite') {
+      var inviteCode = registrationCode_();
+      if (!inviteCode) {
+        throw appError_(
+          'registration_disabled',
+          'Account creation is turned off. Ask an administrator to set up your account.'
+        );
+      }
+      if (!supplied) {
+        throw appError_('invalid_invite_code', 'Enter the invite code you were given.');
+      }
+      // Checked BEFORE any sheet access, so a wrong code cannot probe the Users sheet.
+      if (!timingSafeEqual_(supplied, inviteCode)) {
+        appendLog_(email, 'register_failed', '', '', 'Incorrect invite code');
+        throw appError_('invalid_invite_code', 'That invite code is not correct.');
+      }
+    }
+
+    var domains = parseDomainList_(props.getProperty(PROP.REGISTRATION_EMAIL_DOMAINS));
+    if (domains.length && !emailDomainAllowed_(email, domains)) {
+      appendLog_(email, 'register_failed', '', '', 'Email domain not permitted');
+      throw appError_('forbidden', 'Accounts can only be created with an approved email domain.');
+    }
+
+    assertStrongPassword_(password);
+
+    var sheet = usersSheet_();
+    var index = headerIndexFor_(sheet, USER_HEADERS);
+    var rows = dataRows_(sheet);
+
+    for (var i = 0; i < rows.length; i++) {
+      if (String(rows[i].values[index.Email] || '').trim().toLowerCase() === email) {
+        appendLog_(email, 'register_failed', '', '', 'Email already registered');
+        throw appError_(
+          'email_in_use',
+          'An account already exists for that email address. Sign in instead.'
+        );
+      }
+    }
+
+    var role = selfRegistrationRole_();
+    var salt = newSalt_();
+    var hash = hashPassword_(password, salt);
+    var displayName = name || email;
+    var now = new Date().toISOString();
+
+    var row = [];
+    for (var c = 0; c < USER_HEADERS.length; c++) row.push('');
+    row[index.Email] = email;
+    row[index.Name] = displayName;
+    row[index.Role] = role;
+    row[index.Salt] = salt;
+    row[index.PasswordHash] = hash;
+    row[index.Active] = true;
+    row[index.FailedAttempts] = 0;
+    row[index.LockedUntil] = '';
+    row[index.CreatedAt] = now;
+    row[index.LastLoginAt] = now;
+    sheet.appendRow(row);
+
+    // Sign the new user straight in so they land on the app, not back on the form.
+    var session = createSession_({ email: email, name: displayName, role: role });
+    appendLog_(email, 'register', '', '', 'Self-registered as ' + role);
+
+    return {
+      token: session.token,
+      expiresAt: session.expiresAt,
+      user: { email: email, name: displayName, role: role },
+      created: true,
+      role: role
+    };
+  });
+}
+
+/* --- Editor-only account management ------------------------------------- */
+
+/**
+ * Creates or updates an application account. Run from the Apps Script editor.
+ *
+ *   createUser('russell@haysandsons.com', 'Russell Shive', 'a-strong-password', 'admin')
+ *
+ * Roles: admin | editor | viewer. Resetting an existing account's password is
+ * the same call - it updates in place.
+ */
+function createUser(email, name, password, role) {
+  var cleanEmail = String(email || '').trim().toLowerCase();
+  if (!cleanEmail || cleanEmail.indexOf('@') === -1) {
+    throw appError_('invalid_email', 'A valid email address is required.');
+  }
+  assertStrongPassword_(password);
+
+  var sheet = usersSheet_();
+  var index = headerIndexFor_(sheet, USER_HEADERS);
+  var rows = dataRows_(sheet);
+
+  var salt = newSalt_();
+  var hash = hashPassword_(String(password), salt);
+  var resolvedRole = oneOf_(role, ROLE_VALUES, 'editor');
+  var displayName = String(name || cleanEmail);
+
+  for (var i = 0; i < rows.length; i++) {
+    if (String(rows[i].values[index.Email] || '').trim().toLowerCase() === cleanEmail) {
+      var target = rows[i].rowNumber;
+      sheet.getRange(target, index.Name + 1).setValue(displayName);
+      sheet.getRange(target, index.Role + 1).setValue(resolvedRole);
+      sheet.getRange(target, index.Salt + 1).setValue(salt);
+      sheet.getRange(target, index.PasswordHash + 1).setValue(hash);
+      sheet.getRange(target, index.Active + 1).setValue(true);
+      sheet.getRange(target, index.FailedAttempts + 1).setValue(0);
+      sheet.getRange(target, index.LockedUntil + 1).setValue('');
+      Logger.log('Updated existing account: ' + cleanEmail + ' (' + resolvedRole + ')');
+      return { email: cleanEmail, role: resolvedRole, created: false };
+    }
+  }
+
+  var row = [];
+  for (var c = 0; c < USER_HEADERS.length; c++) row.push('');
+  row[index.Email] = cleanEmail;
+  row[index.Name] = displayName;
+  row[index.Role] = resolvedRole;
+  row[index.Salt] = salt;
+  row[index.PasswordHash] = hash;
+  row[index.Active] = true;
+  row[index.FailedAttempts] = 0;
+  row[index.LockedUntil] = '';
+  row[index.CreatedAt] = new Date().toISOString();
+  row[index.LastLoginAt] = '';
+  sheet.appendRow(row);
+
+  Logger.log('Created account: ' + cleanEmail + ' (' + resolvedRole + ')');
+  return { email: cleanEmail, role: resolvedRole, created: true };
+}

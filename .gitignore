@@ -1,0 +1,17 @@
+node_modules/
+build/*
+!build/icon.ico
+!build/icon.png
+dist/
+dist-electron/
+dist_desktop/
+out/
+release/*
+!release/vercel.json
+electron-dist/
+.vercel/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example

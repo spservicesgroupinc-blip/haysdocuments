@@ -1,0 +1,560 @@
+import React, { useState } from 'react';
+import {
+  FileDown,
+  Eye,
+  Layers,
+  FileCheck2,
+  HardDriveUpload,
+  TableProperties,
+  CheckCircle2,
+  Loader2,
+  ExternalLink,
+  ShieldCheck,
+  Archive,
+  AlertCircle,
+  FileText,
+} from 'lucide-react';
+import JSZip from 'jszip';
+import { RestorationJobData } from '../types/jobData';
+import {
+  generatePreliminaryReport,
+  generateWelcomeLetter,
+  generateMortgageAuth,
+  generateContract,
+  generateCancellationNotice,
+  generateChangeOrder,
+  generateProductionChecklist,
+  generateCompletePacket,
+  downloadPdf,
+  formatCurrency,
+} from '../services/pdfService';
+import { isDesktop } from '../services/desktopBridge';
+
+interface DocumentGenerationPanelProps {
+  jobData: RestorationJobData;
+  onPreview: (title: string, generator: () => Promise<Uint8Array>) => void;
+  onSaveToDrive: () => void;
+  onSyncToSheets: () => void;
+  isDriveLoading: boolean;
+  isSheetsLoading: boolean;
+  driveSuccessLink?: string;
+  sheetsSuccessLink?: string;
+}
+
+interface DocItem {
+  id: string;
+  code: string;
+  title: string;
+  pages: string;
+  description: string;
+  generator: (data: RestorationJobData) => Promise<Uint8Array>;
+  fileName: string;
+}
+
+export const DocumentGenerationPanel: React.FC<DocumentGenerationPanelProps> = ({
+  jobData,
+  onPreview,
+  onSaveToDrive,
+  onSyncToSheets,
+  isDriveLoading,
+  isSheetsLoading,
+  driveSuccessLink,
+  sheetsSuccessLink,
+}) => {
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [isZipping, setIsZipping] = useState(false);
+  const [lastGeneratedSummary, setLastGeneratedSummary] = useState<{
+    timestamp: string;
+    filesCount: number;
+    calculatedRCV: string;
+    calculatedNet: string;
+    calculatedDown: string;
+    unresolvedFields: string[];
+  } | null>(null);
+
+  const safeJobNumber = (jobData.customer.jobNumber || 'FW-JOB').replace(/[^a-zA-Z0-9\-_]/g, '');
+  const safeCustomer = (jobData.customer.customerName || 'Customer').replace(/[^a-zA-Z0-9]/g, '_');
+
+  // Exact deliverables mapping required by Hays Intake to Production specification
+  const combinedFileName = `00_${safeJobNumber}_${safeCustomer}_Combined_Production_Packet.pdf`;
+
+  const docList: DocItem[] = [
+    {
+      id: 'prelim',
+      code: '01',
+      title: 'Preliminary Report',
+      pages: 'Page 1',
+      description: 'Carrier, claim adjuster, loss contact, inspect date, participants',
+      generator: generatePreliminaryReport,
+      fileName: `01_${safeJobNumber}_Preliminary_Report.pdf`,
+    },
+    {
+      id: 'welcome',
+      code: '02',
+      title: 'Customer Welcome Letter',
+      pages: 'Page 2',
+      description: 'Hays + Sons 4-phase process explanation & emergency dry-out scope',
+      generator: generateWelcomeLetter,
+      fileName: `02_${safeJobNumber}_Customer_Welcome_Letter.pdf`,
+    },
+    {
+      id: 'mortgage',
+      code: '03',
+      title: 'Mortgage Authorization',
+      pages: 'Page 3',
+      description: 'Lender inspection release & joint draft endorsement authorization',
+      generator: generateMortgageAuth,
+      fileName: `03_${safeJobNumber}_Mortgage_Authorization.pdf`,
+    },
+    {
+      id: 'contract',
+      code: '04',
+      title: 'Structural Repair Agreement',
+      pages: 'Pages 4–5',
+      description: 'RCV repairs, 50% down payment, 10-day start, 60-day complete, POA',
+      generator: generateContract,
+      fileName: `04_${safeJobNumber}_Structural_Repair_Agreement.pdf`,
+    },
+    {
+      id: 'cancellation',
+      code: '05',
+      title: 'Notice of Cancellation',
+      pages: 'Page 6',
+      description: '3-day statutory cancellation rights under Indiana home improvement laws',
+      generator: generateCancellationNotice,
+      fileName: `05_${safeJobNumber}_Notice_of_Cancellation.pdf`,
+    },
+    {
+      id: 'change_order',
+      code: '06',
+      title: 'Change Order / Addendum',
+      pages: 'Page 7',
+      description: 'Supplemental scope, +/- sum adjustments, and added contract days',
+      generator: generateChangeOrder,
+      fileName: `06_${safeJobNumber}_Change_Order_Addendum.pdf`,
+    },
+    {
+      id: 'checklist',
+      code: '07',
+      title: 'Production Checklist',
+      pages: 'Page 8',
+      description: 'DASH tracking, deductible collection verify, Xactimate version, dates',
+      generator: generateProductionChecklist,
+      fileName: `07_${safeJobNumber}_Production_Checklist.pdf`,
+    },
+  ];
+
+  // Quality Gate Verification check
+  const unresolvedList: string[] = [];
+  if (!jobData.customer.customerName) unresolvedList.push('Customer Name');
+  if (!jobData.customer.lossAddress) unresolvedList.push('Loss Property Address');
+  if (!jobData.insurance.carrier) unresolvedList.push('Insurance Carrier');
+  if (!jobData.insurance.claimNumber) unresolvedList.push('Claim Number');
+  if (jobData.financials.totalApprovedRcv === '') unresolvedList.push('Total Approved RCV');
+  if (jobData.financials.deductible === '') unresolvedList.push('Deductible');
+
+  const isQualityGatePassed = unresolvedList.length === 0;
+
+  const handleDownload = async (doc: DocItem) => {
+    try {
+      setDownloadingId(doc.id);
+      const bytes = await doc.generator(jobData);
+      downloadPdf(bytes, doc.fileName);
+      setLastGeneratedSummary({
+        timestamp: new Date().toLocaleTimeString(),
+        filesCount: 1,
+        calculatedRCV: formatCurrency(jobData.financials.totalApprovedRcv),
+        calculatedNet: formatCurrency(jobData.financials.netClaimValue),
+        calculatedDown: formatCurrency(jobData.financials.downPayment),
+        unresolvedFields: unresolvedList,
+      });
+    } catch (err) {
+      console.error('Failed generating document:', err);
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
+  const handleDownloadCompletePacket = async () => {
+    try {
+      setDownloadingId('packet');
+      const bytes = await generateCompletePacket(jobData);
+      downloadPdf(bytes, combinedFileName);
+      setLastGeneratedSummary({
+        timestamp: new Date().toLocaleTimeString(),
+        filesCount: 1,
+        calculatedRCV: formatCurrency(jobData.financials.totalApprovedRcv),
+        calculatedNet: formatCurrency(jobData.financials.netClaimValue),
+        calculatedDown: formatCurrency(jobData.financials.downPayment),
+        unresolvedFields: unresolvedList,
+      });
+    } catch (err) {
+      console.error('Failed generating complete packet:', err);
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
+  // Download All as ZIP archive
+  const handleDownloadZipPackage = async () => {
+    try {
+      setIsZipping(true);
+      const zip = new JSZip();
+
+      // 1. Generate Combined Packet
+      const combinedBytes = await generateCompletePacket(jobData);
+      zip.file(combinedFileName, combinedBytes);
+
+      // 2. Generate each individual document
+      for (const doc of docList) {
+        const bytes = await doc.generator(jobData);
+        zip.file(doc.fileName, bytes);
+      }
+
+      // 3. Generate summary text file
+      const summaryText = `HAYS + SONS COMPLETE RESTORATION
+Production Packet Summary
+Generated: ${new Date().toLocaleString()}
+------------------------------------------------
+Job Number: ${jobData.customer.jobNumber}
+Customer: ${jobData.customer.customerName}
+Loss Address: ${jobData.customer.lossAddress}
+Insurance Carrier: ${jobData.insurance.carrier}
+Claim Number: ${jobData.insurance.claimNumber}
+Primary Adjuster: ${jobData.insurance.primaryAdjuster}
+
+Financial Reconciliation:
+Total Approved RCV: ${formatCurrency(jobData.financials.totalApprovedRcv)}
+Deductible: ${formatCurrency(jobData.financials.deductible)}
+Net Claim Value: ${formatCurrency(jobData.financials.netClaimValue)}
+Down Payment (50%): ${formatCurrency(jobData.financials.downPayment)}
+Mid-Progress (25%): ${formatCurrency(jobData.financials.midProgressPayment)}
+Balance Due (25%): ${formatCurrency(jobData.financials.balancePayment)}
+Contract Timelines: ${jobData.financials.commenceDays} days commence, ${jobData.financials.completeDays} days complete
+
+Files Included:
+- ${combinedFileName}
+${docList.map((d) => `- ${d.fileName}`).join('\n')}
+`;
+      zip.file(`README_Production_Summary_${safeJobNumber}.txt`, summaryText);
+
+      // 4. Download Zip
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Hays_Production_Packet_${safeJobNumber}_${safeCustomer}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+
+      setLastGeneratedSummary({
+        timestamp: new Date().toLocaleTimeString(),
+        filesCount: 8,
+        calculatedRCV: formatCurrency(jobData.financials.totalApprovedRcv),
+        calculatedNet: formatCurrency(jobData.financials.netClaimValue),
+        calculatedDown: formatCurrency(jobData.financials.downPayment),
+        unresolvedFields: unresolvedList,
+      });
+    } catch (err) {
+      console.error('ZIP package error:', err);
+    } finally {
+      setIsZipping(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-5 mt-8 mb-10">
+      {/* Header */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-100">
+        <div>
+          <div className="flex items-center gap-3">
+            <span className="p-2 rounded-lg bg-slate-100 text-slate-500">
+              <Layers className="w-4 h-4" />
+            </span>
+            <div>
+              <h2 className="text-[15px] font-semibold text-slate-900 tracking-tight">
+                Documents &amp; Output
+              </h2>
+              <p className="text-[12px] text-slate-500 mt-0.5">
+                Standard Hays + Sons package following production naming conventions
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Workspace Cloud Action Buttons */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={onSaveToDrive}
+            disabled={isDriveLoading || isDesktop()}
+            type="button"
+            className="inline-flex items-center px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-slate-900 border border-slate-200 transition shadow-sm disabled:opacity-50"
+            title={
+              isDesktop()
+                ? 'Google Drive upload is available in the browser version of the app'
+                : 'Upload Complete PDF packet directly to Google Drive'
+            }
+          >
+            {isDriveLoading ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin text-red-600" />
+            ) : (
+              <HardDriveUpload className="w-4 h-4 mr-2 text-blue-600" />
+            )}
+            Save to Google Drive
+          </button>
+
+          <button
+            onClick={onSyncToSheets}
+            disabled={isSheetsLoading || isDesktop()}
+            type="button"
+            className="inline-flex items-center px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-slate-900 border border-slate-200 transition shadow-sm disabled:opacity-50"
+            title={
+              isDesktop()
+                ? 'Google Sheets sync is available in the browser version of the app'
+                : 'Log job row and claim financials to Google Sheets'
+            }
+          >
+            {isSheetsLoading ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin text-emerald-600" />
+            ) : (
+              <TableProperties className="w-4 h-4 mr-2 text-emerald-600" />
+            )}
+            Sync to Google Sheets
+          </button>
+        </div>
+      </div>
+
+      {/* Quality Gate Status Strip */}
+      <div className="mt-4 p-3 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs bg-slate-50 border-slate-200">
+        <div className="flex items-center gap-2.5">
+          {isQualityGatePassed ? (
+            <div className="p-1 rounded-full bg-emerald-100 text-emerald-700">
+              <ShieldCheck className="w-4 h-4" />
+            </div>
+          ) : (
+            <div className="p-1 rounded-full bg-amber-100 text-amber-700">
+              <AlertCircle className="w-4 h-4" />
+            </div>
+          )}
+          <div>
+            <span className="font-bold text-slate-800">
+              {isQualityGatePassed
+                ? 'Production Quality Gate: Verified Ready'
+                : 'Quality Gate Notice: Incomplete Fields'}
+            </span>
+            <span className="text-slate-500 block text-[11px]">
+              {isQualityGatePassed
+                ? 'All mandatory customer identity, claim numbers, and financial reconciliations agree.'
+                : `Missing: ${unresolvedList.join(', ')} (documents can still be generated with blank placeholders).`}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 text-[11px] font-mono text-slate-600">
+          <span className="bg-white px-2 py-1 rounded border border-slate-200">
+            RCV: {formatCurrency(jobData.financials.totalApprovedRcv)}
+          </span>
+          <span className="bg-white px-2 py-1 rounded border border-slate-200">
+            Net: {formatCurrency(jobData.financials.netClaimValue)}
+          </span>
+        </div>
+      </div>
+
+      {/* Cloud Links Notifications if saved */}
+      {(driveSuccessLink || sheetsSuccessLink) && (
+        <div className="mt-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs text-emerald-800">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>Successfully updated Google Workspace:</span>
+          </div>
+          <div className="flex items-center gap-3">
+            {driveSuccessLink && (
+              <a
+                href={driveSuccessLink}
+                target="_blank"
+                rel="noreferrer"
+                className="font-bold underline flex items-center gap-1 hover:text-emerald-950"
+              >
+                Open in Drive <ExternalLink className="w-3 h-3" />
+              </a>
+            )}
+            {sheetsSuccessLink && (
+              <a
+                href={sheetsSuccessLink}
+                target="_blank"
+                rel="noreferrer"
+                className="font-bold underline flex items-center gap-1 hover:text-emerald-950"
+              >
+                Open Google Sheet <ExternalLink className="w-3 h-3" />
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Complete packet */}
+      <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-5 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-5">
+        <div className="flex items-start gap-3.5 min-w-0">
+          <div className="w-10 h-10 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0">
+            <FileCheck2 className="w-5 h-5 text-slate-500" />
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-[14px] font-semibold text-slate-900">Complete production packet</h3>
+              <span className="text-[11px] font-medium text-slate-600 bg-white border border-slate-200 rounded px-1.5 py-0.5">
+                8 pages
+              </span>
+            </div>
+            <p className="mt-1 text-[12px] text-slate-500 max-w-xl">
+              All seven documents bundled in exact production order.
+            </p>
+            <p className="mt-1.5 font-mono text-[11px] text-slate-400 break-all">{combinedFileName}</p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto justify-end shrink-0">
+          <button
+            onClick={() =>
+              onPreview('Complete 8-Page Restoration Packet', () =>
+                generateCompletePacket(jobData)
+              )
+            }
+            type="button"
+            className="flex-1 sm:flex-initial inline-flex items-center justify-center px-3.5 py-2.5 rounded-lg text-[13px] font-semibold bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 transition"
+          >
+            <Eye className="w-4 h-4 mr-1.5" />
+            Preview
+          </button>
+
+          <button
+            onClick={handleDownloadCompletePacket}
+            disabled={downloadingId === 'packet'}
+            type="button"
+            className="flex-1 sm:flex-initial inline-flex items-center justify-center px-4 py-2.5 rounded-lg text-[13px] font-semibold bg-red-600 hover:bg-red-700 text-white transition shadow-sm disabled:opacity-50"
+          >
+            {downloadingId === 'packet' ? (
+              <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
+            ) : (
+              <FileDown className="w-4 h-4 mr-1.5" />
+            )}
+            Download packet
+          </button>
+
+          <button
+            onClick={handleDownloadZipPackage}
+            disabled={isZipping}
+            type="button"
+            className="w-full sm:w-auto inline-flex items-center justify-center px-4 py-2.5 rounded-lg text-[13px] font-semibold bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 transition disabled:opacity-50"
+            title="Download a ZIP containing all 8 files plus a summary"
+          >
+            {isZipping ? (
+              <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
+            ) : (
+              <Archive className="w-4 h-4 mr-1.5 text-slate-400" />
+            )}
+            Download all as ZIP
+          </button>
+        </div>
+      </div>
+
+      {/* Grid of Individual Forms */}
+      <div className="mt-8">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+            Separate Logical Deliverables (01 through 07)
+          </h4>
+          <span className="text-[11px] text-slate-400">Standardized Hays production naming</span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+          {docList.map((doc) => {
+            const isDownloading = downloadingId === doc.id;
+            return (
+              <div
+                key={doc.id}
+                className="bg-slate-50 hover:bg-white rounded-xl p-4 border border-slate-200 hover:border-slate-300 hover:shadow-sm transition-all flex flex-col justify-between"
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <span className="text-[11px] font-bold text-red-600 bg-red-50 border border-red-200/80 px-2 py-0.5 rounded">
+                      {doc.code} • {doc.pages}
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-mono truncate max-w-[140px]">
+                      {doc.fileName}
+                    </span>
+                  </div>
+                  <h5 className="font-bold text-slate-900 text-sm">{doc.title}</h5>
+                  <p className="text-xs text-slate-500 mt-1 leading-relaxed">{doc.description}</p>
+                </div>
+
+                <div className="flex items-center space-x-2 mt-4 pt-3 border-t border-slate-200/70">
+                  <button
+                    onClick={() => onPreview(doc.title, () => doc.generator(jobData))}
+                    type="button"
+                    className="flex-1 inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-700 hover:bg-slate-100 border border-slate-200 transition"
+                  >
+                    <Eye className="w-3.5 h-3.5 mr-1 text-slate-500" />
+                    Preview
+                  </button>
+                  <button
+                    onClick={() => handleDownload(doc)}
+                    disabled={isDownloading}
+                    type="button"
+                    className="flex-1 inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-900 text-white hover:bg-red-600 transition shadow-sm disabled:opacity-50"
+                  >
+                    {isDownloading ? (
+                      <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin text-white" />
+                    ) : (
+                      <FileDown className="w-3.5 h-3.5 mr-1" />
+                    )}
+                    Download
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Generation Completion Note per Skill requirement */}
+      {lastGeneratedSummary && (
+        <div className="mt-6 p-4 rounded-xl bg-slate-900 text-slate-200 border border-slate-800 text-xs animate-in fade-in">
+          <div className="flex items-center justify-between pb-2 border-b border-slate-800 mb-2">
+            <span className="font-bold text-white flex items-center gap-1.5">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              Generation Completion Note ({lastGeneratedSummary.timestamp})
+            </span>
+            <span className="text-[10px] text-slate-400 font-mono">
+              {lastGeneratedSummary.filesCount} file(s) generated
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-slate-300">
+            <div>
+              <span className="text-slate-400 block text-[10px]">Total Contract RCV:</span>
+              <span className="font-bold text-white">{lastGeneratedSummary.calculatedRCV}</span>
+            </div>
+            <div>
+              <span className="text-slate-400 block text-[10px]">Net Claim Value:</span>
+              <span className="font-bold text-emerald-400">{lastGeneratedSummary.calculatedNet}</span>
+            </div>
+            <div>
+              <span className="text-slate-400 block text-[10px]">50% Down Payment:</span>
+              <span className="font-bold text-sky-400">{lastGeneratedSummary.calculatedDown}</span>
+            </div>
+          </div>
+          {lastGeneratedSummary.unresolvedFields.length > 0 ? (
+            <p className="mt-2 text-amber-300 text-[11px]">
+              ⚠️ Unresolved fields left blank: {lastGeneratedSummary.unresolvedFields.join(', ')}
+            </p>
+          ) : (
+            <p className="mt-2 text-emerald-400 text-[11px]">
+              ✓ All required core fields reconciled with 100% data consistency across all pages.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};

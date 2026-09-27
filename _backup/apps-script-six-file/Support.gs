@@ -1,0 +1,443 @@
+/**
+ * HAYS + SONS CUSTOMER & JOB DATABASE - 6 of 6: sheet access, utilities, self test
+ *
+ * Low-level spreadsheet access, small conversion helpers, and selfTest(), which
+ * exercises the whole system against the real spreadsheet. See Code.gs for the
+ * overview.
+ */
+
+/* ---------------------------------------------------------------------------
+ * 8. SHEET ACCESS
+ * ------------------------------------------------------------------------ */
+
+function jobsSheet_() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty(PROP.DB_SPREADSHEET_ID);
+  if (!id) throw appError_('not_configured', 'The database has not been set up yet. Run setupDatabase().');
+
+  var spreadsheet;
+  try {
+    spreadsheet = SpreadsheetApp.openById(id);
+  } catch (err) {
+    throw appError_('not_configured', 'The database spreadsheet cannot be opened. Re-run setupDatabase().');
+  }
+
+  var name = props.getProperty(PROP.DB_SHEET_NAME) || DEFAULTS.DB_SHEET_NAME;
+  var sheet = spreadsheet.getSheetByName(name);
+  if (!sheet) throw appError_('not_configured', 'Missing sheet "' + name + '". Re-run setupDatabase().');
+  return sheet;
+}
+
+/** Maps header name -> zero-based column index, so column order is not brittle. */
+function headerIndex_(sheet) {
+  return headerIndexFor_(sheet, JOB_HEADERS);
+}
+
+/** Same as headerIndex_, but for any sheet and any required column set. */
+function headerIndexFor_(sheet, required) {
+  var lastColumn = sheet.getLastColumn();
+  if (lastColumn < 1) throw appError_('not_configured', 'A required sheet has no header row. Re-run setupDatabase().');
+
+  var headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  var index = {};
+  for (var i = 0; i < headers.length; i++) {
+    var name = String(headers[i] || '').trim();
+    if (name) index[name] = i;
+  }
+  for (var h = 0; h < required.length; h++) {
+    if (index[required[h]] === undefined) {
+      throw appError_('not_configured', 'Missing column "' + required[h] + '". Re-run setupDatabase().');
+    }
+  }
+  return index;
+}
+
+/** All data rows with their real sheet row number. */
+function dataRows_(sheet) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  var values = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  var rows = [];
+  for (var i = 0; i < values.length; i++) {
+    rows.push({ rowNumber: i + 2, values: values[i] });
+  }
+  return rows;
+}
+
+function buildJobRow_(record, index, userEmail) {
+  var row = [];
+  for (var i = 0; i < JOB_HEADERS.length; i++) row.push('');
+
+  row[index.RecordId] = record.recordId;
+  row[index.JobNumber] = record.customer.jobNumber;
+  row[index.JobName] = record.customer.jobName;
+  row[index.CustomerName] = record.customer.customerName;
+  row[index.Email] = record.customer.email;
+  row[index.MobilePhone] = record.customer.mobilePhone || record.customer.mainPhone;
+  row[index.LossAddress] = record.customer.lossAddress;
+  row[index.Carrier] = record.insurance.carrier;
+  row[index.ClaimNumber] = record.insurance.claimNumber;
+  row[index.Status] = deriveStatus_(record);
+  row[index.CreatedAt] = record.dateCreated;
+  row[index.UpdatedAt] = record.updatedAt;
+  row[index.UpdatedBy] = userEmail;
+  row[index.SchemaVersion] = record.schemaVersion;
+  row[index.RecordJson] = JSON.stringify(record);
+  row[index.Deleted] = false;
+  return row;
+}
+
+function deriveStatus_(record) {
+  var explicit = toStr_(record.status);
+  if (explicit && STATUS_VALUES.indexOf(explicit) !== -1) return explicit;
+  return toStr_(record.checklist.finishDate) ? 'Active' : 'Draft';
+}
+
+function summaryFromRow_(row, index) {
+  return {
+    recordId: String(row[index.RecordId] || ''),
+    jobNumber: String(row[index.JobNumber] || ''),
+    jobName: String(row[index.JobName] || ''),
+    customerName: String(row[index.CustomerName] || ''),
+    email: String(row[index.Email] || ''),
+    mobilePhone: String(row[index.MobilePhone] || ''),
+    lossAddress: String(row[index.LossAddress] || ''),
+    carrier: String(row[index.Carrier] || ''),
+    claimNumber: String(row[index.ClaimNumber] || ''),
+    status: String(row[index.Status] || ''),
+    createdAt: String(row[index.CreatedAt] || ''),
+    updatedAt: String(row[index.UpdatedAt] || ''),
+    updatedBy: String(row[index.UpdatedBy] || ''),
+    schemaVersion: Number(row[index.SchemaVersion] || currentSchemaVersion_()),
+    deleted: toBool_(row[index.Deleted])
+  };
+}
+
+function findRowNumber_(rows, recordIdColumn, recordId) {
+  if (!recordId) return -1;
+  for (var i = 0; i < rows.length; i++) {
+    if (String(rows[i].values[recordIdColumn] || '') === String(recordId)) return rows[i].rowNumber;
+  }
+  return -1;
+}
+
+function findRecordRow_(rows, index, payload) {
+  var recordId = toStr_(payload.recordId);
+  var jobNumber = toStr_(payload.jobNumber);
+  for (var i = 0; i < rows.length; i++) {
+    var rowRecordId = String(rows[i].values[index.RecordId] || '');
+    var rowJobNumber = String(rows[i].values[index.JobNumber] || '');
+    if (recordId && rowRecordId === recordId) return rows[i];
+    if (!recordId && jobNumber && rowJobNumber === jobNumber) return rows[i];
+  }
+  return null;
+}
+
+function findRecord_(rows, index, payload) {
+  var row = findRecordRow_(rows, index, payload);
+  if (!row) return null;
+
+  var json = row.values[index.RecordJson];
+  var record;
+  try {
+    record = JSON.parse(json);
+  } catch (err) {
+    throw appError_('corrupt_record', 'Stored record data could not be read (row ' + row.rowNumber + ').');
+  }
+  return { rowNumber: row.rowNumber, row: row.values, record: normalizeRecord_(record) };
+}
+
+function appendLog_(userEmail, action, recordId, jobNumber, detail) {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var spreadsheet = SpreadsheetApp.openById(props.getProperty(PROP.DB_SPREADSHEET_ID));
+    var name = props.getProperty(PROP.LOG_SHEET_NAME) || DEFAULTS.LOG_SHEET_NAME;
+    var sheet = spreadsheet.getSheetByName(name);
+    if (!sheet) return;
+    sheet.appendRow([
+      new Date().toISOString(),
+      userEmail || '',
+      action || '',
+      recordId || '',
+      jobNumber || '',
+      detail || ''
+    ]);
+  } catch (err) {
+    Logger.log('Audit log write failed (non-fatal): ' + err);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 9. UTILITIES
+ * ------------------------------------------------------------------------ */
+
+function appError_(code, message) {
+  var error = new Error(message);
+  error.appCode = code;
+  return error;
+}
+
+function ok_(data) {
+  return { ok: true, data: data, schemaVersion: currentSchemaVersion_() };
+}
+
+function withLock_(fn) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    throw appError_('busy', 'The database is busy. Please try again in a moment.');
+  }
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function currentSchemaVersion_() {
+  var value = PropertiesService.getScriptProperties().getProperty(PROP.SCHEMA_VERSION);
+  var num = Number(value);
+  return isNaN(num) || num <= 0 ? DEFAULTS.SCHEMA_VERSION : num;
+}
+
+function uuid_() {
+  return Utilities.getUuid();
+}
+
+function today_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/Indiana/Indianapolis', 'yyyy-MM-dd');
+}
+
+function toStr_(value) {
+  if (value === null || value === undefined) return '';
+  return String(value).trim();
+}
+
+function toBool_(value) {
+  if (value === true) return true;
+  if (value === false) return false;
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'number') return value !== 0;
+  var text = String(value).trim().toLowerCase();
+  return text === 'true' || text === 'yes' || text === '1' || text === 'y';
+}
+
+/** Parses numbers, stripping currency formatting. Returns null when not numeric. */
+function toNumber_(value, fallback) {
+  if (value === null || value === undefined || value === '') return fallback;
+  if (typeof value === 'number') return isNaN(value) ? fallback : value;
+  var cleaned = String(value).replace(/[$,%\s]/g, '');
+  if (cleaned === '') return fallback;
+  var num = Number(cleaned);
+  return isNaN(num) ? fallback : num;
+}
+
+/** number | '' semantics: blank stays blank. */
+function toNumberOrBlank_(value) {
+  var num = toNumber_(value, null);
+  return num === null ? '' : num;
+}
+
+function oneOf_(value, allowed, fallback) {
+  var text = toStr_(value);
+  for (var i = 0; i < allowed.length; i++) {
+    if (allowed[i] === text) return text;
+  }
+  // Tolerate case differences coming back from a text-formatted cell.
+  for (var j = 0; j < allowed.length; j++) {
+    if (allowed[j].toLowerCase() === text.toLowerCase() && text !== '') return allowed[j];
+  }
+  return fallback;
+}
+
+/** Test helper: confirms the stored value is a hash, not the password itself. */
+function storedHashIsNotPlainText_(email, password) {
+  var sheet = usersSheet_();
+  var index = headerIndexFor_(sheet, USER_HEADERS);
+  var rows = dataRows_(sheet);
+
+  for (var i = 0; i < rows.length; i++) {
+    var rowEmail = String(rows[i].values[index.Email] || '').trim().toLowerCase();
+    if (rowEmail !== String(email).toLowerCase()) continue;
+
+    var storedHash = String(rows[i].values[index.PasswordHash] || '');
+    return storedHash.length > 0 && storedHash !== password && storedHash.indexOf(password) === -1;
+  }
+  return false;
+}
+
+/** Test helper: removes an account created by selfTest(). */
+function removeTestAccount_(email) {
+  var target = String(email || '').trim().toLowerCase();
+  var sheet = usersSheet_();
+  var index = headerIndexFor_(sheet, USER_HEADERS);
+  var rows = dataRows_(sheet);
+
+  for (var i = rows.length - 1; i >= 0; i--) {
+    if (String(rows[i].values[index.Email] || '').trim().toLowerCase() === target) {
+      sheet.deleteRow(rows[i].rowNumber);
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 10. SELF TEST  - run from the editor after setupDatabase()
+ * ------------------------------------------------------------------------ */
+
+/**
+ * End-to-end verification against the real spreadsheet. Creates a temporary
+ * record, then updates, reads, searches and deletes it. Throws on failure.
+ *
+ * @return {Object} pass/fail summary
+ */
+function selfTest() {
+  // Provision on demand so the test can be run on a fresh project.
+  ensureDatabaseReady_();
+
+  var results = [];
+  var testRecordId = 'SELFTEST-' + Utilities.getUuid().slice(0, 8);
+  var fakeUser = { email: 'self-test@local', method: 'self_test' };
+
+  function check(name, condition, detail) {
+    results.push({ step: name, pass: !!condition, detail: detail || '' });
+    if (!condition) throw appError_('self_test_failed', 'Self test failed at: ' + name + ' ' + (detail || ''));
+  }
+
+  try {
+    var sample = {
+      recordId: testRecordId,
+      id: testRecordId,
+      dateCreated: today_(),
+      status: 'Draft',
+      branch: { name: 'Hays + Sons Complete Restoration', division: 'Hays and Sons - Fort Wayne' },
+      customer: {
+        jobNumber: 'TEST-' + testRecordId.slice(-5),
+        jobName: 'Self Test Job',
+        customerName: 'Self Test Customer',
+        email: 'selftest@example.com',
+        mobilePhone: '1-260-000-0000',
+        lossAddress: '1 Test Lane, Fort Wayne, IN',
+        mainPhone: '1-260-000-0000'
+      },
+      insurance: { carrier: 'Test Carrier', claimNumber: 'CLM-TEST' },
+      // Deliberately hostile input: formatted currency, string booleans, wrong case.
+      financials: {
+        totalApprovedRcv: '$24,850.00',
+        deductible: '',
+        netClaimValue: 0,
+        downPayment: 0,
+        midProgressPayment: 0,
+        balancePayment: 0,
+        commenceDays: 10,
+        completeDays: 60
+      },
+      team: { estimator: 'Self Test' },
+      mortgage: { hasMortgage: 'FALSE' },
+      changeOrder: { changeType: 'INCREASE', changeAmount: '3200', addedDays: '' },
+      checklist: {
+        hasDeductibleBeenCollected: 'yes',
+        isSelfPay: '0',
+        isProgramClaim: 'false'
+      }
+    };
+
+    // --- create ---------------------------------------------------------
+    var saved = api_saveJob_({ job: sample }, fakeUser);
+    check('create returns recordId', saved.recordId === testRecordId, saved.recordId);
+    check('create flagged as new', saved.created === true);
+
+    // --- normalisation of hostile input ---------------------------------
+    var record = saved.record;
+    check('currency string parsed', record.financials.totalApprovedRcv === 24850, String(record.financials.totalApprovedRcv));
+    check('blank deductible stays blank', record.financials.deductible === '', JSON.stringify(record.financials.deductible));
+    check('"FALSE" becomes boolean false', record.mortgage.hasMortgage === false, String(record.mortgage.hasMortgage));
+    check('"0" becomes boolean false', record.checklist.isSelfPay === false, String(record.checklist.isSelfPay));
+    check('"yes" maps to Yes', record.checklist.hasDeductibleBeenCollected === 'Yes', record.checklist.hasDeductibleBeenCollected);
+    check('"INCREASE" maps to increase', record.changeOrder.changeType === 'increase', record.changeOrder.changeType);
+    check('changeAmount parsed', record.changeOrder.changeAmount === 3200, String(record.changeOrder.changeAmount));
+    check('addedDays blank preserved', record.changeOrder.addedDays === '', JSON.stringify(record.changeOrder.addedDays));
+
+    // --- read -----------------------------------------------------------
+    var fetched = api_getJob_({ recordId: testRecordId }, fakeUser);
+    check('read returns the record', fetched.job.recordId === testRecordId);
+    check('read preserves currency', fetched.job.financials.totalApprovedRcv === 24850);
+    check('read preserves blank', fetched.job.changeOrder.addedDays === '');
+
+    // --- list / search --------------------------------------------------
+    var listed = api_listJobs_({}, fakeUser);
+    check('record appears in list', listed.jobs.some(function (j) { return j.recordId === testRecordId; }));
+
+    var found = api_searchJobs_({ query: 'self test customer' }, fakeUser);
+    check('search finds by customer', found.jobs.some(function (j) { return j.recordId === testRecordId; }));
+
+    // --- update (upsert, not duplicate) ---------------------------------
+    var before = api_listJobs_({}, fakeUser).jobs.length;
+    fetched.job.customer.customerName = 'Self Test Customer (edited)';
+    var updated = api_saveJob_({ job: fetched.job }, fakeUser);
+    check('update reports existing', updated.created === false);
+    var after = api_listJobs_({}, fakeUser).jobs.length;
+    check('update did not duplicate the row', before === after, before + ' -> ' + after);
+    check('update persisted the edit',
+      api_getJob_({ recordId: testRecordId }, fakeUser).job.customer.customerName === 'Self Test Customer (edited)');
+
+    // --- delete ---------------------------------------------------------
+    api_deleteJob_({ recordId: testRecordId }, fakeUser);
+    var stillThere = api_listJobs_({}, fakeUser).jobs.some(function (j) { return j.recordId === testRecordId; });
+    check('soft delete hides the record', stillThere === false);
+
+    api_deleteJob_({ recordId: testRecordId, hard: true }, fakeUser);
+    var gone = false;
+    try {
+      api_getJob_({ recordId: testRecordId }, fakeUser);
+    } catch (errGone) {
+      gone = true;
+    }
+    check('hard delete removes the record', gone);
+
+    // --- accounts and login ----------------------------------------------
+    var testEmail = 'selftest+' + Utilities.getUuid().slice(0, 8) + '@example.com';
+    var testPassword = 'SelfTest!' + Utilities.getUuid().slice(0, 6);
+
+    createUser(testEmail, 'Self Test Account', testPassword, 'admin');
+
+    var login = api_login_({ email: testEmail, password: testPassword });
+    check('login issues a token', !!login.token);
+    check('login returns the account', login.user.email === testEmail.toLowerCase());
+    check('login returns the role', login.user.role === 'admin');
+
+    var session = validateSession_(login.token);
+    check('session validates', !!session && session.email === testEmail.toLowerCase());
+
+    var authorized = authorize_({ sessionToken: login.token });
+    check('session authorises a request', authorized.email === testEmail.toLowerCase());
+
+    var wrongPasswordRejected = false;
+    try {
+      api_login_({ email: testEmail, password: 'definitely-not-the-password' });
+    } catch (errWrong) {
+      wrongPasswordRejected = true;
+    }
+    check('wrong password is rejected', wrongPasswordRejected);
+
+    var unknownAccountRejected = false;
+    try {
+      api_login_({ email: 'nobody-' + Utilities.getUuid().slice(0, 6) + '@example.com', password: 'whatever123' });
+    } catch (errUnknown) {
+      unknownAccountRejected = true;
+    }
+    check('unknown account is rejected', unknownAccountRejected);
+
+    check('password is not stored in plain text', storedHashIsNotPlainText_(testEmail, testPassword));
+
+    api_logout_({ sessionToken: login.token }, { email: testEmail, method: 'self_test' });
+    check('logout revokes the session', validateSession_(login.token) === null);
+
+    removeTestAccount_(testEmail);
+
+    Logger.log('SELF TEST PASSED\n' + JSON.stringify(results, null, 2));
+    return { passed: true, steps: results.length, results: results };
+  } catch (err) {
+    results.push({ step: 'FAILED', pass: false, detail: (err && err.message) || String(err) });
+    Logger.log('SELF TEST FAILED\n' + JSON.stringify(results, null, 2));
+    throw err;
+  }
+}
