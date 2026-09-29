@@ -9,10 +9,14 @@ import {
   Briefcase,
   Smartphone,
 } from 'lucide-react';
-import { CustomerData } from '../types/jobData';
+import { CustomerData, RestorationJobData } from '../types/jobData';
+import { DOC } from '../services/documentCatalog';
+import { SectionPdfActions, type PdfPreviewRequest } from './SectionPdfActions';
 
 interface SectionCustomerProps {
   data: CustomerData;
+  jobData: RestorationJobData;
+  onPreview: PdfPreviewRequest;
   onChange: (field: keyof CustomerData, value: string) => void;
 }
 
@@ -69,7 +73,12 @@ const Field: React.FC<FieldProps> = ({
   </div>
 );
 
-export const SectionCustomer: React.FC<SectionCustomerProps> = ({ data, onChange }) => {
+export const SectionCustomer: React.FC<SectionCustomerProps> = ({
+  data,
+  jobData,
+  onPreview,
+  onChange,
+}) => {
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-5">
       <div className="flex items-center gap-3 mb-5 pb-4 border-b border-slate-100">
@@ -186,6 +195,8 @@ export const SectionCustomer: React.FC<SectionCustomerProps> = ({ data, onChange
           onChange={onChange}
         />
       </div>
+
+      <SectionPdfActions jobData={jobData} docs={[DOC.welcomeLetter]} onPreview={onPreview} />
     </div>
   );
 };

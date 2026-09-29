@@ -1778,7 +1778,159 @@ export async function generateProductionChecklist(data: RestorationJobData): Pro
 }
 
 // -------------------------------------------------------------
-// 8. UNIFIED COMPLETE 8-PAGE PACKET GENERATOR
+// 8. PRODUCTION NOTES GENERATOR
+// -------------------------------------------------------------
+export async function generateProductionNotes(data: RestorationJobData): Promise<Uint8Array> {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([612, 792]);
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+  drawHeaderLogo(page, fontBold, font, data.branch);
+
+  // Title Banner
+  page.drawRectangle({ x: 40, y: 708, width: 532, height: 16, color: COLOR_RED });
+  page.drawText('PRODUCTION NOTES', { x: 255, y: 712, size: 9, font: fontBold, color: COLOR_WHITE });
+
+  const notes = data.productionNotes ?? ({} as RestorationJobData['productionNotes']);
+
+  // ---- Auto-filled Loss & Damage Details ----
+  page.drawText('Loss & Damage Details', { x: 40, y: 692, size: 9.5, font: fontBold, color: COLOR_DARK });
+
+  const LABEL_X = 40;
+  const VALUE_X = 170;
+  const VALUE_W = 402;
+  const RIGHT_LABEL_X = 340;
+  const RIGHT_VALUE_X = 420;
+  const RIGHT_VALUE_W = 152;
+
+  /** Draws one label + bordered value row. `right` places it in the right column. */
+  const drawField = (label: string, value: string, y: number, right = false) => {
+    const labelX = right ? RIGHT_LABEL_X : LABEL_X;
+    const valueX = right ? RIGHT_VALUE_X : VALUE_X;
+    const valueW = right ? RIGHT_VALUE_W : VALUE_W;
+    page.drawText(label, { x: labelX, y, size: 7.5, font: fontBold, color: COLOR_DARK });
+    page.drawRectangle({
+      x: valueX,
+      y: y - 4,
+      width: valueW,
+      height: 14,
+      borderColor: COLOR_BORDER,
+      borderWidth: 0.75,
+    });
+    const v = cleanTextForPdf(value);
+    if (v) {
+      const maxW = valueW - 8;
+      let size = 7.5;
+      while (font.widthOfTextAtSize(v, size) > maxW && size > 5) size -= 0.25;
+      page.drawText(v, { x: valueX + 4, y, size, font, color: COLOR_DARK });
+    }
+  };
+
+  drawField('Job Number:', data.customer.jobNumber || '', 674);
+  drawField('Job Name:', data.customer.jobName || `${data.customer.customerName || ''} Restoration`, 674, true);
+  drawField('Customer:', data.customer.customerName || '', 656);
+  drawField('Loss Address:', data.customer.lossAddress || '', 638);
+  drawField('Date of Loss:', data.insurance.dateOfLoss || '', 620);
+  drawField('Time of Loss:', data.insurance.timeOfLoss || '', 620, true);
+  drawField('Loss Type:', data.insurance.typeOfLoss || '', 602);
+  drawField('Secondary:', data.insurance.typeOfLossSecondary || '', 602, true);
+  drawField('Carrier:', data.insurance.carrier || '', 584);
+  drawField('Claim #:', data.insurance.claimNumber || '', 584, true);
+  drawField('Policy #:', data.insurance.policyNumber || '', 566);
+  drawField('Adjuster:', data.insurance.primaryAdjuster || '', 566, true);
+  drawField('Adjuster Phone:', data.insurance.adjusterPhone || '', 548);
+  drawField('Deductible:', formatCurrency(data.financials.deductible), 548, true);
+  drawField('Approved RCV:', formatCurrency(data.financials.totalApprovedRcv), 530);
+  drawField('Net Claim:', formatCurrency(data.financials.netClaimValue), 530, true);
+
+  // Loss description (auto-filled narrative of the damage).
+  page.drawText('Loss Description:', { x: 40, y: 508, size: 7.5, font: fontBold, color: COLOR_DARK });
+  page.drawRectangle({
+    x: 40,
+    y: 452,
+    width: 532,
+    height: 50,
+    borderColor: COLOR_BORDER,
+    borderWidth: 0.75,
+  });
+  drawWrappedText(page, data.insurance.lossDescription || '', {
+    x: 46,
+    y: 490,
+    maxWidth: 518,
+    lineHeight: 10,
+    font,
+    size: 7.5,
+    maxLines: 4,
+  });
+
+  // ---- Additional Production Notes (user-entered, or blank for handwriting) ----
+  page.drawText('Additional Production Notes', {
+    x: 40,
+    y: 432,
+    size: 9.5,
+    font: fontBold,
+    color: COLOR_DARK,
+  });
+
+  const noteFields: Array<{ label: string; value: string }> = [
+    { label: 'Scope & Repairs Summary', value: notes.scopeSummary ?? '' },
+    { label: 'Materials & Equipment', value: notes.materialsAndEquipment ?? '' },
+    { label: 'Schedule & Access', value: notes.scheduleAndAccess ?? '' },
+    { label: 'Safety Considerations', value: notes.safetyConsiderations ?? '' },
+    { label: 'Communication Notes', value: notes.communicationNotes ?? '' },
+    { label: 'Additional Information', value: notes.additionalNotes ?? '' },
+  ];
+
+  const NOTE_BOX_H = 38;
+  const NOTE_GAP = 12;
+  let ny = 416;
+  for (const field of noteFields) {
+    const boxBottom = ny - NOTE_BOX_H;
+    page.drawText(field.label, { x: 40, y: ny + 2, size: 7.5, font: fontBold, color: COLOR_RED });
+    page.drawRectangle({
+      x: 40,
+      y: boxBottom,
+      width: 532,
+      height: NOTE_BOX_H,
+      borderColor: COLOR_BORDER,
+      borderWidth: 0.75,
+    });
+
+    const v = cleanTextForPdf(field.value);
+    if (v) {
+      drawWrappedText(page, v, {
+        x: 46,
+        y: boxBottom + NOTE_BOX_H - 12,
+        maxWidth: 518,
+        lineHeight: 9.5,
+        font,
+        size: 7.5,
+        maxLines: 3,
+      });
+    } else {
+      // Faint guide lines so the blank box can be filled in by hand.
+      page.drawLine({
+        start: { x: 46, y: boxBottom + NOTE_BOX_H - 14 },
+        end: { x: 566, y: boxBottom + NOTE_BOX_H - 14 },
+        thickness: 0.5,
+        color: COLOR_LINE,
+      });
+      page.drawLine({
+        start: { x: 46, y: boxBottom + NOTE_BOX_H - 24 },
+        end: { x: 566, y: boxBottom + NOTE_BOX_H - 24 },
+        thickness: 0.5,
+        color: COLOR_LINE,
+      });
+    }
+    ny = boxBottom - NOTE_GAP;
+  }
+
+  return pdfDoc.save();
+}
+
+// -------------------------------------------------------------
+// 9. UNIFIED COMPLETE 9-PAGE PACKET GENERATOR
 // -------------------------------------------------------------
 export async function generateCompletePacket(data: RestorationJobData): Promise<Uint8Array> {
   const mergedPdf = await PDFDocument.create();
@@ -1792,6 +1944,7 @@ export async function generateCompletePacket(data: RestorationJobData): Promise<
     cancellationBytes,
     changeOrderBytes,
     checklistBytes,
+    productionNotesBytes,
   ] = await Promise.all([
     generatePreliminaryReport(data),
     generateWelcomeLetter(data),
@@ -1800,6 +1953,7 @@ export async function generateCompletePacket(data: RestorationJobData): Promise<
     generateCancellationNotice(data),
     generateChangeOrder(data),
     generateProductionChecklist(data),
+    generateProductionNotes(data),
   ]);
 
   const docs = await Promise.all([
@@ -1810,6 +1964,7 @@ export async function generateCompletePacket(data: RestorationJobData): Promise<
     PDFDocument.load(cancellationBytes),
     PDFDocument.load(changeOrderBytes),
     PDFDocument.load(checklistBytes),
+    PDFDocument.load(productionNotesBytes),
   ]);
 
   for (const doc of docs) {

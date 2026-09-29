@@ -1,13 +1,22 @@
 import React from 'react';
 import { ClipboardCheck, CheckSquare, Calendar, DollarSign, FileText } from 'lucide-react';
 import { RestorationJobData } from '../types/jobData';
+import { DOC } from '../services/documentCatalog';
+import { SectionPdfActions, type PdfPreviewRequest } from './SectionPdfActions';
 
 interface SectionChecklistProps {
   checklist: RestorationJobData['checklist'];
+  jobData: RestorationJobData;
+  onPreview: PdfPreviewRequest;
   onChange: (field: keyof RestorationJobData['checklist'], value: any) => void;
 }
 
-export const SectionChecklist: React.FC<SectionChecklistProps> = ({ checklist, onChange }) => {
+export const SectionChecklist: React.FC<SectionChecklistProps> = ({
+  checklist,
+  jobData,
+  onPreview,
+  onChange,
+}) => {
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-5">
       <div className="flex items-center gap-3 mb-5 pb-4 border-b border-slate-100">
@@ -208,6 +217,8 @@ export const SectionChecklist: React.FC<SectionChecklistProps> = ({ checklist, o
           />
         </div>
       </div>
+
+      <SectionPdfActions jobData={jobData} docs={[DOC.productionChecklist]} onPreview={onPreview} />
     </div>
   );
 };

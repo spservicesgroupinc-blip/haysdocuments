@@ -1,13 +1,22 @@
 import React from 'react';
 import { Landmark, Phone, Lock } from 'lucide-react';
-import { MortgageData } from '../types/jobData';
+import { MortgageData, RestorationJobData } from '../types/jobData';
+import { DOC } from '../services/documentCatalog';
+import { SectionPdfActions, type PdfPreviewRequest } from './SectionPdfActions';
 
 interface SectionMortgageProps {
   data: MortgageData;
+  jobData: RestorationJobData;
+  onPreview: PdfPreviewRequest;
   onChange: (field: keyof MortgageData, value: any) => void;
 }
 
-export const SectionMortgage: React.FC<SectionMortgageProps> = ({ data, onChange }) => {
+export const SectionMortgage: React.FC<SectionMortgageProps> = ({
+  data,
+  jobData,
+  onPreview,
+  onChange,
+}) => {
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-5">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-5 pb-4 border-b border-slate-100">
@@ -145,6 +154,8 @@ export const SectionMortgage: React.FC<SectionMortgageProps> = ({ data, onChange
           Property owner owns home free and clear (No mortgage lienholder on insurance draft).
         </div>
       )}
+
+      <SectionPdfActions jobData={jobData} docs={[DOC.mortgageAuth]} onPreview={onPreview} />
     </div>
   );
 };

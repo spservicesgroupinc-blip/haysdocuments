@@ -1,10 +1,14 @@
 import React from 'react';
 import { CalendarClock } from 'lucide-react';
-import { FinancialData } from '../types/jobData';
+import { FinancialData, RestorationJobData } from '../types/jobData';
+import { DOC } from '../services/documentCatalog';
 import { formatCurrency } from '../services/pdfService';
+import { SectionPdfActions, type PdfPreviewRequest } from './SectionPdfActions';
 
 interface FinancialSummaryCardProps {
   financials: FinancialData;
+  jobData: RestorationJobData;
+  onPreview: PdfPreviewRequest;
   onRcvChange: (val: number | '') => void;
   onDeductibleChange: (val: number | '') => void;
 }
@@ -15,6 +19,8 @@ const INPUT_CLASS =
 
 export const FinancialSummaryCard: React.FC<FinancialSummaryCardProps> = ({
   financials,
+  jobData,
+  onPreview,
   onRcvChange,
   onDeductibleChange,
 }) => {
@@ -177,6 +183,13 @@ export const FinancialSummaryCard: React.FC<FinancialSummaryCardProps> = ({
           ))}
         </dl>
       </div>
+
+      <SectionPdfActions
+        jobData={jobData}
+        docs={[DOC.contract, DOC.cancellationNotice]}
+        onPreview={onPreview}
+        className="mt-0 px-5 pb-4"
+      />
     </section>
   );
 };

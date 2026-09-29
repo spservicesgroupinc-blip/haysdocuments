@@ -1,13 +1,22 @@
 import React from 'react';
 import { Shield, FileCheck, Calendar, Clock, DollarSign, AlertCircle } from 'lucide-react';
-import { InsuranceData } from '../types/jobData';
+import { InsuranceData, RestorationJobData } from '../types/jobData';
+import { DOC } from '../services/documentCatalog';
+import { SectionPdfActions, type PdfPreviewRequest } from './SectionPdfActions';
 
 interface SectionInsuranceProps {
   data: InsuranceData;
+  jobData: RestorationJobData;
+  onPreview: PdfPreviewRequest;
   onChange: (field: keyof InsuranceData, value: any) => void;
 }
 
-export const SectionInsurance: React.FC<SectionInsuranceProps> = ({ data, onChange }) => {
+export const SectionInsurance: React.FC<SectionInsuranceProps> = ({
+  data,
+  jobData,
+  onPreview,
+  onChange,
+}) => {
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-5">
       <div className="flex items-center gap-3 mb-5 pb-4 border-b border-slate-100">
@@ -328,6 +337,8 @@ export const SectionInsurance: React.FC<SectionInsuranceProps> = ({ data, onChan
           />
         </div>
       </div>
+
+      <SectionPdfActions jobData={jobData} docs={[DOC.preliminaryReport]} onPreview={onPreview} />
     </div>
   );
 };

@@ -18,6 +18,7 @@ import {
   generateCancellationNotice,
   generateChangeOrder,
   generateProductionChecklist,
+  generateProductionNotes,
   generateCompletePacket,
 } from '../src/services/pdfService';
 
@@ -34,6 +35,7 @@ const DOCS: Generator[] = [
   { name: '05_Notice_of_Cancellation', run: generateCancellationNotice },
   { name: '06_Change_Order_Addendum', run: generateChangeOrder },
   { name: '07_Production_Checklist', run: generateProductionChecklist },
+  { name: '08_Production_Notes', run: generateProductionNotes },
   { name: '00_Complete_Packet', run: generateCompletePacket },
 ];
 

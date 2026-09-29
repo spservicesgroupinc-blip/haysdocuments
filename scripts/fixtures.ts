@@ -117,6 +117,14 @@ export const SAMPLE_WATER: RestorationJobData = build({
     finishDate: '2026-10-30',
     projectManagerNotes: 'All drywall and flooring samples selected and confirmed by homeowner.',
   },
+  productionNotes: {
+    scopeSummary: 'Replace water-damaged kitchen ceiling drywall, cabinetry, and hallway hardwood flooring.',
+    materialsAndEquipment: 'Match existing oak flooring; paint to match; dehumidifiers staged in garage.',
+    scheduleAndAccess: 'Crew arrives 7:30 AM weekdays; key code #4411 for front door.',
+    safetyConsiderations: 'Containment around kitchen; respirator required for drywall removal.',
+    communicationNotes: 'Update adjuster David Miller weekly; homeowner prefers text updates.',
+    additionalNotes: 'Photos uploaded to DASH after each phase.',
+  },
 });
 
 /** Wind/storm — a second scenario to vary field values and text wrapping. */

@@ -1,17 +1,23 @@
 import React from 'react';
 import { FileEdit, DollarSign, Calendar, PlusCircle, MinusCircle } from 'lucide-react';
-import { ChangeOrderData } from '../types/jobData';
+import { ChangeOrderData, RestorationJobData } from '../types/jobData';
+import { DOC } from '../services/documentCatalog';
 import { formatCurrency } from '../services/pdfService';
+import { SectionPdfActions, type PdfPreviewRequest } from './SectionPdfActions';
 
 interface SectionChangeOrderProps {
   data: ChangeOrderData;
   contractRcv: number | '';
+  jobData: RestorationJobData;
+  onPreview: PdfPreviewRequest;
   onChange: (field: keyof ChangeOrderData, value: any) => void;
 }
 
 export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
   data,
   contractRcv,
+  jobData,
+  onPreview,
   onChange,
 }) => {
   const origSum =
@@ -190,6 +196,8 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
           />
         </div>
       </div>
+
+      <SectionPdfActions jobData={jobData} docs={[DOC.changeOrder]} onPreview={onPreview} />
     </div>
   );
 };

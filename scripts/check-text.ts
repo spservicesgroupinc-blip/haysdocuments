@@ -84,7 +84,19 @@ const CASES: Array<{ file: string; markers: string[] }> = [
       'Finish Date: 2026-10-30',
     ],
   },
-  { file: 'water_00_Complete_Packet.pdf', markers: ['Page 8 of 8', 'rendered by Hays and Sons Complete Restoration hereunder.'] },
+  {
+    file: 'water_08_Production_Notes.pdf',
+    markers: [
+      'PRODUCTION NOTES',
+      'Loss & Damage Details',
+      'Sudden pipe burst in upstairs guest bathroom',
+      'Additional Production Notes',
+      'Scope & Repairs Summary',
+      'Crew arrives 7:30 AM weekdays',
+      'Photos uploaded to DASH after each phase.',
+    ],
+  },
+  { file: 'water_00_Complete_Packet.pdf', markers: ['Page 9 of 9', 'rendered by Hays and Sons Complete Restoration hereunder.'] },
 ];
 
 let failures = 0;

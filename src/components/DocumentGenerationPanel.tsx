@@ -17,13 +17,13 @@ import {
 import JSZip from 'jszip';
 import { RestorationJobData } from '../types/jobData';
 import {
-  generatePreliminaryReport,
-  generateWelcomeLetter,
-  generateMortgageAuth,
-  generateContract,
-  generateCancellationNotice,
-  generateChangeOrder,
-  generateProductionChecklist,
+  JOB_DOCUMENTS,
+  buildCombinedPacketFileName,
+  safeCustomerName,
+  safeJobNumber,
+  type JobDocument,
+} from '../services/documentCatalog';
+import {
   generateCompletePacket,
   downloadPdf,
   formatCurrency,
@@ -39,16 +39,6 @@ interface DocumentGenerationPanelProps {
   isSheetsLoading: boolean;
   driveSuccessLink?: string;
   sheetsSuccessLink?: string;
-}
-
-interface DocItem {
-  id: string;
-  code: string;
-  title: string;
-  pages: string;
-  description: string;
-  generator: (data: RestorationJobData) => Promise<Uint8Array>;
-  fileName: string;
 }
 
 export const DocumentGenerationPanel: React.FC<DocumentGenerationPanelProps> = ({
@@ -72,77 +62,12 @@ export const DocumentGenerationPanel: React.FC<DocumentGenerationPanelProps> = (
     unresolvedFields: string[];
   } | null>(null);
 
-  const safeJobNumber = (jobData.customer.jobNumber || 'FW-JOB').replace(/[^a-zA-Z0-9\-_]/g, '');
-  const safeCustomer = (jobData.customer.customerName || 'Customer').replace(/[^a-zA-Z0-9]/g, '_');
+  // Exact deliverables mapping required by Hays Intake to Production specification.
+  const combinedFileName = buildCombinedPacketFileName(jobData);
 
-  // Exact deliverables mapping required by Hays Intake to Production specification
-  const combinedFileName = `00_${safeJobNumber}_${safeCustomer}_Combined_Production_Packet.pdf`;
-
-  const docList: DocItem[] = [
-    {
-      id: 'prelim',
-      code: '01',
-      title: 'Preliminary Report',
-      pages: 'Page 1',
-      description: 'Carrier, claim adjuster, loss contact, inspect date, participants',
-      generator: generatePreliminaryReport,
-      fileName: `01_${safeJobNumber}_Preliminary_Report.pdf`,
-    },
-    {
-      id: 'welcome',
-      code: '02',
-      title: 'Customer Welcome Letter',
-      pages: 'Page 2',
-      description: 'Hays + Sons 4-phase process explanation & emergency dry-out scope',
-      generator: generateWelcomeLetter,
-      fileName: `02_${safeJobNumber}_Customer_Welcome_Letter.pdf`,
-    },
-    {
-      id: 'mortgage',
-      code: '03',
-      title: 'Mortgage Authorization',
-      pages: 'Page 3',
-      description: 'Lender inspection release & joint draft endorsement authorization',
-      generator: generateMortgageAuth,
-      fileName: `03_${safeJobNumber}_Mortgage_Authorization.pdf`,
-    },
-    {
-      id: 'contract',
-      code: '04',
-      title: 'Structural Repair Agreement',
-      pages: 'Pages 4–5',
-      description: 'RCV repairs, 50% down payment, 10-day start, 60-day complete, POA',
-      generator: generateContract,
-      fileName: `04_${safeJobNumber}_Structural_Repair_Agreement.pdf`,
-    },
-    {
-      id: 'cancellation',
-      code: '05',
-      title: 'Notice of Cancellation',
-      pages: 'Page 6',
-      description: '3-day statutory cancellation rights under Indiana home improvement laws',
-      generator: generateCancellationNotice,
-      fileName: `05_${safeJobNumber}_Notice_of_Cancellation.pdf`,
-    },
-    {
-      id: 'change_order',
-      code: '06',
-      title: 'Change Order / Addendum',
-      pages: 'Page 7',
-      description: 'Supplemental scope, +/- sum adjustments, and added contract days',
-      generator: generateChangeOrder,
-      fileName: `06_${safeJobNumber}_Change_Order_Addendum.pdf`,
-    },
-    {
-      id: 'checklist',
-      code: '07',
-      title: 'Production Checklist',
-      pages: 'Page 8',
-      description: 'DASH tracking, deductible collection verify, Xactimate version, dates',
-      generator: generateProductionChecklist,
-      fileName: `07_${safeJobNumber}_Production_Checklist.pdf`,
-    },
-  ];
+  // The eight standalone deliverables — generators and file names come from the shared catalog
+  // so the per-section quick actions always match this panel.
+  const docList: JobDocument[] = JOB_DOCUMENTS;
 
   // Quality Gate Verification check
   const unresolvedList: string[] = [];
@@ -155,11 +80,11 @@ export const DocumentGenerationPanel: React.FC<DocumentGenerationPanelProps> = (
 
   const isQualityGatePassed = unresolvedList.length === 0;
 
-  const handleDownload = async (doc: DocItem) => {
+  const handleDownload = async (doc: JobDocument) => {
     try {
       setDownloadingId(doc.id);
       const bytes = await doc.generator(jobData);
-      downloadPdf(bytes, doc.fileName);
+      downloadPdf(bytes, doc.buildFileName(jobData));
       setLastGeneratedSummary({
         timestamp: new Date().toLocaleTimeString(),
         filesCount: 1,
@@ -208,7 +133,7 @@ export const DocumentGenerationPanel: React.FC<DocumentGenerationPanelProps> = (
       // 2. Generate each individual document
       for (const doc of docList) {
         const bytes = await doc.generator(jobData);
-        zip.file(doc.fileName, bytes);
+        zip.file(doc.buildFileName(jobData), bytes);
       }
 
       // 3. Generate summary text file
@@ -234,7 +159,7 @@ Contract Timelines: ${jobData.financials.commenceDays} days commence, ${jobData.
 
 Files Included:
 - ${combinedFileName}
-${docList.map((d) => `- ${d.fileName}`).join('\n')}
+${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
 `;
       zip.file(`README_Production_Summary_${safeJobNumber}.txt`, summaryText);
 
@@ -243,7 +168,7 @@ ${docList.map((d) => `- ${d.fileName}`).join('\n')}
       const url = URL.createObjectURL(zipBlob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Hays_Production_Packet_${safeJobNumber}_${safeCustomer}.zip`;
+      a.download = `Hays_Production_Packet_${safeJobNumber(jobData)}_${safeCustomerName(jobData)}.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -251,7 +176,7 @@ ${docList.map((d) => `- ${d.fileName}`).join('\n')}
 
       setLastGeneratedSummary({
         timestamp: new Date().toLocaleTimeString(),
-        filesCount: 8,
+        filesCount: 9,
         calculatedRCV: formatCurrency(jobData.financials.totalApprovedRcv),
         calculatedNet: formatCurrency(jobData.financials.netClaimValue),
         calculatedDown: formatCurrency(jobData.financials.downPayment),
@@ -404,11 +329,11 @@ ${docList.map((d) => `- ${d.fileName}`).join('\n')}
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="text-[14px] font-semibold text-slate-900">Complete production packet</h3>
               <span className="text-[11px] font-medium text-slate-600 bg-white border border-slate-200 rounded px-1.5 py-0.5">
-                8 pages
+                9 pages
               </span>
             </div>
             <p className="mt-1 text-[12px] text-slate-500 max-w-xl">
-              All seven documents bundled in exact production order.
+              All eight documents bundled in exact production order.
             </p>
             <p className="mt-1.5 font-mono text-[11px] text-slate-400 break-all">{combinedFileName}</p>
           </div>
@@ -417,7 +342,7 @@ ${docList.map((d) => `- ${d.fileName}`).join('\n')}
         <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto justify-end shrink-0">
           <button
             onClick={() =>
-              onPreview('Complete 8-Page Restoration Packet', () =>
+              onPreview('Complete 9-Page Restoration Packet', () =>
                 generateCompletePacket(jobData)
               )
             }
@@ -447,7 +372,7 @@ ${docList.map((d) => `- ${d.fileName}`).join('\n')}
             disabled={isZipping}
             type="button"
             className="w-full sm:w-auto inline-flex items-center justify-center px-4 py-2.5 rounded-lg text-[13px] font-semibold bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 transition disabled:opacity-50"
-            title="Download a ZIP containing all 8 files plus a summary"
+            title="Download a ZIP containing all 9 files plus a summary"
           >
             {isZipping ? (
               <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
@@ -463,7 +388,7 @@ ${docList.map((d) => `- ${d.fileName}`).join('\n')}
       <div className="mt-8">
         <div className="flex items-center justify-between mb-3">
           <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-            Separate Logical Deliverables (01 through 07)
+            Separate Logical Deliverables (01 through 08)
           </h4>
           <span className="text-[11px] text-slate-400">Standardized Hays production naming</span>
         </div>
@@ -482,7 +407,7 @@ ${docList.map((d) => `- ${d.fileName}`).join('\n')}
                       {doc.code} • {doc.pages}
                     </span>
                     <span className="text-[10px] text-slate-400 font-mono truncate max-w-[140px]">
-                      {doc.fileName}
+                      {doc.buildFileName(jobData)}
                     </span>
                   </div>
                   <h5 className="font-bold text-slate-900 text-sm">{doc.title}</h5>

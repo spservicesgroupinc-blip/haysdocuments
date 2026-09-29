@@ -14,6 +14,7 @@ import {
   MortgageData,
   ChangeOrderData,
   createEmptyJob,
+  ensureRecordDefaults,
 } from './types/jobData';
 import {
   initAuth,
@@ -63,6 +64,7 @@ import { SectionTeam } from './components/SectionTeam';
 import { SectionMortgage } from './components/SectionMortgage';
 import { SectionChangeOrder } from './components/SectionChangeOrder';
 import { SectionChecklist } from './components/SectionChecklist';
+import { SectionProductionNotes } from './components/SectionProductionNotes';
 import { IntakeParserCard } from './components/IntakeParserCard';
 import { DocumentGenerationPanel } from './components/DocumentGenerationPanel';
 import { PdfPreviewModal } from './components/PdfPreviewModal';
@@ -136,8 +138,9 @@ export default function App() {
 
   /** Replaces the whole record and treats it as the new clean baseline. */
   const replaceJob = (next: RestorationJobData) => {
-    baselineRef.current = JSON.stringify(next);
-    setJobData(next);
+    const normalized = ensureRecordDefaults(next);
+    baselineRef.current = JSON.stringify(normalized);
+    setJobData(normalized);
     setIsDirty(false);
   };
 
@@ -440,6 +443,16 @@ export default function App() {
     }));
   };
 
+  const handleProductionNotesChange = (
+    field: keyof RestorationJobData['productionNotes'],
+    value: string
+  ) => {
+    setJobData((prev) => ({
+      ...prev,
+      productionNotes: { ...prev.productionNotes, [field]: value },
+    }));
+  };
+
   // Preview Document Handler
   const handleOpenPreview = async (
     title: string,
@@ -485,7 +498,7 @@ export default function App() {
     setConfirmDialog({
       isOpen: true,
       title: 'Save Packet to Google Drive?',
-      message: `This will generate the complete 8-page Hays + Sons restoration packet for Job #${jobData.customer.jobNumber} (${jobData.customer.customerName}) and upload it to your Google Drive in the "Hays & Sons Restoration" folder.`,
+      message: `This will generate the complete 9-page Hays + Sons restoration packet for Job #${jobData.customer.jobNumber} (${jobData.customer.customerName}) and upload it to your Google Drive in the "Hays & Sons Restoration" folder.`,
       confirmLabel: 'Upload to Drive',
       action: async () => {
         setIsDriveLoading(true);
@@ -554,7 +567,7 @@ export default function App() {
     setRecordId(newJob.recordId);
     setProvenance(newProv);
     const who = newJob.customer.customerName || 'new intake';
-    showStatus('success', `Master Job Record updated from intake (${who}) - all 8 documents refreshed.`);
+    showStatus('success', `Master Job Record updated from intake (${who}) - all production documents refreshed.`);
   };
 
   // Auth gate — the workspace is only reachable once signed in (or in developer mode).
@@ -670,16 +683,28 @@ export default function App() {
             )}
 
             {activeTab === 'customer' && (
-              <SectionCustomer data={jobData.customer} onChange={handleCustomerChange} />
+              <SectionCustomer
+                data={jobData.customer}
+                jobData={jobData}
+                onPreview={handleOpenPreview}
+                onChange={handleCustomerChange}
+              />
             )}
 
             {activeTab === 'insurance' && (
-              <SectionInsurance data={jobData.insurance} onChange={handleInsuranceChange} />
+              <SectionInsurance
+                data={jobData.insurance}
+                jobData={jobData}
+                onPreview={handleOpenPreview}
+                onChange={handleInsuranceChange}
+              />
             )}
 
             {activeTab === 'financials' && (
               <FinancialSummaryCard
                 financials={jobData.financials}
+                jobData={jobData}
+                onPreview={handleOpenPreview}
                 onRcvChange={(val) => updateFinancials(val, jobData.financials.deductible)}
                 onDeductibleChange={(val) =>
                   updateFinancials(jobData.financials.totalApprovedRcv, val)
@@ -692,9 +717,16 @@ export default function App() {
                 <SectionTeam
                   data={jobData.team}
                   branch={jobData.branch}
+                  jobData={jobData}
+                  onPreview={handleOpenPreview}
                   onChange={handleTeamChange}
                 />
-                <SectionMortgage data={jobData.mortgage} onChange={handleMortgageChange} />
+                <SectionMortgage
+                  data={jobData.mortgage}
+                  jobData={jobData}
+                  onPreview={handleOpenPreview}
+                  onChange={handleMortgageChange}
+                />
               </>
             )}
 
@@ -702,6 +734,8 @@ export default function App() {
               <SectionChangeOrder
                 data={jobData.changeOrder}
                 contractRcv={jobData.financials.totalApprovedRcv}
+                jobData={jobData}
+                onPreview={handleOpenPreview}
                 onChange={handleChangeOrderChange}
               />
             )}
@@ -709,7 +743,18 @@ export default function App() {
             {activeTab === 'checklist' && (
               <SectionChecklist
                 checklist={jobData.checklist}
+                jobData={jobData}
+                onPreview={handleOpenPreview}
                 onChange={handleChecklistChange}
+              />
+            )}
+
+            {activeTab === 'productionNotes' && (
+              <SectionProductionNotes
+                productionNotes={jobData.productionNotes}
+                jobData={jobData}
+                onPreview={handleOpenPreview}
+                onChange={handleProductionNotesChange}
               />
             )}
 

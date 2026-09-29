@@ -1,14 +1,24 @@
 import React from 'react';
 import { Users, Building, ShieldCheck, Mail, Phone, MapPin } from 'lucide-react';
-import { TeamData, BranchData } from '../types/jobData';
+import { TeamData, BranchData, RestorationJobData } from '../types/jobData';
+import { DOC } from '../services/documentCatalog';
+import { SectionPdfActions, type PdfPreviewRequest } from './SectionPdfActions';
 
 interface SectionTeamProps {
   data: TeamData;
   branch: BranchData;
+  jobData: RestorationJobData;
+  onPreview: PdfPreviewRequest;
   onChange: (field: keyof TeamData, value: string) => void;
 }
 
-export const SectionTeam: React.FC<SectionTeamProps> = ({ data, branch, onChange }) => {
+export const SectionTeam: React.FC<SectionTeamProps> = ({
+  data,
+  branch,
+  jobData,
+  onPreview,
+  onChange,
+}) => {
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-5">
       <div className="flex items-center gap-3 mb-5 pb-4 border-b border-slate-100">
@@ -154,6 +164,8 @@ export const SectionTeam: React.FC<SectionTeamProps> = ({ data, branch, onChange
           />
         </div>
       </div>
+
+      <SectionPdfActions jobData={jobData} docs={[DOC.preliminaryReport]} onPreview={onPreview} />
     </div>
   );
 };

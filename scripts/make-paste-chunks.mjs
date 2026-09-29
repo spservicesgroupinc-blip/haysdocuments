@@ -61,9 +61,14 @@ while (start < lines.length) {
 rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
 
+// The source may or may not end with a newline; the parts have to match it either
+// way, otherwise the byte-exact check below fails for a cosmetic difference.
+const endsWithEol = raw.endsWith(eol);
+
 const manifest = [];
 chunks.forEach(([from, to], index) => {
-  const text = lines.slice(from, to + 1).join(eol) + eol;
+  const isLast = index === chunks.length - 1;
+  const text = lines.slice(from, to + 1).join(eol) + (isLast && !endsWithEol ? '' : eol);
   const name = 'part' + (index + 1) + '.txt';
   writeFileSync(join(OUT, name), text, 'utf8');
   manifest.push({

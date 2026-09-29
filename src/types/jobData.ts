@@ -81,6 +81,21 @@ export interface ChangeOrderData {
   addedDays: number | '';
 }
 
+export interface ProductionNotesData {
+  /** Narrative summary of the scope and repairs for this loss. */
+  scopeSummary: string;
+  /** Materials, finishes, and equipment required for production. */
+  materialsAndEquipment: string;
+  /** Scheduling notes, site access, and staging details. */
+  scheduleAndAccess: string;
+  /** Safety considerations and hazards on the job site. */
+  safetyConsiderations: string;
+  /** Communication notes for the customer, adjuster, and crew. */
+  communicationNotes: string;
+  /** Free-form catch-all for anything else the production team tracks. */
+  additionalNotes: string;
+}
+
 export interface BranchData {
   name: string;
   division: string;
@@ -111,6 +126,8 @@ export interface RestorationJobData {
   team: TeamData;
   mortgage: MortgageData;
   changeOrder: ChangeOrderData;
+  // Production Notes — free-form fields filled by the production team.
+  productionNotes: ProductionNotesData;
   // Production Checklist specific flags
   checklist: {
     hasDeductibleBeenCollected: 'Yes' | 'No' | 'Pending';
@@ -246,6 +263,14 @@ export function createEmptyJob(): RestorationJobData {
       changeType: 'increase',
       addedDays: 0,
     },
+    productionNotes: {
+      scopeSummary: '',
+      materialsAndEquipment: '',
+      scheduleAndAccess: '',
+      safetyConsiderations: '',
+      communicationNotes: '',
+      additionalNotes: '',
+    },
     checklist: {
       hasDeductibleBeenCollected: 'No',
       deductibleExplanation: '',
@@ -274,6 +299,28 @@ export const DEFAULT_BRANCH_INFO: BranchData = {
   managerName: 'Kenneth Belford',
   managerEmail: 'kbelford@haysandsons.com',
 };
+
+/**
+ * Fills any missing nested section (e.g. `productionNotes` on records saved
+ * before that section existed) with blank defaults so older stored records can
+ * be opened and edited without crashing.
+ */
+export function ensureRecordDefaults(record: RestorationJobData): RestorationJobData {
+  const base = createEmptyJob();
+  return {
+    ...base,
+    ...record,
+    branch: { ...base.branch, ...(record.branch ?? {}) },
+    customer: { ...base.customer, ...(record.customer ?? {}) },
+    insurance: { ...base.insurance, ...(record.insurance ?? {}) },
+    financials: { ...base.financials, ...(record.financials ?? {}) },
+    team: { ...base.team, ...(record.team ?? {}) },
+    mortgage: { ...base.mortgage, ...(record.mortgage ?? {}) },
+    changeOrder: { ...base.changeOrder, ...(record.changeOrder ?? {}) },
+    productionNotes: { ...base.productionNotes, ...(record.productionNotes ?? {}) },
+    checklist: { ...base.checklist, ...(record.checklist ?? {}) },
+  };
+}
 
 // Sample/demo data deliberately lives outside the application source (see
 // scripts/fixtures.ts). The app always starts from createEmptyJob() so no

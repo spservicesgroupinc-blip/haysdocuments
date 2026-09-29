@@ -7,6 +7,7 @@ import {
   Users2,
   FileEdit,
   CheckCircle,
+  StickyNote,
   FileCheck,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -20,6 +21,7 @@ export type WorkspaceTab =
   | 'team'
   | 'changeOrder'
   | 'checklist'
+  | 'productionNotes'
   | 'documents';
 
 export interface WorkspaceSection {
@@ -37,6 +39,7 @@ export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
   { id: 'team', label: 'Team & Mortgage', icon: Users2 },
   { id: 'changeOrder', label: 'Change Order', icon: FileEdit },
   { id: 'checklist', label: 'Checklist', icon: CheckCircle },
+  { id: 'productionNotes', label: 'Production Notes', icon: StickyNote },
   { id: 'documents', label: 'Generate PDFs', icon: FileCheck },
 ];
 
