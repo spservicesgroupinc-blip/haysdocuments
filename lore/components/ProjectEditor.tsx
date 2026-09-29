@@ -179,7 +179,7 @@ export const ProjectEditor: React.FC<ProjectEditorProps> = ({
                    <FileAudio size={24} />
                 </div>
                 <h2 className="text-3xl font-serif font-bold text-slate-900 mb-3">Source Material</h2>
-                <p className="text-slate-500 text-lg max-w-xl mx-auto leading-relaxed">Gather your raw thoughts, recordings, and notes. This is the clay we will sculpt into your story.</p>
+                <p className="text-slate-500 text-lg max-w-xl mx-auto leading-relaxed">Gather your raw thoughts and notes. This is the clay we will sculpt into your story.</p>
               </div>
               
               <SourceInput 
@@ -329,7 +329,6 @@ export const ProjectEditor: React.FC<ProjectEditorProps> = ({
                  const newChapters = project.chapters.map(c => c.chapterNumber === updatedChapter.chapterNumber ? updatedChapter : c);
                  updateProject({ chapters: newChapters });
               }}
-              onUpdateOutline={handleUpdateOutline}
               user={user}
             />
           )}

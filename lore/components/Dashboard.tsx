@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { BookProject, User } from '../types';
 import { Plus, Clock, Trash2, Download, BookCopy, Layers, Feather, Loader2, TrendingUp, X, ExternalLink, Globe, Lightbulb, Cloud, LogOut } from 'lucide-react';
-import { researchBookTrends, TrendResult } from '../services/gemini';
+import { researchBookTrends, TrendResult } from '../services/deepseek';
 import { CloudService } from '../services/cloud';
 import { StorageService } from '../services/storage';
 import ReactMarkdown from 'react-markdown';

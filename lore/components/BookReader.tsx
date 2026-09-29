@@ -1,5 +1,5 @@
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ChapterContent, BookOutline, User } from '../types';
 import { ChevronLeft, ChevronRight, Loader2, Download, PenLine, Save, FileText, Wand2, Menu, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -14,94 +14,28 @@ interface BookReaderProps {
   outline: BookOutline;
   chapters: ChapterContent[];
   onChapterUpdate?: (chapter: ChapterContent) => void;
-  selectedVoice?: string;
-  onVoiceChange?: (voice: string) => void;
-  onUpdateOutline?: (outline: BookOutline) => void;
   user?: User;
-}
-
-// Audio Cache
-const audioCache = new Map<string, AudioBuffer>();
-
-function decode(base64: string) {
-  try {
-    const binaryString = atob(base64);
-    const len = binaryString.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-    return bytes;
-  } catch (e) {
-    console.error("Audio decoding failed", e);
-    return new Uint8Array(0);
-  }
-}
-
-async function decodeAudioData(
-  data: Uint8Array,
-  ctx: AudioContext,
-  sampleRate: number = 24000,
-  numChannels: number = 1
-): Promise<AudioBuffer> {
-  let bufferToUse = data.buffer;
-  let byteOffset = data.byteOffset;
-  let byteLength = data.byteLength;
-
-  if (byteLength % 2 !== 0) {
-      const newBuffer = new Uint8Array(byteLength - 1);
-      newBuffer.set(data.subarray(0, byteLength - 1));
-      bufferToUse = newBuffer.buffer;
-      byteOffset = 0;
-      byteLength = newBuffer.byteLength;
-  }
-
-  const dataInt16 = new Int16Array(bufferToUse, byteOffset, byteLength / 2);
-  const frameCount = dataInt16.length / numChannels;
-  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
-
-  for (let channel = 0; channel < numChannels; channel++) {
-    const channelData = buffer.getChannelData(channel);
-    for (let i = 0; i < frameCount; i++) {
-      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
-    }
-  }
-  return buffer;
 }
 
 export const BookReader: React.FC<BookReaderProps> = ({ 
   outline, 
   chapters, 
   onChapterUpdate, 
-  selectedVoice, 
-  onVoiceChange,
-  onUpdateOutline,
   user
 }) => {
   const [currentChapterIndex, setCurrentChapterIndex] = useState(0);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [audioLoading, setAudioLoading] = useState(false);
   const [isExportingDocs, setIsExportingDocs] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
   const [polishInstruction, setPolishInstruction] = useState('');
   const [isPolishing, setIsPolishing] = useState(false);
-  const [isCoverGenerating, setIsCoverGenerating] = useState(false);
-  const [isChapterImageGenerating, setIsChapterImageGenerating] = useState(false);
   const [notification, setNotification] = useState<{message: string, type: 'error' | 'success'} | null>(null);
   
   // PDF Generation State: We use a specific mode to render the print layout
   const [isPdfMode, setIsPdfMode] = useState(false);
 
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
-
   const currentChapter = chapters[currentChapterIndex];
-
-  useEffect(() => {
-    stopAudio();
-  }, [currentChapterIndex]);
 
   // --- PDF GENERATION LOGIC ---
   useEffect(() => {
@@ -161,76 +95,6 @@ export const BookReader: React.FC<BookReaderProps> = ({
     setTimeout(() => setNotification(null), 4000);
   };
 
-  const [playbackSpeed, setPlaybackSpeed] = useState<number>(1.0);
-
-  const stopAudio = () => {
-    if (audioSourceRef.current) {
-      try { audioSourceRef.current.stop(); } catch(e) {}
-      audioSourceRef.current = null;
-    }
-    setIsPlaying(false);
-  };
-
-  const updatePlaybackSpeed = (speed: number) => {
-    setPlaybackSpeed(speed);
-    if (audioSourceRef.current) {
-      try {
-        audioSourceRef.current.playbackRate.value = speed;
-      } catch (e) {
-        console.warn("Could not set playback rate", e);
-      }
-    }
-  };
-
-  const playChapterAudio = async () => {
-    if (isPlaying) { stopAudio(); return; }
-    if (!currentChapter?.content) return;
-
-    let ctx = audioContextRef.current;
-    if (!ctx) {
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      ctx = new AudioContextClass();
-      audioContextRef.current = ctx;
-    }
-
-    if (ctx.state === 'suspended') await ctx.resume();
-
-    const cacheKey = `${currentChapter.chapterNumber}-${selectedVoice}-${currentChapter.content.length}`;
-    if (audioCache.has(cacheKey)) {
-        playBuffer(audioCache.get(cacheKey)!);
-        return;
-    }
-
-    setAudioLoading(true);
-    try {
-      const textToSpeak = currentChapter.content.slice(0, 4000);
-      const pcmBase64 = await generateSpeech(textToSpeak, selectedVoice || 'Kore');
-      if (!pcmBase64) throw new Error("Audio generation failed");
-      const pcmData = decode(pcmBase64);
-      const audioBuffer = await decodeAudioData(pcmData, ctx, 24000);
-      audioCache.set(cacheKey, audioBuffer);
-      playBuffer(audioBuffer);
-    } catch (err: any) {
-      showNotification(err.message || "Audio playback failed", 'error');
-    } finally {
-      setAudioLoading(false);
-    }
-  };
-
-  const playBuffer = (buffer: AudioBuffer) => {
-    const ctx = audioContextRef.current;
-    if (!ctx) return;
-    if (audioSourceRef.current) try { audioSourceRef.current.stop(); } catch(e) {}
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.playbackRate.value = playbackSpeed;
-    source.connect(ctx.destination);
-    source.onended = () => { setIsPlaying(false); audioSourceRef.current = null; };
-    audioSourceRef.current = source;
-    source.start(0);
-    setIsPlaying(true);
-  };
-
   const handleExportDocs = async () => {
     if (!user) {
         showNotification("Please log in to export to Google Docs.", 'error');
@@ -275,42 +139,6 @@ export const BookReader: React.FC<BookReaderProps> = ({
       showNotification("Polish failed.", 'error');
     } finally {
       setIsPolishing(false);
-    }
-  };
-
-  const handleGenerateBookCover = async () => {
-    if (!onUpdateOutline) return;
-    setIsCoverGenerating(true);
-    try {
-      const prompt = `Create a flat 2D front cover design for a book titled "${outline.title}". 
-      Description: ${outline.description}. 
-      Style: Minimalist, modern, striking typography, best-selling aesthetic.
-      IMPORTANT: This must be a flat, rectangular 2D image suitable for printing. Do NOT render a 3D book object, do NOT show a book spine.`;
-      
-      const base64Image = await generateImage(prompt, '3:4'); 
-      onUpdateOutline({
-        ...outline,
-        coverImage: base64Image
-      });
-      showNotification("Cover Generated!");
-    } catch (e: any) {
-      showNotification("Failed to generate cover.", 'error');
-    } finally {
-      setIsCoverGenerating(false);
-    }
-  };
-
-  const handleGenerateChapterImage = async () => {
-    if (!currentChapter || !onChapterUpdate) return;
-    setIsChapterImageGenerating(true);
-    try {
-      const prompt = `Charcoal sketch. ${currentChapter.title}. ${currentChapter.content.slice(0, 200)}. High contrast, black and white.`;
-      const base64 = await generateImage(prompt, '16:9');
-      onChapterUpdate({ ...currentChapter, image: base64 });
-    } catch (e) {
-      showNotification("Failed to generate sketch.", 'error');
-    } finally {
-      setIsChapterImageGenerating(false);
     }
   };
 
@@ -387,40 +215,6 @@ export const BookReader: React.FC<BookReaderProps> = ({
                <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">Table of Contents</p>
              </div>
              <button onClick={() => setIsSidebarOpen(false)} className="md:hidden p-1 text-slate-400 hover:text-slate-600"><X size={24} /></button>
-          </div>
-
-          {/* Book Cover in Sidebar */}
-          <div className="p-4 border-b border-slate-100 flex flex-col items-center bg-white">
-              {outline.coverImage ? (
-                  <div className="relative group w-32 shadow-lg rounded-md overflow-hidden mb-3">
-                      <img src={`data:image/jpeg;base64,${outline.coverImage}`} alt="Cover" className="w-full h-auto" />
-                      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                          <button 
-                            onClick={handleGenerateBookCover}
-                            disabled={isCoverGenerating}
-                            className="p-2 bg-white text-slate-900 rounded-full hover:bg-blue-50 transition-colors"
-                            title="Regenerate Cover"
-                          >
-                             {isCoverGenerating ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-                          </button>
-                      </div>
-                  </div>
-              ) : (
-                  <button 
-                    onClick={handleGenerateBookCover}
-                    disabled={isCoverGenerating}
-                    className="w-full py-6 border-2 border-dashed border-slate-200 rounded-lg flex flex-col items-center justify-center text-slate-400 hover:text-blue-600 hover:border-blue-300 hover:bg-blue-50 transition-all mb-2"
-                  >
-                      {isCoverGenerating ? (
-                          <Loader2 size={24} className="animate-spin mb-2" />
-                      ) : (
-                          <ImageIcon size={24} className="mb-2" />
-                      )}
-                      <span className="text-xs font-bold uppercase tracking-wide">
-                          {isCoverGenerating ? 'Designing...' : 'Create Cover Art'}
-                      </span>
-                  </button>
-              )}
           </div>
 
           <div className="flex-1 overflow-y-auto p-4 space-y-2">
@@ -596,24 +390,6 @@ export const BookReader: React.FC<BookReaderProps> = ({
                               </div>
                            ) : (
                               <div className="prose prose-lg prose-slate max-w-none font-serif leading-loose prose-headings:font-sans prose-headings:font-bold prose-p:text-slate-700">
-                                 {/* Chapter Image/Sketch */}
-                                 {currentChapter.image ? (
-                                    <div className="my-8 rounded-xl overflow-hidden shadow-lg border border-slate-100">
-                                       <img src={`data:image/jpeg;base64,${currentChapter.image}`} alt="Chapter Sketch" className="w-full h-auto" />
-                                    </div>
-                                 ) : (
-                                    <div className="flex justify-center my-6 group">
-                                       <button 
-                                          onClick={handleGenerateChapterImage}
-                                          disabled={isChapterImageGenerating}
-                                          className="flex items-center gap-2 text-xs text-slate-300 hover:text-blue-600 border border-transparent hover:border-blue-100 hover:bg-blue-50 px-3 py-1.5 rounded-full transition-all"
-                                       >
-                                          {isChapterImageGenerating ? <Loader2 size={12} className="animate-spin" /> : <ImageIcon size={14} />}
-                                          Generate Illustration
-                                       </button>
-                                    </div>
-                                 )}
-
                                  <ReactMarkdown>{currentChapter.content}</ReactMarkdown>
                               </div>
                            )}
@@ -627,48 +403,6 @@ export const BookReader: React.FC<BookReaderProps> = ({
                                  >
                                     <ChevronLeft size={20} /> Previous
                                  </button>
-
-                                 {/* Audio Player */}
-                                 <div className="flex items-center gap-4">
-                                     {selectedVoice && onVoiceChange && (
-                                         <select 
-                                           value={selectedVoice} 
-                                           onChange={(e) => onVoiceChange(e.target.value)}
-                                           className="text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1 outline-none font-medium"
-                                         >
-                                            <option value="Kore">Kore (Female)</option>
-                                            <option value="Puck">Puck (Male)</option>
-                                            <option value="Fenrir">Fenrir (Deep)</option>
-                                            <option value="Aoede">Aoede (Soft)</option>
-                                         </select>
-                                     )}
-
-                                     {/* Audiobook Speed Controls */}
-                                     <select
-                                       value={playbackSpeed}
-                                       onChange={(e) => updatePlaybackSpeed(parseFloat(e.target.value))}
-                                       className="text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1 outline-none font-medium text-slate-700 cursor-pointer"
-                                     >
-                                        <option value={0.75}>0.75x</option>
-                                        <option value={1.0}>1.0x</option>
-                                        <option value={1.25}>1.25x</option>
-                                        <option value={1.5}>1.5x</option>
-                                        <option value={2.0}>2.0x</option>
-                                     </select>
-                                     <button 
-                                        onClick={playChapterAudio}
-                                        disabled={audioLoading}
-                                        className={`w-10 h-10 rounded-full flex items-center justify-center transition-all shadow-sm ${isPlaying ? 'bg-red-50 text-red-600 hover:bg-red-100' : 'bg-blue-50 text-blue-600 hover:bg-blue-100'}`}
-                                     >
-                                        {audioLoading ? (
-                                           <Loader2 size={18} className="animate-spin" />
-                                        ) : isPlaying ? (
-                                           <Square size={16} fill="currentColor" />
-                                        ) : (
-                                           <Play size={18} fill="currentColor" className="ml-0.5" />
-                                        )}
-                                     </button>
-                                 </div>
 
                                  <button 
                                    disabled={currentChapterIndex === chapters.length - 1}

@@ -11,7 +11,7 @@ export const CostTracker: React.FC = () => {
     const unsubscribe = PricingService.subscribe((summary) => {
       setCosts({ ...summary });
     });
-    return unsubscribe;
+    return () => { unsubscribe(); };
   }, []);
 
   const formatTokens = (num: number) => {
@@ -28,11 +28,11 @@ export const CostTracker: React.FC = () => {
       >
         <div className="flex items-center gap-1.5 text-emerald-700 font-semibold">
            <CheckCircle2 size={14} className="text-emerald-500" />
-           <span>Free Gemini API Mode</span>
+           <span>DeepSeek API Usage</span>
         </div>
 
         <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">
-          $0.00 / Free
+          ${(costs.sessionCost || 0).toFixed(3)} session
         </span>
         
         {isOpen && (
@@ -42,8 +42,8 @@ export const CostTracker: React.FC = () => {
                     <span>{formatTokens(costs.totalTokens)}</span>
                 </div>
                 <div className="flex flex-col">
-                    <span className="text-[9px] text-emerald-600 uppercase tracking-wider font-semibold">API Tier</span>
-                    <span>Gemini Free Tier</span>
+                    <span className="text-[9px] text-emerald-600 uppercase tracking-wider font-semibold">Total Cost</span>
+                    <span>${(costs.totalCost || 0).toFixed(3)}</span>
                 </div>
             </div>
         )}
