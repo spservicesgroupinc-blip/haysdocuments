@@ -11,8 +11,15 @@ import { AiIntakePayload } from './intakeParser';
 
 const DEEPSEEK_URL = 'https://api.deepseek.com/chat/completions';
 const MODEL_CHAT = 'deepseek-chat';
-const KEY_STORAGE = 'hays_deepseek_key';
 const REQUEST_TIMEOUT_MS = 60_000;
+
+/**
+ * DeepSeek API key built into the application. Ships with every build so the
+ * intake AI works out of the box with no per-user key entry. (Any value
+ * embedded in a client-side bundle is visible to end users - keep this key's
+ * account usage limits in mind.)
+ */
+const EMBEDDED_API_KEY = 'sk-6a52e74c734c4788a9aea6730257b56a';
 
 const envKey = ((import.meta.env.VITE_DEEPSEEK_API_KEY as string | undefined) || '').trim();
 
@@ -26,32 +33,13 @@ export class DeepseekIntakeError extends Error {
 }
 
 /* ------------------------------------------------------------------ *
- * API key management (env var wins; otherwise stored on this device)
+ * API key resolution - the key is built into the application; an
+ * environment override (VITE_DEEPSEEK_API_KEY) still takes priority.
  * ------------------------------------------------------------------ */
 
 export function getIntakeApiKey(): string {
   if (envKey) return envKey;
-  try {
-    return localStorage.getItem(KEY_STORAGE) || '';
-  } catch {
-    return '';
-  }
-}
-
-export function setIntakeApiKey(key: string): void {
-  try {
-    localStorage.setItem(KEY_STORAGE, key.trim());
-  } catch (error) {
-    console.warn('Could not persist the DeepSeek API key:', error);
-  }
-}
-
-export function clearIntakeApiKey(): void {
-  try {
-    localStorage.removeItem(KEY_STORAGE);
-  } catch {
-    /* ignore */
-  }
+  return EMBEDDED_API_KEY;
 }
 
 export function hasIntakeApiKey(): boolean {

@@ -7,8 +7,6 @@ import {
   AlertTriangle,
   Info,
   Loader2,
-  KeyRound,
-  ShieldCheck,
 } from 'lucide-react';
 import { RestorationJobData } from '../types/jobData';
 import {
@@ -19,12 +17,7 @@ import {
   FieldProvenanceType,
   ExtractedSectionSummary,
 } from '../services/intakeParser';
-import {
-  analyzeIntakeWithAi,
-  hasIntakeApiKey,
-  setIntakeApiKey,
-  clearIntakeApiKey,
-} from '../services/deepseekIntake';
+import { analyzeIntakeWithAi } from '../services/deepseekIntake';
 import { extractTextFromPdfBuffer } from '../services/pdfExtractor';
 
 interface IntakeParserCardProps {
@@ -47,9 +40,6 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
   const [intakeText, setIntakeText] = useState('');
   const [isExtractingPdf, setIsExtractingPdf] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [aiConfigured, setAiConfigured] = useState<boolean>(() => hasIntakeApiKey());
-  const [showAiSettings, setShowAiSettings] = useState(false);
-  const [aiKeyInput, setAiKeyInput] = useState('');
   const [uploadedFileInfo, setUploadedFileInfo] = useState<{
     name: string;
     sizeKb: number;
@@ -95,28 +85,22 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
     if (!trimmed || isAnalyzing) return;
     lastParsedTextRef.current = trimmed;
 
-    if (hasIntakeApiKey()) {
-      setIsAnalyzing(true);
-      try {
-        const payload = await analyzeIntakeWithAi(trimmed);
-        const result = applyAiExtractionToJob(payload, currentJob);
-        commitResult(result, source, 'ai');
-        return;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error('DeepSeek intake analysis failed:', error);
-        const result = parseRawIntakeText(trimmed, currentJob);
-        result.extractionSummary.warnings.unshift(
-          `AI analysis failed (${message}) - the built-in rules parser was used instead.`
-        );
-        commitResult(result, source, 'rules', message);
-        return;
-      } finally {
-        setIsAnalyzing(false);
-      }
+    setIsAnalyzing(true);
+    try {
+      const payload = await analyzeIntakeWithAi(trimmed);
+      const result = applyAiExtractionToJob(payload, currentJob);
+      commitResult(result, source, 'ai');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('DeepSeek intake analysis failed:', error);
+      const result = parseRawIntakeText(trimmed, currentJob);
+      result.extractionSummary.warnings.unshift(
+        `AI analysis failed (${message}) - the built-in rules parser was used instead.`
+      );
+      commitResult(result, source, 'rules', message);
+    } finally {
+      setIsAnalyzing(false);
     }
-
-    commitResult(parseRawIntakeText(trimmed, currentJob), source, 'rules');
   };
 
   // Large pastes are parsed the moment they land, so "copy, paste, done" is one step.
@@ -130,21 +114,6 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
         void handleParse(value, 'paste');
       }
     }, 60);
-  };
-
-  const handleSaveAiKey = () => {
-    const key = aiKeyInput.trim();
-    if (!key) return;
-    setIntakeApiKey(key);
-    setAiKeyInput('');
-    setAiConfigured(true);
-    setShowAiSettings(false);
-  };
-
-  const handleClearAiKey = () => {
-    clearIntakeApiKey();
-    setAiConfigured(false);
-    setAiKeyInput('');
   };
 
   const processFile = async (file: File) => {
@@ -244,11 +213,9 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
               <span className="text-[11px] font-bold bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full border border-slate-200">
                 DASH / Xactimate
               </span>
-              {aiConfigured && (
-                <span className="text-[11px] font-bold bg-red-50 text-red-600 px-2 py-0.5 rounded-full border border-red-200">
-                  DeepSeek AI
-                </span>
-              )}
+              <span className="text-[11px] font-bold bg-red-50 text-red-600 px-2 py-0.5 rounded-full border border-red-200">
+                DeepSeek AI
+              </span>
             </div>
             <p className="text-xs text-slate-500">
               Paste DASH job logs, carrier emails, or estimate exports - DeepSeek AI reads the
@@ -325,104 +292,24 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
 
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mt-2.5">
           <span className="text-[11px] text-slate-400">
-            {aiConfigured
-              ? 'Pastes are analyzed by DeepSeek AI automatically - existing entries are only replaced when the document provides a new value.'
-              : 'No AI key set - pastes are parsed with the built-in rules parser. Add a DeepSeek key for AI document understanding.'}
+            Pastes are analyzed by DeepSeek AI automatically - existing entries are only replaced
+            when the document provides a new value.
           </span>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setShowAiSettings((v) => !v)}
-              className={`inline-flex items-center px-3 py-2 rounded-xl text-xs font-semibold border transition ${
-                aiConfigured
-                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                  : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              <KeyRound className="w-3.5 h-3.5 mr-1.5" />
-              {aiConfigured ? 'AI Key Set' : 'Set AI Key'}
-            </button>
-            <button
-              type="button"
-              onClick={() => handleParse(intakeText)}
-              disabled={!intakeText.trim() || isExtractingPdf || isAnalyzing}
-              className="inline-flex items-center px-4 py-2 rounded-xl text-xs font-bold bg-red-600 hover:bg-red-700 text-white transition shadow-sm disabled:opacity-50"
-            >
-              {isAnalyzing ? (
-                <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-              ) : (
-                <Sparkles className="w-3.5 h-3.5 mr-1.5" />
-              )}
-              {isAnalyzing
-                ? 'DeepSeek AI Analyzing...'
-                : aiConfigured
-                ? 'AI Analyze & Populate Master Record'
-                : 'Parse & Populate Master Record'}
-              {!isAnalyzing && <ArrowRight className="w-3.5 h-3.5 ml-1.5" />}
-            </button>
-          </div>
-        </div>
-
-        {/* DeepSeek AI key settings */}
-        {showAiSettings && (
-          <div className="mt-2.5 p-3.5 rounded-xl border border-red-100 bg-red-50/40 text-xs">
-            <div className="font-semibold text-slate-800 flex items-center gap-1.5 mb-1">
-              <ShieldCheck className="w-4 h-4 text-red-600" />
-              DeepSeek AI Intake Analysis
-            </div>
-            <p className="text-[11px] text-slate-500 mb-2">
-              The AI reads the pasted text or uploaded document and understands which value belongs
-              in which field before populating the Master Job Record. Without a key, the built-in
-              rules parser is used instead.
-            </p>
-            {aiConfigured ? (
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-semibold text-emerald-700 flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> AI key configured on this device
-                </span>
-                <button
-                  type="button"
-                  onClick={handleClearAiKey}
-                  className="px-2.5 py-1 rounded-lg border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 font-semibold text-[11px]"
-                >
-                  Remove Key
-                </button>
-              </div>
+          <button
+            type="button"
+            onClick={() => handleParse(intakeText)}
+            disabled={!intakeText.trim() || isExtractingPdf || isAnalyzing}
+            className="inline-flex items-center px-4 py-2 rounded-xl text-xs font-bold bg-red-600 hover:bg-red-700 text-white transition shadow-sm disabled:opacity-50"
+          >
+            {isAnalyzing ? (
+              <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
             ) : (
-              <div className="flex items-center gap-2">
-                <input
-                  type="password"
-                  value={aiKeyInput}
-                  onChange={(e) => setAiKeyInput(e.target.value)}
-                  placeholder="sk-..."
-                  autoComplete="off"
-                  className="flex-1 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-[11px] font-mono focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
-                />
-                <button
-                  type="button"
-                  onClick={handleSaveAiKey}
-                  disabled={!aiKeyInput.trim()}
-                  className="px-3 py-1.5 rounded-lg bg-red-600 text-white font-bold text-[11px] hover:bg-red-700 disabled:opacity-50"
-                >
-                  Save Key
-                </button>
-              </div>
+              <Sparkles className="w-3.5 h-3.5 mr-1.5" />
             )}
-            <p className="text-[10px] text-slate-400 mt-2">
-              The key is stored only on this device and sent directly to api.deepseek.com. Create one
-              at{' '}
-              <a
-                href="https://platform.deepseek.com/api_keys"
-                target="_blank"
-                rel="noreferrer"
-                className="underline hover:text-slate-600"
-              >
-                platform.deepseek.com/api_keys
-              </a>{' '}
-              or set VITE_DEEPSEEK_API_KEY to share it with the whole team.
-            </p>
-          </div>
-        )}
+            {isAnalyzing ? 'DeepSeek AI Analyzing...' : 'AI Analyze & Populate Master Record'}
+            {!isAnalyzing && <ArrowRight className="w-3.5 h-3.5 ml-1.5" />}
+          </button>
+        </div>
       </div>
 
       {/* Extraction Results: where each pasted value landed */}
