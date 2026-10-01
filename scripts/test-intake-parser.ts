@@ -2,7 +2,7 @@
  * Focused test harness for the intake text parser (src/services/intakeParser.ts).
  *
  * The parser is the single point where pasted DASH logs, carrier emails and
- * estimate recaps get routed into the eight master-record sections, so it has
+ * estimate recaps get routed into the nine master-record sections, so it has
  * to hold up against the real shapes people paste in:
  *
  *   - labelled key/value blocks (colon, dash, tab, two-space and "is/was" forms)

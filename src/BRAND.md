@@ -177,15 +177,12 @@ Contrast ratios measured against white:
 
 ## 9. Outstanding gaps
 
-1. **No real logo asset** — the mark is text in a coloured box. No SVG, no favicon (`index.html` has
-   no `icon` link), and no usage guidance for print or PDF.
-2. **Three reds** in circulation — see section 2.
-3. **Type scale is approximately 85% unified.** The legacy section components (`SectionInsurance`,
+1. **Type scale is approximately 85% unified.** The legacy section components (`SectionInsurance`,
    `SectionTeam`, `SectionMortgage`, `SectionChangeOrder`, `SectionChecklist`) still use `text-sm`
    (14px) inputs and a few `text-[10px]` labels, while `Navbar`, `FinancialSummaryCard`,
    `SectionCustomer` and `DocumentGenerationPanel` use the 13px / 12px scale.
-4. **No named type tokens** — sizes are inline arbitrary values.
-5. **System font only** — Windows and macOS render the product differently. Consider a licensed or
+2. **No named type tokens** — sizes are inline arbitrary values.
+3. **System font only** — Windows and macOS render the product differently. Consider a licensed or
    open typeface such as Inter if cross-platform consistency matters.
-6. **White on red** is the only place brand red carries small text; verify in print, where `#DC2626`
+4. **White on red** is the only place brand red carries small text; verify in print, where `#DC2626`
    can shift noticeably.

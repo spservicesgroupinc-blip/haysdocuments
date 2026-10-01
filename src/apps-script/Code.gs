@@ -1092,7 +1092,8 @@ function emptyRecordTemplate_() {
       hasCheckBeenSent: false,
       isDepreciationWithheld: false,
       hasDeductibleBeenCollected: 'No'
-    }
+    },
+    productionNotes: { notes: '' }
   };
 }
 
@@ -1124,6 +1125,17 @@ function saveJob_(user, jobData) {
     }
   }
 
+  // Guard against exceeding the 50,000-character Google Sheets cell limit.
+  // Long free-text fields (Production Notes, Loss Description, etc.) can push
+  // the serialized record past it, which would fail the whole save.
+  var recordJson = JSON.stringify(jobData);
+  if (recordJson.length > 49000) {
+    throw appError_(
+      'record_too_large',
+      'Job record is ' + recordJson.length + ' characters, over the 50,000-character storage limit. Shorten the Production Notes or other long text fields.'
+    );
+  }
+
   var rowValues = [
     recordId,
     jobData.jobNumber || jobData.JobNumber || '',
@@ -1139,7 +1151,7 @@ function saveJob_(user, jobData) {
     nowIso,
     user.email,
     currentSchemaVersion_(),
-    JSON.stringify(jobData),
+    recordJson,
     false // Deleted
   ];
 
