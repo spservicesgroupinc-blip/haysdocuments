@@ -24,10 +24,14 @@ import {
   syncJobToGoogleSheets,
 } from './services/googleWorkspaceService';
 import {
-  createPdfBlobUrl,
   downloadPdf,
   generateCompletePacket,
+  generateDocWithSpans,
+  type PdfFieldSpan,
 } from './services/pdfService';
+import { getPdfFieldSchema } from './services/pdfFieldSchema';
+import type { JobDocument } from './services/documentCatalog';
+import { isDesktop } from './services/desktopBridge';
 import {
   isDatabaseConfigured,
   isDeveloperBypassEnabled,
@@ -88,10 +92,20 @@ export default function App() {
 
   // Preview Modal state
   const [previewTitle, setPreviewTitle] = useState<string>('');
+  const [previewDoc, setPreviewDoc] = useState<JobDocument | null>(null);
   const [previewBytes, setPreviewBytes] = useState<Uint8Array | null>(null);
+  const [previewSpans, setPreviewSpans] = useState<PdfFieldSpan[]>([]);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
-  const [previewGenerator, setPreviewGenerator] = useState<(() => Promise<Uint8Array>) | null>(null);
+  const [isPreviewRegenerating, setIsPreviewRegenerating] = useState(false);
+
+  // Latest job record for async PDF work (generators must read the freshest state).
+  const jobDataRef = React.useRef<RestorationJobData>(jobData);
+  const previewRegenTimerRef = React.useRef<number | null>(null);
+
+  useEffect(() => {
+    jobDataRef.current = jobData;
+  }, [jobData]);
 
   // Confirm Modal state (for Workspace changes)
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -370,7 +384,11 @@ export default function App() {
   };
 
   // Recalculate Financials whenever RCV or Deductible changes
-  const updateFinancials = (rcvVal: number | '', dedVal: number | '') => {
+  const computeFinancialRecord = (
+    current: RestorationJobData,
+    rcvVal: number | '',
+    dedVal: number | ''
+  ): RestorationJobData => {
     const rcv = typeof rcvVal === 'number' && !isNaN(rcvVal) ? rcvVal : 0;
     const deductible = typeof dedVal === 'number' && !isNaN(dedVal) ? dedVal : 0;
 
@@ -379,10 +397,10 @@ export default function App() {
     const midProgressPayment = rcv * 0.25; // 25%
     const balancePayment = rcv * 0.25; // 25%
 
-    setJobData((prev) => ({
-      ...prev,
+    return {
+      ...current,
       financials: {
-        ...prev.financials,
+        ...current.financials,
         totalApprovedRcv: rcvVal,
         deductible: dedVal,
         netClaimValue,
@@ -391,10 +409,14 @@ export default function App() {
         balancePayment,
       },
       changeOrder: {
-        ...prev.changeOrder,
+        ...current.changeOrder,
         originalContractSum: rcvVal,
       },
-    }));
+    };
+  };
+
+  const updateFinancials = (rcvVal: number | '', dedVal: number | '') => {
+    setJobData((prev) => computeFinancialRecord(prev, rcvVal, dedVal));
   };
 
   // Field change handlers
@@ -454,19 +476,18 @@ export default function App() {
   };
 
   // Preview Document Handler
-  const handleOpenPreview = async (
-    title: string,
-    generator: () => Promise<Uint8Array>
-  ) => {
-    setPreviewTitle(title);
-    setPreviewGenerator(() => generator);
+  const handleOpenPreview = async (doc: JobDocument) => {
+    setPreviewTitle(doc.title);
+    setPreviewDoc(doc);
     setPreviewBytes(null);
+    setPreviewSpans([]);
     setIsPreviewOpen(true);
     setIsPreviewLoading(true);
 
     try {
-      const bytes = await generator();
+      const { bytes, spans } = await generateDocWithSpans(doc.generator, jobDataRef.current);
       setPreviewBytes(bytes);
+      setPreviewSpans(spans);
     } catch (err: any) {
       console.error('Failed generating preview:', err);
       showStatus('error', 'Error generating PDF preview');
@@ -475,15 +496,156 @@ export default function App() {
     }
   };
 
+  /** Debounced live regeneration after a click-to-edit change in the preview. */
+  const regeneratePreview = (doc: JobDocument, data: RestorationJobData) => {
+    if (previewRegenTimerRef.current !== null) {
+      window.clearTimeout(previewRegenTimerRef.current);
+    }
+    previewRegenTimerRef.current = window.setTimeout(async () => {
+      setIsPreviewRegenerating(true);
+      try {
+        const { bytes, spans } = await generateDocWithSpans(doc.generator, data);
+        setPreviewBytes(bytes);
+        setPreviewSpans(spans);
+      } catch (err: any) {
+        console.error('Failed regenerating preview:', err);
+        showStatus('error', 'Error refreshing PDF preview');
+      } finally {
+        setIsPreviewRegenerating(false);
+      }
+    }, 300);
+  };
+
+  // Fields whose PDF editor widgets commit 'Yes'/'No' instead of raw booleans.
+  const BOOLEAN_PDF_FIELDS = new Set<string>([
+    'mortgage.hasMortgage',
+    'changeOrder.isInsuranceRelated',
+    'checklist.isSelfPay',
+    'checklist.isProgramClaim',
+    'checklist.hasCheckBeenSent',
+    'checklist.isDepreciationWithheld',
+  ]);
+
+  // Fields stored as number | '' that the PDF editor edits as free text.
+  const NUMERIC_PDF_FIELDS = new Set<string>([
+    'changeOrder.originalContractSum',
+    'changeOrder.netPreviousChanges',
+    'changeOrder.changeAmount',
+    'changeOrder.addedDays',
+    'checklist.depreciationAmount',
+  ]);
+
+  const coercePdfFieldValue = (field: string, value: string): string | number | boolean => {
+    if (BOOLEAN_PDF_FIELDS.has(field)) {
+      const lower = value.toLowerCase();
+      return lower === 'yes' ? true : lower === 'no' ? false : value;
+    }
+    if (NUMERIC_PDF_FIELDS.has(field)) {
+      if (value === '') return '';
+      const n = Number(value);
+      return Number.isNaN(n) ? '' : n;
+    }
+    return value;
+  };
+
+  /** Routes an edit from the click-to-edit PDF preview into the job record. */
+  const handlePdfFieldChange = (field: string, value: string) => {
+    const dot = field.indexOf('.');
+    if (dot === -1) return;
+    const section = field.slice(0, dot);
+    const fieldName = field.slice(dot + 1);
+
+    const current = jobDataRef.current;
+    let next: RestorationJobData;
+
+    if (section === 'financials') {
+      if (fieldName === 'totalApprovedRcv' || fieldName === 'deductible') {
+        const num = value === '' ? '' : Number(value);
+        const parsed = typeof num === 'number' && !Number.isNaN(num) ? num : '';
+        next = computeFinancialRecord(
+          current,
+          fieldName === 'totalApprovedRcv' ? parsed : current.financials.totalApprovedRcv,
+          fieldName === 'deductible' ? parsed : current.financials.deductible
+        );
+      } else {
+        // commenceDays / completeDays are day counts.
+        next = {
+          ...current,
+          financials: {
+            ...current.financials,
+            [fieldName]: value === '' ? 0 : Number(value) || 0,
+          },
+        };
+      }
+    } else if (section === 'branch') {
+      next = { ...current, branch: { ...current.branch, [fieldName]: value } };
+    } else if (
+      section === 'customer' ||
+      section === 'insurance' ||
+      section === 'team' ||
+      section === 'mortgage' ||
+      section === 'changeOrder' ||
+      section === 'checklist' ||
+      section === 'productionNotes'
+    ) {
+      const nextRaw: any = { ...current };
+      nextRaw[section] = {
+        ...(current as any)[section],
+        [fieldName]: coercePdfFieldValue(field, value),
+      };
+      next = nextRaw as RestorationJobData;
+    } else {
+      return;
+    }
+
+    jobDataRef.current = next;
+    setJobData(next);
+
+    if (previewDoc) {
+      regeneratePreview(previewDoc, next);
+    }
+  };
+
   const handlePreviewDownload = async () => {
-    if (!previewGenerator) return;
+    if (!previewDoc) return;
     try {
-      const bytes = await previewGenerator();
-      const filename = `${previewTitle.replace(/\s+/g, '_')}.pdf`;
-      downloadPdf(bytes, filename);
+      const bytes = await previewDoc.generator(jobDataRef.current);
+      downloadPdf(bytes, previewDoc.buildFileName(jobDataRef.current));
     } catch (err) {
       console.error('Download error:', err);
     }
+  };
+
+  // Save the CURRENTLY previewed document to Google Drive (per-document upload).
+  const handleSaveDocToDrive = () => {
+    if (!previewDoc) return;
+    if (!user) {
+      handleLogin();
+      return;
+    }
+    const doc = previewDoc;
+    const fileName = doc.buildFileName(jobDataRef.current);
+
+    setConfirmDialog({
+      isOpen: true,
+      title: `Save ${doc.title} to Google Drive?`,
+      message: `This will generate the latest ${doc.title} for Job #${jobDataRef.current.customer.jobNumber} and upload it to your Google Drive in the "Hays & Sons Restoration" folder.`,
+      confirmLabel: 'Upload to Drive',
+      action: async () => {
+        setIsDriveLoading(true);
+        try {
+          const pdfBytes = await doc.generator(jobDataRef.current);
+          const result = await uploadPdfToGoogleDrive(pdfBytes, fileName);
+          setDriveSuccessLink(result.webViewLink);
+          showStatus('success', `Saved "${fileName}" to your Google Drive!`);
+        } catch (err: any) {
+          console.error('Drive save error:', err);
+          showStatus('error', err.message || 'Failed to save to Google Drive');
+        } finally {
+          setIsDriveLoading(false);
+        }
+      },
+    });
   };
 
   // Save to Google Drive with Mandatory User Confirmation
@@ -784,17 +946,31 @@ export default function App() {
         </div>
       </footer>
 
-      {/* PDF In-App Preview Modal */}
+      {/* PDF In-App Preview Modal (click-to-edit) */}
       <PdfPreviewModal
         isOpen={isPreviewOpen}
         title={previewTitle}
         pdfBytes={previewBytes}
         isLoading={isPreviewLoading}
+        isRegenerating={isPreviewRegenerating}
         onClose={() => {
           setIsPreviewOpen(false);
           setPreviewBytes(null);
+          setPreviewDoc(null);
+          setPreviewSpans([]);
+          if (previewRegenTimerRef.current !== null) {
+            window.clearTimeout(previewRegenTimerRef.current);
+            previewRegenTimerRef.current = null;
+          }
         }}
         onDownload={handlePreviewDownload}
+        jobData={jobData}
+        editableFields={previewDoc ? getPdfFieldSchema(previewDoc.id) : []}
+        spans={previewSpans}
+        onFieldChange={handlePdfFieldChange}
+        onSaveToDrive={!isDesktop() && previewDoc ? handleSaveDocToDrive : undefined}
+        isDriveLoading={isDriveLoading}
+        driveSuccessLink={driveSuccessLink}
       />
 
       {/* Workspace / Destructive Confirmation Modal */}

@@ -63,6 +63,149 @@ const originalWidthOfTextAtSize = PDFFont.prototype.widthOfTextAtSize as unknown
 };
 
 // -------------------------------------------------------------
+// Field-span capture (click-to-edit PDF preview)
+// -------------------------------------------------------------
+// While a document is being generated inside `generateDocWithSpans`, every
+// data-field draw call records the exact PDF-space rectangle of the value it
+// drew. The editable preview overlays click targets on the rendered page using
+// these rectangles so a user can click any value on the PDF and edit it in
+// place. Capture is opt-in and never active during normal generation (e.g. the
+// merged complete packet).
+export interface PdfFieldSpan {
+  /** Dot-path of the jobData field, e.g. 'insurance.carrier'. Matches pdfFieldSchema keys. */
+  key: string;
+  /** 1-based page number within the document. */
+  page: number;
+  /** Left edge in PDF points (72 dpi). */
+  x: number;
+  /** Top edge in PDF points, measured from the TOP of the page. */
+  y: number;
+  /** Width in PDF points. */
+  width: number;
+  /** Height in PDF points. */
+  height: number;
+  /** Font size in points — used to style the inline editor. */
+  size: number;
+  bold: boolean;
+}
+
+interface PendingFieldSpan {
+  key: string;
+  page: PDFPage;
+  x: number;
+  /** Top edge of the hit box, in bottom-origin PDF points (converted later). */
+  yTop: number;
+  width: number;
+  height: number;
+  size: number;
+  bold: boolean;
+}
+
+interface FieldCaptureState {
+  enabled: boolean;
+  doc: PDFDocument | null;
+  pageIndex: WeakMap<PDFPage, number>;
+  pageCount: number;
+  spans: PendingFieldSpan[];
+}
+
+const fieldCapture: FieldCaptureState = {
+  enabled: false,
+  doc: null,
+  pageIndex: new WeakMap(),
+  pageCount: 0,
+  spans: [],
+};
+
+// Track page creation order so spans can report 1-based page numbers without
+// every generator having to thread an index through its helpers. Mirrors the
+// sanitisation patches above: signature-safe and inert while capture is off.
+const originalAddPage = PDFDocument.prototype.addPage as unknown as AnyFunction;
+(PDFDocument.prototype as unknown as { addPage: AnyFunction }).addPage = function (...args: any[]) {
+  const page = originalAddPage.apply(this, args);
+  if (fieldCapture.enabled) {
+    fieldCapture.doc = this as unknown as PDFDocument;
+    fieldCapture.pageIndex.set(page as PDFPage, fieldCapture.pageCount++);
+  }
+  return page;
+};
+
+function captureFieldSpan(span: PendingFieldSpan) {
+  if (!fieldCapture.enabled) return;
+  fieldCapture.spans.push(span);
+}
+
+export function beginFieldCapture(): void {
+  fieldCapture.enabled = true;
+  fieldCapture.doc = null;
+  fieldCapture.pageCount = 0;
+  fieldCapture.spans = [];
+}
+
+export function endFieldCapture(): PdfFieldSpan[] {
+  fieldCapture.enabled = false;
+  const doc = fieldCapture.doc;
+  const spans: PdfFieldSpan[] = [];
+  for (const s of fieldCapture.spans) {
+    const pageIndex = doc ? (fieldCapture.pageIndex.get(s.page) ?? -1) : -1;
+    spans.push({
+      key: s.key,
+      page: pageIndex + 1,
+      x: s.x,
+      y: Math.max(0, s.page.getHeight() - s.yTop),
+      width: s.width,
+      height: s.height,
+      size: s.size,
+      bold: s.bold,
+    });
+  }
+  fieldCapture.doc = null;
+  fieldCapture.spans = [];
+  return spans;
+}
+
+/**
+ * Generates a single document while recording the clickable span of every data
+ * field it draws. Used by the editable PDF preview; never called for the
+ * merged complete packet (spans would be invalid after page copying).
+ */
+export async function generateDocWithSpans(
+  generator: (data: RestorationJobData) => Promise<Uint8Array>,
+  data: RestorationJobData
+): Promise<{ bytes: Uint8Array; spans: PdfFieldSpan[] }> {
+  beginFieldCapture();
+  try {
+    const bytes = await generator(data);
+    const spans = endFieldCapture();
+    return { bytes, spans };
+  } catch (err) {
+    endFieldCapture();
+    throw err;
+  }
+}
+
+/**
+ * Records a clickable span for a data field that renders BLANK in the current
+ * document (nothing is drawn). Lets the editor offer a click target on the
+ * empty box so a blank field can be filled without a side panel.
+ */
+export function captureEmptyFieldSpan(
+  page: PDFPage,
+  options: { key: string; x: number; y: number; size: number; width?: number; bold?: boolean }
+) {
+  captureFieldSpan({
+    key: options.key,
+    page,
+    x: options.x,
+    yTop: options.y + options.size * 1.05,
+    width: options.width ?? 48,
+    height: options.size * 1.25,
+    size: options.size,
+    bold: options.bold ?? false,
+  });
+}
+
+// -------------------------------------------------------------
 // Page geometry (US Letter @ 72 dpi)
 // -------------------------------------------------------------
 const PAGE_W = 612;
@@ -164,6 +307,9 @@ function drawRightAligned(
     font: PDFFont;
     color?: any;
     minSize?: number;
+    /** When set, records a clickable field span for the PDF editor. */
+    key?: string;
+    bold?: boolean;
   }
 ) {
   const raw = cleanTextForPdf(text ?? '');
@@ -195,6 +341,99 @@ function drawRightAligned(
     size,
     font: options.font,
     color: options.color ?? COLOR_DARK,
+  });
+
+  if (options.key) {
+    captureFieldSpan({
+      key: options.key,
+      page,
+      x: options.rightX - width,
+      yTop: options.y + size * 1.05,
+      width: Math.max(width, 24),
+      height: size * 1.25,
+      size,
+      bold: options.bold ?? false,
+    });
+  }
+}
+
+/**
+ * Draws a tracked data-field value and records its clickable span. This is the
+ * workhorse the editable preview relies on: every value drawn through it is
+ * click-to-edit on the PDF. Empty values still record a small span so blank
+ * fields remain clickable.
+ */
+function drawFieldValue(
+  page: PDFPage,
+  options: {
+    key: string;
+    value: unknown;
+    x: number;
+    y: number;
+    size: number;
+    font: PDFFont;
+    color?: any;
+    bold?: boolean;
+    fallback?: string;
+    minWidth?: number;
+  }
+) {
+  const raw = cleanTextForPdf(val(options.value, options.fallback ?? ''));
+  const height = options.size * 1.25;
+  const yTop = options.y + options.size * 1.05;
+  if (raw) {
+    const width = options.font.widthOfTextAtSize(raw, options.size);
+    page.drawText(raw, {
+      x: options.x,
+      y: options.y,
+      size: options.size,
+      font: options.font,
+      color: options.color ?? COLOR_DARK,
+    });
+    captureFieldSpan({
+      key: options.key,
+      page,
+      x: options.x,
+      yTop,
+      width: Math.max(width, options.minWidth ?? 24),
+      height,
+      size: options.size,
+      bold: options.bold ?? false,
+    });
+  } else {
+    captureFieldSpan({
+      key: options.key,
+      page,
+      x: options.x,
+      yTop,
+      width: options.minWidth ?? 48,
+      height,
+      size: options.size,
+      bold: options.bold ?? false,
+    });
+  }
+}
+
+/** Records one span covering a multi-line block (wrapped text / line groups). */
+function captureBoxSpan(
+  page: PDFPage,
+  key: string,
+  x: number,
+  firstBaselineY: number,
+  lastBaselineY: number,
+  size: number,
+  width: number,
+  bold: boolean
+) {
+  captureFieldSpan({
+    key,
+    page,
+    x,
+    yTop: firstBaselineY + size * 1.05,
+    width: Math.max(width, 24),
+    height: Math.max(size * 1.25, firstBaselineY + size * 1.05 - (lastBaselineY - size * 0.3)),
+    size,
+    bold,
   });
 }
 
@@ -269,6 +508,9 @@ function drawWrappedText(
     size: number;
     color?: any;
     maxLines?: number;
+    /** When set, records a clickable field span covering the whole block. */
+    key?: string;
+    bold?: boolean;
   }
 ) {
   if (!text) return;
@@ -291,7 +533,12 @@ function drawWrappedText(
         color: options.color || COLOR_DARK,
       });
       linesDrawn++;
-      if (linesDrawn >= maxLines) return;
+      if (linesDrawn >= maxLines) {
+        if (options.key) {
+          captureBoxSpan(page, options.key, options.x, options.y, currentY, options.size, options.maxWidth, options.bold ?? false);
+        }
+        return;
+      }
       currentLine = word;
       currentY -= options.lineHeight;
     } else {
@@ -307,6 +554,9 @@ function drawWrappedText(
       font: options.font,
       color: options.color || COLOR_DARK,
     });
+    if (options.key) {
+      captureBoxSpan(page, options.key, options.x, options.y, currentY, options.size, options.maxWidth, options.bold ?? false);
+    }
   }
 }
 
@@ -351,6 +601,9 @@ function drawLines(
     font: PDFFont;
     color?: any;
     indentX?: number;
+    /** When set, records a clickable field span covering the whole block. */
+    key?: string;
+    bold?: boolean;
   }
 ): number {
   let y = options.y;
@@ -364,6 +617,10 @@ function drawLines(
     });
     if (index < lines.length - 1) y -= options.lineHeight;
   });
+  if (options.key && lines.length > 0) {
+    const widest = Math.max(...lines.map((l) => options.font.widthOfTextAtSize(cleanTextForPdf(l), options.size)));
+    captureBoxSpan(page, options.key, options.x, options.y, y, options.size, widest, options.bold ?? false);
+  }
   return y;
 }
 
@@ -406,35 +663,35 @@ export async function generatePreliminaryReport(data: RestorationJobData): Promi
   // Carrier
   page.drawText('Insurance Carrier:', { x: 40, y: insY - 10, size: 8, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: insY - 14, width: insBoxW, height: 16, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.insurance.carrier || '', { x: insBoxX + 4, y: insY - 10, size: 8.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.carrier', value: data.insurance.carrier, x: insBoxX + 4, y: insY - 10, size: 8.5, font, color: COLOR_DARK });
 
   // Primary Adjuster
   page.drawText('Primary Adjuster:', { x: 40, y: insY - 26, size: 8, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: insY - 30, width: insBoxW, height: 16, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.insurance.primaryAdjuster || '', { x: insBoxX + 4, y: insY - 26, size: 8.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.primaryAdjuster', value: data.insurance.primaryAdjuster, x: insBoxX + 4, y: insY - 26, size: 8.5, font, color: COLOR_DARK });
 
   // Independent Adjuster
   page.drawText('Independent Adjuster:', { x: 40, y: insY - 42, size: 8, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: insY - 46, width: insBoxW, height: 16, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.insurance.independentAdjuster || '', { x: insBoxX + 4, y: insY - 42, size: 8.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.independentAdjuster', value: data.insurance.independentAdjuster, x: insBoxX + 4, y: insY - 42, size: 8.5, font, color: COLOR_DARK });
 
   // Broker / Agent
   page.drawText('Broker/Agent:', { x: 40, y: insY - 58, size: 8, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: insY - 62, width: insBoxW, height: 16, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.insurance.brokerAgent || '', { x: insBoxX + 4, y: insY - 58, size: 8.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.brokerAgent', value: data.insurance.brokerAgent, x: insBoxX + 4, y: insY - 58, size: 8.5, font, color: COLOR_DARK });
 
   // Policy Number & Customer Claim Number Split Row
   page.drawText('Policy Number:', { x: 40, y: insY - 74, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawText('Customer Claim Number:', { x: 40, y: insY - 86, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: insY - 92, width: 170, height: 28, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.insurance.policyNumber || '', { x: insBoxX + 4, y: insY - 76, size: 8, font, color: COLOR_DARK });
-  page.drawText(data.insurance.claimNumber || '', { x: insBoxX + 4, y: insY - 88, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.policyNumber', value: data.insurance.policyNumber, x: insBoxX + 4, y: insY - 76, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.claimNumber', value: data.insurance.claimNumber, x: insBoxX + 4, y: insY - 88, size: 8, font, color: COLOR_DARK });
 
   page.drawText('Reported By:', { x: 350, y: insY - 74, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawText('Referred By:', { x: 350, y: insY - 86, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: 420, y: insY - 92, width: 152, height: 28, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.insurance.reportedBy || '', { x: 424, y: insY - 76, size: 8, font, color: COLOR_DARK });
-  page.drawText(data.insurance.referredBy || '', { x: 424, y: insY - 88, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.reportedBy', value: data.insurance.reportedBy, x: 424, y: insY - 76, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.referredBy', value: data.insurance.referredBy, x: 424, y: insY - 88, size: 8, font, color: COLOR_DARK });
 
   // Section 2: Customer Details
   const custY = 576;
@@ -443,11 +700,14 @@ export async function generatePreliminaryReport(data: RestorationJobData): Promi
   // Job Number & Job Name
   page.drawText('Job Number:', { x: 40, y: custY - 16, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: custY - 20, width: 160, height: 16, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.customer.jobNumber || '', { x: insBoxX + 4, y: custY - 16, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.jobNumber', value: data.customer.jobNumber, x: insBoxX + 4, y: custY - 16, size: 8, font, color: COLOR_DARK });
 
   page.drawText('Job Name:', { x: 345, y: custY - 16, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: 400, y: custY - 20, width: 172, height: 16, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.customer.jobName || data.customer.customerName + ' Restoration', {
+  drawFieldValue(page, {
+    key: 'customer.jobName',
+    value: data.customer.jobName,
+    fallback: data.customer.customerName + ' Restoration',
     x: 404,
     y: custY - 16,
     size: 8,
@@ -458,12 +718,14 @@ export async function generatePreliminaryReport(data: RestorationJobData): Promi
   // Customer Name
   page.drawText('Customer Name:', { x: 40, y: custY - 36, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: custY - 40, width: insBoxW, height: 16, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.customer.customerName || '', { x: insBoxX + 4, y: custY - 36, size: 8.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.customerName', value: data.customer.customerName, x: insBoxX + 4, y: custY - 36, size: 8.5, font, color: COLOR_DARK });
 
   // Mailing Address
   page.drawText('Mailing Address:', { x: 40, y: custY - 56, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: custY - 60, width: insBoxW, height: 16, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(`${data.customer.mailingAddress || ''}, ${data.customer.mailingCityStateZip || ''}`, {
+  drawFieldValue(page, {
+    key: 'customer.mailingLine',
+    value: `${data.customer.mailingAddress || ''}, ${data.customer.mailingCityStateZip || ''}`,
     x: insBoxX + 4,
     y: custY - 56,
     size: 8,
@@ -475,25 +737,25 @@ export async function generatePreliminaryReport(data: RestorationJobData): Promi
   page.drawText('Main Phone Number:', { x: 40, y: custY - 74, size: 7, font: fontBold, color: COLOR_DARK });
   page.drawText('Home Phone:', { x: 40, y: custY - 86, size: 7, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: custY - 92, width: 160, height: 28, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.customer.mainPhone || '', { x: insBoxX + 4, y: custY - 76, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(data.customer.homePhone || '', { x: insBoxX + 4, y: custY - 88, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.mainPhone', value: data.customer.mainPhone, x: insBoxX + 4, y: custY - 76, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.homePhone', value: data.customer.homePhone, x: insBoxX + 4, y: custY - 88, size: 7.5, font, color: COLOR_DARK });
 
   page.drawText('EMAIL:', { x: 340, y: custY - 74, size: 7, font: fontBold, color: COLOR_DARK });
   page.drawText('Mobile Number:', { x: 340, y: custY - 86, size: 7, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: 420, y: custY - 92, width: 152, height: 28, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.customer.email || '', { x: 424, y: custY - 76, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(data.customer.mobilePhone || '', { x: 424, y: custY - 88, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.email', value: data.customer.email, x: 424, y: custY - 76, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.mobilePhone', value: data.customer.mobilePhone, x: 424, y: custY - 88, size: 7.5, font, color: COLOR_DARK });
 
   // Loss Address & Contact
   page.drawText('Loss Address:', { x: 40, y: custY - 106, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawText('Loss Contact:', { x: 40, y: custY - 118, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: custY - 122, width: 220, height: 26, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.customer.lossAddress || '', { x: insBoxX + 4, y: custY - 106, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(data.customer.lossContact || '', { x: insBoxX + 4, y: custY - 118, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.lossAddress', value: data.customer.lossAddress, x: insBoxX + 4, y: custY - 106, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.lossContact', value: data.customer.lossContact, x: insBoxX + 4, y: custY - 118, size: 7.5, font, color: COLOR_DARK });
 
   page.drawText('Mobile:', { x: 400, y: custY - 112, size: 8, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: 440, y: custY - 122, width: 132, height: 26, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.customer.mobilePhone || '', { x: 444, y: custY - 112, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.mobilePhone', value: data.customer.mobilePhone, x: 444, y: custY - 112, size: 8, font, color: COLOR_DARK });
 
   // Section 3: Job Details
   const jobY = 445;
@@ -502,50 +764,50 @@ export async function generatePreliminaryReport(data: RestorationJobData): Promi
   // Dates row
   page.drawText('Date Received:', { x: 40, y: jobY - 14, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: jobY - 18, width: 160, height: 14, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.insurance.dateReceived || '', { x: insBoxX + 4, y: jobY - 14, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.dateReceived', value: data.insurance.dateReceived, x: insBoxX + 4, y: jobY - 14, size: 7.5, font, color: COLOR_DARK });
 
   page.drawText('Date of Loss:', { x: 340, y: jobY - 14, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: 420, y: jobY - 18, width: 152, height: 14, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.insurance.dateOfLoss || '', { x: 424, y: jobY - 14, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.dateOfLoss', value: data.insurance.dateOfLoss, x: 424, y: jobY - 14, size: 7.5, font, color: COLOR_DARK });
 
   // Time row
   page.drawText('Time Received:', { x: 40, y: jobY - 32, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: jobY - 36, width: 160, height: 14, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.insurance.timeReceived || '', { x: insBoxX + 4, y: jobY - 32, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.timeReceived', value: data.insurance.timeReceived, x: insBoxX + 4, y: jobY - 32, size: 7.5, font, color: COLOR_DARK });
 
   page.drawText('Time of Loss:', { x: 340, y: jobY - 32, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: 420, y: jobY - 36, width: 152, height: 14, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.insurance.timeOfLoss || '', { x: 424, y: jobY - 32, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.timeOfLoss', value: data.insurance.timeOfLoss, x: 424, y: jobY - 32, size: 7.5, font, color: COLOR_DARK });
 
   // Insured Contacted
   page.drawText('Date Insured Contacted:', { x: 40, y: jobY - 50, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: jobY - 54, width: 160, height: 14, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.insurance.dateInsuredContacted || '', { x: insBoxX + 4, y: jobY - 50, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.dateInsuredContacted', value: data.insurance.dateInsuredContacted, x: insBoxX + 4, y: jobY - 50, size: 7.5, font, color: COLOR_DARK });
 
   page.drawText('Time Insured Contacted:', { x: 40, y: jobY - 68, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: jobY - 72, width: 160, height: 14, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.insurance.timeInsuredContacted || '', { x: insBoxX + 4, y: jobY - 68, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.timeInsuredContacted', value: data.insurance.timeInsuredContacted, x: insBoxX + 4, y: jobY - 68, size: 7.5, font, color: COLOR_DARK });
 
   page.drawText('Date Inspected:', { x: 40, y: jobY - 86, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: jobY - 90, width: 160, height: 14, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.insurance.dateInspected || '', { x: insBoxX + 4, y: jobY - 86, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.dateInspected', value: data.insurance.dateInspected, x: insBoxX + 4, y: jobY - 86, size: 7.5, font, color: COLOR_DARK });
 
   page.drawText('Type of Loss:', { x: 40, y: jobY - 104, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: jobY - 108, width: 160, height: 14, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.insurance.typeOfLoss || '', { x: insBoxX + 4, y: jobY - 104, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.typeOfLoss', value: data.insurance.typeOfLoss, x: insBoxX + 4, y: jobY - 104, size: 7.5, font, color: COLOR_DARK });
 
   page.drawText('Type of Loss Secondary:', { x: 40, y: jobY - 122, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: jobY - 126, width: 160, height: 14, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(data.insurance.typeOfLossSecondary || '', { x: insBoxX + 4, y: jobY - 122, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.typeOfLossSecondary', value: data.insurance.typeOfLossSecondary, x: insBoxX + 4, y: jobY - 122, size: 7.5, font, color: COLOR_DARK });
 
   // Deductible & Rough Estimate
   page.drawText('Deductible:', { x: 40, y: jobY - 140, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: jobY - 144, width: 160, height: 14, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(formatCurrency(data.financials.deductible), { x: insBoxX + 4, y: jobY - 140, size: 7.5, font: fontBold, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'financials.deductible', value: formatCurrency(data.financials.deductible), x: insBoxX + 4, y: jobY - 140, size: 7.5, font: fontBold, color: COLOR_DARK, bold: true });
 
   page.drawText('Rough Estimate Amount:', { x: 40, y: jobY - 158, size: 7.5, font: fontBold, color: COLOR_DARK });
   page.drawRectangle({ x: insBoxX, y: jobY - 162, width: 160, height: 14, borderColor: COLOR_BORDER, borderWidth: 0.75 });
-  page.drawText(formatCurrency(data.insurance.roughEstimateAmount), { x: insBoxX + 4, y: jobY - 158, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.roughEstimateAmount', value: formatCurrency(data.insurance.roughEstimateAmount), x: insBoxX + 4, y: jobY - 158, size: 7.5, font, color: COLOR_DARK });
 
   // Participants Box (Right Side)
   const partBoxX = 345;
@@ -562,12 +824,26 @@ export async function generatePreliminaryReport(data: RestorationJobData): Promi
   page.drawText('Participants', { x: partBoxX + 80, y: partBoxY + 74, size: 9, font: fontBold, color: COLOR_DARK });
   page.drawLine({ start: { x: partBoxX, y: partBoxY + 70 }, end: { x: partBoxX + 227, y: partBoxY + 70 }, thickness: 0.75, color: COLOR_BORDER });
 
-  page.drawText(`Estimator: ${data.team.estimator || 'Russell Shive'}`, { x: partBoxX + 8, y: partBoxY + 56, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(`Supervisor: ${data.team.supervisor || 'Kenny Belford'}`, { x: partBoxX + 8, y: partBoxY + 44, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(`Coordinator: ${data.team.coordinator || 'Rhnea Schinbeckler'}`, { x: partBoxX + 8, y: partBoxY + 32, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(`Foreman: ${data.team.foreman || 'To be determined'}`, { x: partBoxX + 8, y: partBoxY + 20, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(`Marketing Person: ${data.team.marketingPerson || 'Cecilia Rolf'}`, { x: partBoxX + 8, y: partBoxY + 8, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(`Accounting Person: ${data.team.accountingPerson || 'Jami Hillock'}`, { x: partBoxX + 8, y: partBoxY - 4, size: 7.5, font, color: COLOR_DARK });
+  const drawParticipant = (label: string, value: unknown, fallback: string, key: string, y: number) => {
+    page.drawText(label, { x: partBoxX + 8, y, size: 7.5, font, color: COLOR_DARK });
+    drawFieldValue(page, {
+      key,
+      value,
+      fallback,
+      x: partBoxX + 8 + font.widthOfTextAtSize(label, 7.5),
+      y,
+      size: 7.5,
+      font,
+      color: COLOR_DARK,
+    });
+  };
+
+  drawParticipant('Estimator: ', data.team.estimator, 'Russell Shive', 'team.estimator', partBoxY + 56);
+  drawParticipant('Supervisor: ', data.team.supervisor, 'Kenny Belford', 'team.supervisor', partBoxY + 44);
+  drawParticipant('Coordinator: ', data.team.coordinator, 'Rhnea Schinbeckler', 'team.coordinator', partBoxY + 32);
+  drawParticipant('Foreman: ', data.team.foreman, 'To be determined', 'team.foreman', partBoxY + 20);
+  drawParticipant('Marketing Person: ', data.team.marketingPerson, 'Cecilia Rolf', 'team.marketingPerson', partBoxY + 8);
+  drawParticipant('Accounting Person: ', data.team.accountingPerson, 'Jami Hillock', 'team.accountingPerson', partBoxY - 4);
 
   // Loss Description
   const noteY = 260;
@@ -581,7 +857,11 @@ export async function generatePreliminaryReport(data: RestorationJobData): Promi
     font,
     size: 7.5,
     maxLines: 4,
+    key: 'insurance.lossDescription',
   });
+  if (!val(data.insurance.lossDescription)) {
+    captureEmptyFieldSpan(page, { key: 'insurance.lossDescription', x: 46, y: noteY - 14, size: 7.5, width: 518 });
+  }
 
   // Special Instructions
   const instY = 195;
@@ -595,7 +875,11 @@ export async function generatePreliminaryReport(data: RestorationJobData): Promi
     font,
     size: 7.5,
     maxLines: 3,
+    key: 'insurance.specialInstructions',
   });
+  if (!val(data.insurance.specialInstructions)) {
+    captureEmptyFieldSpan(page, { key: 'insurance.specialInstructions', x: 46, y: instY - 14, size: 7.5, width: 518 });
+  }
 
   // Detailed Findings
   const findY = 140;
@@ -609,7 +893,11 @@ export async function generatePreliminaryReport(data: RestorationJobData): Promi
     font,
     size: 7.5,
     maxLines: 4,
+    key: 'insurance.detailedFindings',
   });
+  if (!val(data.insurance.detailedFindings)) {
+    captureEmptyFieldSpan(page, { key: 'insurance.detailedFindings', x: 46, y: findY - 14, size: 7.5, width: 518 });
+  }
 
   return pdfDoc.save();
 }
@@ -636,37 +924,34 @@ export async function generateWelcomeLetter(data: RestorationJobData): Promise<U
   page.drawText(curDate, { x: 50, y: curY, size: 9.5, font, color: COLOR_DARK });
 
   curY -= 25;
-  page.drawText(data.customer.customerName || 'Valued Customer', { x: 50, y: curY, size: 10, font: fontBold, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.customerName', value: data.customer.customerName, fallback: 'Valued Customer', x: 50, y: curY, size: 10, font: fontBold, color: COLOR_DARK, bold: true });
   curY -= 14;
-  page.drawText(data.customer.mailingAddress || data.customer.lossAddress || '', { x: 50, y: curY, size: 9.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.mailingLine', value: data.customer.mailingAddress || data.customer.lossAddress || '', x: 50, y: curY, size: 9.5, font, color: COLOR_DARK });
   curY -= 14;
-  page.drawText(data.customer.mailingCityStateZip || '', { x: 50, y: curY, size: 9.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.mailingLine', value: data.customer.mailingCityStateZip, x: 50, y: curY, size: 9.5, font, color: COLOR_DARK });
 
   curY -= 18;
-  page.drawText(`RE: Job # ${data.customer.jobNumber}   |   Claim # ${data.insurance.claimNumber || 'Pending'}`, {
-    x: 50,
-    y: curY,
-    size: 8.5,
-    font: fontBold,
-    color: COLOR_RED,
-  });
+  const rePrefix = 'RE: Job # ';
+  const reSep = '   |   Claim # ';
+  page.drawText(rePrefix, { x: 50, y: curY, size: 8.5, font: fontBold, color: COLOR_RED });
+  let reX = 50 + fontBold.widthOfTextAtSize(rePrefix, 8.5);
+  drawFieldValue(page, { key: 'customer.jobNumber', value: data.customer.jobNumber, x: reX, y: curY, size: 8.5, font: fontBold, color: COLOR_RED, bold: true });
+  reX += fontBold.widthOfTextAtSize(val(data.customer.jobNumber), 8.5);
+  page.drawText(reSep, { x: reX, y: curY, size: 8.5, font: fontBold, color: COLOR_RED });
+  reX += fontBold.widthOfTextAtSize(reSep, 8.5);
+  drawFieldValue(page, { key: 'insurance.claimNumber', value: data.insurance.claimNumber, fallback: 'Pending', x: reX, y: curY, size: 8.5, font: fontBold, color: COLOR_RED, bold: true });
+
   curY -= 12;
-  page.drawText(`Property Address: ${data.customer.lossAddress}`, {
-    x: 50,
-    y: curY,
-    size: 8,
-    font,
-    color: COLOR_DARK,
-  });
+  const propAddrPrefix = 'Property Address: ';
+  page.drawText(propAddrPrefix, { x: 50, y: curY, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.lossAddress', value: data.customer.lossAddress, x: 50 + font.widthOfTextAtSize(propAddrPrefix, 8), y: curY, size: 8, font, color: COLOR_DARK });
 
   curY -= 20;
-  page.drawText(`Dear ${data.customer.customerName || 'Valued Customer'},`, {
-    x: 50,
-    y: curY,
-    size: 10,
-    font: fontBold,
-    color: COLOR_DARK,
-  });
+  page.drawText('Dear ', { x: 50, y: curY, size: 10, font: fontBold, color: COLOR_DARK });
+  let dearX = 50 + fontBold.widthOfTextAtSize('Dear ', 10);
+  drawFieldValue(page, { key: 'customer.customerName', value: data.customer.customerName, fallback: 'Valued Customer', x: dearX, y: curY, size: 10, font: fontBold, color: COLOR_DARK, bold: true });
+  dearX += fontBold.widthOfTextAtSize(val(data.customer.customerName, 'Valued Customer'), 10);
+  page.drawText(',', { x: dearX, y: curY, size: 10, font: fontBold, color: COLOR_DARK });
 
   curY -= 22;
   page.drawText('Hays + Sons would like to extend our regrets concerning the recent misfortune to your property. We are', {
@@ -750,13 +1035,13 @@ export async function generateWelcomeLetter(data: RestorationJobData): Promise<U
   page.drawText('PHASE II - STRUCTURAL ESTIMATE', { x: 185, y: curY, size: 10, font: fontBold, color: COLOR_RED });
   curY -= 15;
   page.drawRectangle({ x: 60, y: curY + 1, width: 6, height: 6, color: COLOR_DARK });
-  page.drawText(`The Structural estimator (${data.team.estimator || 'our estimator'}) will assess the damage and give you an overview of repairs needed.`, {
-    x: 76,
-    y: curY,
-    size: 8,
-    font,
-    color: COLOR_DARK,
-  });
+  const estPrefix = 'The Structural estimator (';
+  const estSuffix = ') will assess the damage and give you an overview of repairs needed.';
+  page.drawText(estPrefix, { x: 76, y: curY, size: 8, font, color: COLOR_DARK });
+  let estX = 76 + font.widthOfTextAtSize(estPrefix, 8);
+  drawFieldValue(page, { key: 'team.estimator', value: data.team.estimator, fallback: 'our estimator', x: estX, y: curY, size: 8, font, color: COLOR_DARK });
+  estX += font.widthOfTextAtSize(val(data.team.estimator, 'our estimator'), 8);
+  page.drawText(estSuffix, { x: estX, y: curY, size: 8, font, color: COLOR_DARK });
   curY -= 12;
   page.drawText("We'll then write an estimate and submit the estimate for approval to your insurance adjuster for repairs approval.", {
     x: 76,
@@ -779,13 +1064,13 @@ export async function generateWelcomeLetter(data: RestorationJobData): Promise<U
   page.drawText('PHASE III - PROJECT MANAGER', { x: 190, y: curY, size: 10, font: fontBold, color: COLOR_RED });
   curY -= 15;
   page.drawRectangle({ x: 60, y: curY + 1, width: 6, height: 6, color: COLOR_DARK });
-  page.drawText(`Project Manager (${data.team.projectManager || 'our PM'}) will arrange a pre-construction meeting to review the estimate, collect down payment,`, {
-    x: 76,
-    y: curY,
-    size: 8,
-    font,
-    color: COLOR_DARK,
-  });
+  const pmPrefix = 'Project Manager (';
+  const pmSuffix = ') will arrange a pre-construction meeting to review the estimate, collect down payment,';
+  page.drawText(pmPrefix, { x: 76, y: curY, size: 8, font, color: COLOR_DARK });
+  let pmX = 76 + font.widthOfTextAtSize(pmPrefix, 8);
+  drawFieldValue(page, { key: 'team.projectManager', value: data.team.projectManager, fallback: 'our PM', x: pmX, y: curY, size: 8, font, color: COLOR_DARK });
+  pmX += font.widthOfTextAtSize(val(data.team.projectManager, 'our PM'), 8);
+  page.drawText(pmSuffix, { x: pmX, y: curY, size: 8, font, color: COLOR_DARK });
   curY -= 12;
   page.drawText('obtain any and all selections and discuss the timeline for repairs. We will stay in constant communication throughout.', {
     x: 76,
@@ -842,7 +1127,9 @@ export async function generateMortgageAuth(data: RestorationJobData): Promise<Ui
   });
 
   curY -= 35;
-  page.drawText(`Job ID:  ${data.customer.jobNumber}`, { x: 50, y: curY, size: 9.5, font: fontBold, color: COLOR_DARK });
+  const jobIdPrefix = 'Job ID:  ';
+  page.drawText(jobIdPrefix, { x: 50, y: curY, size: 9.5, font: fontBold, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.jobNumber', value: data.customer.jobNumber, x: 50 + fontBold.widthOfTextAtSize(jobIdPrefix, 9.5), y: curY, size: 9.5, font: fontBold, color: COLOR_DARK, bold: true });
   page.drawLine({ start: { x: 95, y: curY - 2 }, end: { x: 260, y: curY - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   curY -= 25;
@@ -852,62 +1139,77 @@ export async function generateMortgageAuth(data: RestorationJobData): Promise<Ui
 
   curY -= 35;
   page.drawText('To:', { x: 50, y: curY, size: 9.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(data.mortgage.mortgageCompany || 'Mortgage Company', { x: 95, y: curY, size: 9.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'mortgage.mortgageCompany', value: data.mortgage.mortgageCompany, fallback: 'Mortgage Company', x: 95, y: curY, size: 9.5, font, color: COLOR_DARK });
   page.drawLine({ start: { x: 95, y: curY - 2 }, end: { x: 550, y: curY - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   curY -= 28;
   page.drawText('Regarding:', { x: 50, y: curY, size: 9.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(`Property Owner: ${data.customer.customerName}`, { x: 110, y: curY, size: 9, font, color: COLOR_DARK });
+  const propOwnerPrefix = 'Property Owner: ';
+  page.drawText(propOwnerPrefix, { x: 110, y: curY, size: 9, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.customerName', value: data.customer.customerName, x: 110 + font.widthOfTextAtSize(propOwnerPrefix, 9), y: curY, size: 9, font, color: COLOR_DARK });
   page.drawLine({ start: { x: 110, y: curY - 2 }, end: { x: 550, y: curY - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   curY -= 20;
-  page.drawText(`Address:           ${data.customer.lossAddress}`, { x: 50, y: curY, size: 9, font, color: COLOR_DARK });
+  const addrPrefix = 'Address:           ';
+  page.drawText(addrPrefix, { x: 50, y: curY, size: 9, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.lossAddress', value: data.customer.lossAddress, x: 50 + font.widthOfTextAtSize(addrPrefix, 9), y: curY, size: 9, font, color: COLOR_DARK });
   page.drawLine({ start: { x: 110, y: curY - 2 }, end: { x: 550, y: curY - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   curY -= 20;
-  page.drawText(`Insurance:         ${data.insurance.carrier}   |   Claim #: ${data.insurance.claimNumber}`, { x: 50, y: curY, size: 8.5, font: fontBold, color: COLOR_DARK });
+  const insPrefix = 'Insurance:         ';
+  const insSep = '   |   Claim #: ';
+  page.drawText(insPrefix, { x: 50, y: curY, size: 8.5, font: fontBold, color: COLOR_DARK });
+  let insX = 50 + fontBold.widthOfTextAtSize(insPrefix, 8.5);
+  drawFieldValue(page, { key: 'insurance.carrier', value: data.insurance.carrier, x: insX, y: curY, size: 8.5, font: fontBold, color: COLOR_DARK, bold: true });
+  insX += fontBold.widthOfTextAtSize(val(data.insurance.carrier), 8.5);
+  page.drawText(insSep, { x: insX, y: curY, size: 8.5, font: fontBold, color: COLOR_DARK });
+  insX += fontBold.widthOfTextAtSize(insSep, 8.5);
+  drawFieldValue(page, { key: 'insurance.claimNumber', value: data.insurance.claimNumber, x: insX, y: curY, size: 8.5, font: fontBold, color: COLOR_DARK, bold: true });
   page.drawLine({ start: { x: 110, y: curY - 2 }, end: { x: 550, y: curY - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   curY -= 20;
   const isMortgageClaim = data.mortgage.hasMortgage;
-  page.drawText(`Claim Status:      [ ${isMortgageClaim ? 'X' : '  '} ] Mortgage / Escrow Claim    [ ${!isMortgageClaim ? 'X' : '  '} ] Free & Clear (No Lender)`, {
-    x: 50,
-    y: curY,
-    size: 8,
-    font: fontBold,
-    color: COLOR_DARK,
-  });
+  const claimStatusPrefix = 'Claim Status:      [ ';
+  const claimStatusSep = ' ] Mortgage / Escrow Claim    [ ';
+  const claimStatusSuffix = ' ] Free & Clear (No Lender)';
+  page.drawText(claimStatusPrefix, { x: 50, y: curY, size: 8, font: fontBold, color: COLOR_DARK });
+  let claimStatusX = 50 + fontBold.widthOfTextAtSize(claimStatusPrefix, 8);
+  drawFieldValue(page, { key: 'mortgage.hasMortgage', value: isMortgageClaim ? 'X' : '  ', x: claimStatusX, y: curY, size: 8, font: fontBold, color: COLOR_DARK, bold: true, minWidth: 8 });
+  claimStatusX += fontBold.widthOfTextAtSize(isMortgageClaim ? 'X' : '  ', 8);
+  page.drawText(claimStatusSep, { x: claimStatusX, y: curY, size: 8, font: fontBold, color: COLOR_DARK });
+  claimStatusX += fontBold.widthOfTextAtSize(claimStatusSep, 8);
+  drawFieldValue(page, { key: 'mortgage.hasMortgage', value: isMortgageClaim ? '  ' : 'X', x: claimStatusX, y: curY, size: 8, font: fontBold, color: COLOR_DARK, bold: true, minWidth: 8 });
+  claimStatusX += fontBold.widthOfTextAtSize(isMortgageClaim ? '  ' : 'X', 8);
+  page.drawText(claimStatusSuffix, { x: claimStatusX, y: curY, size: 8, font: fontBold, color: COLOR_DARK });
 
   curY -= 24;
   page.drawText('Loan#:', { x: 50, y: curY, size: 9.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(data.mortgage.loanNumber || (isMortgageClaim ? 'Pending' : 'N/A - No Mortgage'), { x: 110, y: curY, size: 9.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'mortgage.loanNumber', value: data.mortgage.loanNumber, fallback: isMortgageClaim ? 'Pending' : 'N/A - No Mortgage', x: 110, y: curY, size: 9.5, font, color: COLOR_DARK });
   page.drawLine({ start: { x: 110, y: curY - 2 }, end: { x: 300, y: curY - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   curY -= 22;
   page.drawText('Mortgage Company Phone #:', { x: 50, y: curY, size: 8.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(data.mortgage.mortgagePhone || (isMortgageClaim ? '' : 'N/A'), { x: 200, y: curY, size: 9, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'mortgage.mortgagePhone', value: data.mortgage.mortgagePhone, fallback: isMortgageClaim ? '' : 'N/A', x: 200, y: curY, size: 9, font, color: COLOR_DARK });
   page.drawLine({ start: { x: 200, y: curY - 2 }, end: { x: 550, y: curY - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   curY -= 22;
   page.drawText('SSN#:', { x: 50, y: curY, size: 9, font: fontBold, color: COLOR_DARK });
-  page.drawText(`XXX-XX-${data.mortgage.last4Ssn || '____'}   ( last 4 digits only )`, {
-    x: 100,
-    y: curY,
-    size: 9,
-    font,
-    color: COLOR_DARK,
-  });
+  const ssnPrefix = 'XXX-XX-';
+  const ssnSuffix = '   ( last 4 digits only )';
+  page.drawText(ssnPrefix, { x: 100, y: curY, size: 9, font, color: COLOR_DARK });
+  let ssnX = 100 + font.widthOfTextAtSize(ssnPrefix, 9);
+  drawFieldValue(page, { key: 'mortgage.last4Ssn', value: data.mortgage.last4Ssn, fallback: '____', x: ssnX, y: curY, size: 9, font, color: COLOR_DARK });
+  ssnX += font.widthOfTextAtSize(val(data.mortgage.last4Ssn, '____'), 9);
+  page.drawText(ssnSuffix, { x: ssnX, y: curY, size: 9, font, color: COLOR_DARK });
   page.drawLine({ start: { x: 100, y: curY - 2 }, end: { x: 250, y: curY - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   curY -= 22;
   page.drawText('Spouse SSN#:', { x: 50, y: curY, size: 9, font: fontBold, color: COLOR_DARK });
-  page.drawText(`XXX-XX-${data.mortgage.spouseLast4Ssn || '____'}   ( last 4 digits only )`, {
-    x: 140,
-    y: curY,
-    size: 9,
-    font,
-    color: COLOR_DARK,
-  });
+  page.drawText(ssnPrefix, { x: 140, y: curY, size: 9, font, color: COLOR_DARK });
+  let spouseSsnX = 140 + font.widthOfTextAtSize(ssnPrefix, 9);
+  drawFieldValue(page, { key: 'mortgage.spouseLast4Ssn', value: data.mortgage.spouseLast4Ssn, fallback: '____', x: spouseSsnX, y: curY, size: 9, font, color: COLOR_DARK });
+  spouseSsnX += font.widthOfTextAtSize(val(data.mortgage.spouseLast4Ssn, '____'), 9);
+  page.drawText(ssnSuffix, { x: spouseSsnX, y: curY, size: 9, font, color: COLOR_DARK });
   page.drawLine({ start: { x: 140, y: curY - 2 }, end: { x: 280, y: curY - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   curY -= 30;
@@ -991,21 +1293,21 @@ export async function generateContract(data: RestorationJobData): Promise<Uint8A
   // Owner, address, contact block
   y -= 20;
   page1.drawText('Owner / Name of property:', { x: 50, y, size: 8, font: fontBold, color: COLOR_DARK });
-  page1.drawText(data.customer.customerName, { x: 170, y, size: 8.5, font, color: COLOR_DARK });
+  drawFieldValue(page1, { key: 'customer.customerName', value: data.customer.customerName, x: 170, y, size: 8.5, font, color: COLOR_DARK });
   page1.drawLine({ start: { x: 165, y: y - 2 }, end: { x: 550, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   y -= 18;
   page1.drawText('Address:', { x: 50, y, size: 8, font: fontBold, color: COLOR_DARK });
-  page1.drawText(data.customer.lossAddress, { x: 100, y, size: 8.5, font, color: COLOR_DARK });
+  drawFieldValue(page1, { key: 'customer.lossAddress', value: data.customer.lossAddress, x: 100, y, size: 8.5, font, color: COLOR_DARK });
   page1.drawLine({ start: { x: 95, y: y - 2 }, end: { x: 550, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   y -= 18;
   page1.drawText('City / Zip:', { x: 50, y, size: 8, font: fontBold, color: COLOR_DARK });
-  page1.drawText(data.customer.mailingCityStateZip, { x: 100, y, size: 8.5, font, color: COLOR_DARK });
+  drawFieldValue(page1, { key: 'customer.mailingCityStateZip', value: data.customer.mailingCityStateZip, x: 100, y, size: 8.5, font, color: COLOR_DARK });
   page1.drawLine({ start: { x: 95, y: y - 2 }, end: { x: 300, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   page1.drawText('Phone:', { x: 320, y, size: 8, font: fontBold, color: COLOR_DARK });
-  page1.drawText(data.customer.mobilePhone || data.customer.mainPhone, { x: 360, y, size: 8.5, font, color: COLOR_DARK });
+  drawFieldValue(page1, { key: 'customer.phoneLine', value: data.customer.mobilePhone || data.customer.mainPhone, x: 360, y, size: 8.5, font, color: COLOR_DARK });
   page1.drawLine({ start: { x: 355, y: y - 2 }, end: { x: 550, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   y -= 18;
@@ -1016,17 +1318,28 @@ export async function generateContract(data: RestorationJobData): Promise<Uint8A
     font: fontBold,
     color: COLOR_DARK,
   });
-  page1.drawText(`Job #: ${data.customer.jobNumber}`, { x: 220, y, size: 8, font: fontBold, color: COLOR_RED });
-  page1.drawText(`Email: ${data.customer.email}`, { x: 340, y, size: 8, font, color: COLOR_DARK });
+  const jobPrefix = 'Job #: ';
+  page1.drawText(jobPrefix, { x: 220, y, size: 8, font: fontBold, color: COLOR_RED });
+  drawFieldValue(page1, { key: 'customer.jobNumber', value: data.customer.jobNumber, x: 220 + fontBold.widthOfTextAtSize(jobPrefix, 8), y, size: 8, font: fontBold, color: COLOR_RED, bold: true });
+  const emailPrefix = 'Email: ';
+  page1.drawText(emailPrefix, { x: 340, y, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page1, { key: 'customer.email', value: data.customer.email, x: 340 + font.widthOfTextAtSize(emailPrefix, 8), y, size: 8, font, color: COLOR_DARK });
 
   y -= 15;
-  page1.drawText(`Insurance: ${data.insurance.carrier}   |   Claim #: ${data.insurance.claimNumber}   |   Policy #: ${data.insurance.policyNumber}`, {
-    x: 50,
-    y,
-    size: 7.5,
-    font: fontBold,
-    color: COLOR_DARK,
-  });
+  const contractInsPrefix = 'Insurance: ';
+  const contractInsSep1 = '   |   Claim #: ';
+  const contractInsSep2 = '   |   Policy #: ';
+  page1.drawText(contractInsPrefix, { x: 50, y, size: 7.5, font: fontBold, color: COLOR_DARK });
+  let contractInsX = 50 + fontBold.widthOfTextAtSize(contractInsPrefix, 7.5);
+  drawFieldValue(page1, { key: 'insurance.carrier', value: data.insurance.carrier, x: contractInsX, y, size: 7.5, font: fontBold, color: COLOR_DARK, bold: true });
+  contractInsX += fontBold.widthOfTextAtSize(val(data.insurance.carrier), 7.5);
+  page1.drawText(contractInsSep1, { x: contractInsX, y, size: 7.5, font: fontBold, color: COLOR_DARK });
+  contractInsX += fontBold.widthOfTextAtSize(contractInsSep1, 7.5);
+  drawFieldValue(page1, { key: 'insurance.claimNumber', value: data.insurance.claimNumber, x: contractInsX, y, size: 7.5, font: fontBold, color: COLOR_DARK, bold: true });
+  contractInsX += fontBold.widthOfTextAtSize(val(data.insurance.claimNumber), 7.5);
+  page1.drawText(contractInsSep2, { x: contractInsX, y, size: 7.5, font: fontBold, color: COLOR_DARK });
+  contractInsX += fontBold.widthOfTextAtSize(contractInsSep2, 7.5);
+  drawFieldValue(page1, { key: 'insurance.policyNumber', value: data.insurance.policyNumber, x: contractInsX, y, size: 7.5, font: fontBold, color: COLOR_DARK, bold: true });
 
   // Terms and Conditions header
   y -= 18;
@@ -1058,7 +1371,7 @@ export async function generateContract(data: RestorationJobData): Promise<Uint8A
   y -= 22;
   page1.drawText('* Project will begin within', { x: 50, y, size: 7.5, font, color: COLOR_DARK });
   page1.drawRectangle({ x: 155, y: y - 2, width: 30, height: 11, color: COLOR_HIGHLIGHT });
-  page1.drawText(` ${data.financials.commenceDays} `, { x: 160, y, size: 8, font: fontBold, color: COLOR_DARK });
+  drawFieldValue(page1, { key: 'financials.commenceDays', value: data.financials.commenceDays, x: 160 + fontBold.widthOfTextAtSize(' ', 8), y, size: 8, font: fontBold, color: COLOR_DARK, bold: true });
   page1.drawText('days of the last to occur of the following (the "Commencement Date"):', {
     x: 190,
     y,
@@ -1088,7 +1401,7 @@ export async function generateContract(data: RestorationJobData): Promise<Uint8A
   y -= 16;
   page1.drawText('* Project will be completed within', { x: 50, y, size: 7.5, font, color: COLOR_DARK });
   page1.drawRectangle({ x: 178, y: y - 2, width: 30, height: 11, color: COLOR_HIGHLIGHT });
-  page1.drawText(` ${data.financials.completeDays} `, { x: 183, y, size: 8, font: fontBold, color: COLOR_DARK });
+  drawFieldValue(page1, { key: 'financials.completeDays', value: data.financials.completeDays, x: 183 + fontBold.widthOfTextAtSize(' ', 8), y, size: 8, font: fontBold, color: COLOR_DARK, bold: true });
   page1.drawText('days of the Commencement Date. See below for contingencies that may extend.', {
     x: 213,
     y,
@@ -1123,7 +1436,7 @@ export async function generateContract(data: RestorationJobData): Promise<Uint8A
   page1.drawText('Initial', { x: 57, y: y + 1, size: 7.5, font: fontBold, color: COLOR_DARK });
 
   page1.drawText('The total amount of the contract/repairs will be', { x: 92, y, size: 7.5, font, color: COLOR_DARK });
-  page1.drawText(` ${formatCurrency(data.financials.totalApprovedRcv)} `, { x: 275, y, size: 8, font: fontBold, color: COLOR_RED });
+  drawFieldValue(page1, { key: 'financials.totalApprovedRcv', value: formatCurrency(data.financials.totalApprovedRcv), x: 275 + fontBold.widthOfTextAtSize(' ', 8), y, size: 8, font: fontBold, color: COLOR_RED, bold: true });
   page1.drawLine({ start: { x: 270, y: y - 2 }, end: { x: 340, y: y - 2 }, thickness: 0.75, color: COLOR_DARK });
   page1.drawText('per the approved estimate', { x: 345, y, size: 7.5, font, color: COLOR_DARK });
   // Cyan highlight for plus all supplements
@@ -1149,7 +1462,7 @@ export async function generateContract(data: RestorationJobData): Promise<Uint8A
   page1.drawText(`${formatCurrency(data.financials.netClaimValue)}`, { x: 92, y, size: 8, font: fontBold, color: COLOR_DARK });
   page1.drawLine({ start: { x: 92, y: y - 2 }, end: { x: 155, y: y - 2 }, thickness: 0.75, color: COLOR_DARK });
   page1.drawText('will be paid by your insurance company;', { x: 160, y, size: 7.5, font, color: COLOR_DARK });
-  page1.drawText(`${formatCurrency(data.financials.deductible)}`, { x: 320, y, size: 8, font: fontBold, color: COLOR_DARK });
+  drawFieldValue(page1, { key: 'financials.deductible', value: formatCurrency(data.financials.deductible), x: 320, y, size: 8, font: fontBold, color: COLOR_DARK, bold: true });
   page1.drawLine({ start: { x: 320, y: y - 2 }, end: { x: 380, y: y - 2 }, thickness: 0.75, color: COLOR_DARK });
   page1.drawText('is the amount of your deductible.', { x: 385, y, size: 7.5, font, color: COLOR_DARK });
 
@@ -1226,29 +1539,29 @@ export async function generateContract(data: RestorationJobData): Promise<Uint8A
 
   y2 -= 15;
   page2.drawText('Adjuster/Agent:', { x: 50, y: y2, size: 8, font: fontBold, color: COLOR_DARK });
-  page2.drawText(data.insurance.primaryAdjuster || '', { x: 130, y: y2, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page2, { key: 'insurance.primaryAdjuster', value: data.insurance.primaryAdjuster, x: 130, y: y2, size: 8, font, color: COLOR_DARK });
   page2.drawLine({ start: { x: 125, y: y2 - 2 }, end: { x: 300, y: y2 - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   page2.drawText('Claim #:', { x: 330, y: y2, size: 8, font: fontBold, color: COLOR_DARK });
-  page2.drawText(data.insurance.claimNumber || '', { x: 375, y: y2, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page2, { key: 'insurance.claimNumber', value: data.insurance.claimNumber, x: 375, y: y2, size: 8, font, color: COLOR_DARK });
   page2.drawLine({ start: { x: 370, y: y2 - 2 }, end: { x: 550, y: y2 - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   y2 -= 18;
   page2.drawText('Insurance Company:', { x: 50, y: y2, size: 8, font: fontBold, color: COLOR_DARK });
-  page2.drawText(data.insurance.carrier || '', { x: 145, y: y2, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page2, { key: 'insurance.carrier', value: data.insurance.carrier, x: 145, y: y2, size: 8, font, color: COLOR_DARK });
   page2.drawLine({ start: { x: 140, y: y2 - 2 }, end: { x: 300, y: y2 - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   page2.drawText('Policy #:', { x: 330, y: y2, size: 8, font: fontBold, color: COLOR_DARK });
-  page2.drawText(data.insurance.policyNumber || '', { x: 375, y: y2, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page2, { key: 'insurance.policyNumber', value: data.insurance.policyNumber, x: 375, y: y2, size: 8, font, color: COLOR_DARK });
   page2.drawLine({ start: { x: 370, y: y2 - 2 }, end: { x: 550, y: y2 - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   y2 -= 18;
   page2.drawText('Estimator:', { x: 50, y: y2, size: 8, font: fontBold, color: COLOR_DARK });
-  page2.drawText(data.team.estimator || '', { x: 110, y: y2, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page2, { key: 'team.estimator', value: data.team.estimator, x: 110, y: y2, size: 8, font, color: COLOR_DARK });
   page2.drawLine({ start: { x: 105, y: y2 - 2 }, end: { x: 300, y: y2 - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   page2.drawText('Project Manager:', { x: 330, y: y2, size: 8, font: fontBold, color: COLOR_DARK });
-  page2.drawText(data.team.projectManager || '', { x: 415, y: y2, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page2, { key: 'team.projectManager', value: data.team.projectManager, x: 415, y: y2, size: 8, font, color: COLOR_DARK });
   page2.drawLine({ start: { x: 410, y: y2 - 2 }, end: { x: 550, y: y2 - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   // Signatures on Page 2
@@ -1337,28 +1650,22 @@ export async function generateCancellationNotice(data: RestorationJobData): Prom
   page.drawText('NOTICE OF CANCELLATION', { x: 215, y, size: 12, font: fontBold, color: COLOR_DARK });
 
   y -= 18;
-  page.drawText(`Job #: ${data.customer.jobNumber}   |   Customer: ${data.customer.customerName}`, {
-    x: 50,
-    y,
-    size: 8.5,
-    font: fontBold,
-    color: COLOR_RED,
-  });
-  page.drawText(`Agreement Date: ${data.insurance.dateReceived || new Date().toLocaleDateString('en-US')}`, {
-    x: 370,
-    y,
-    size: 8,
-    font: fontBold,
-    color: COLOR_DARK,
-  });
+  const jobPrefix = 'Job #: ';
+  const jobSep = '   |   Customer: ';
+  page.drawText(jobPrefix, { x: 50, y, size: 8.5, font: fontBold, color: COLOR_RED });
+  let jobX = 50 + fontBold.widthOfTextAtSize(jobPrefix, 8.5);
+  drawFieldValue(page, { key: 'customer.jobNumber', value: data.customer.jobNumber, x: jobX, y, size: 8.5, font: fontBold, color: COLOR_RED, bold: true });
+  jobX += fontBold.widthOfTextAtSize(val(data.customer.jobNumber), 8.5);
+  page.drawText(jobSep, { x: jobX, y, size: 8.5, font: fontBold, color: COLOR_RED });
+  jobX += fontBold.widthOfTextAtSize(jobSep, 8.5);
+  drawFieldValue(page, { key: 'customer.customerName', value: data.customer.customerName, x: jobX, y, size: 8.5, font: fontBold, color: COLOR_RED, bold: true });
+  const agreementPrefix = 'Agreement Date: ';
+  page.drawText(agreementPrefix, { x: 370, y, size: 8, font: fontBold, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.dateReceived', value: data.insurance.dateReceived, fallback: new Date().toLocaleDateString('en-US'), x: 370 + fontBold.widthOfTextAtSize(agreementPrefix, 8), y, size: 8, font: fontBold, color: COLOR_DARK, bold: true });
   y -= 13;
-  page.drawText(`Property Address: ${data.customer.lossAddress}`, {
-    x: 50,
-    y,
-    size: 8,
-    font,
-    color: COLOR_DARK,
-  });
+  const propPrefix = 'Property Address: ';
+  page.drawText(propPrefix, { x: 50, y, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.lossAddress', value: data.customer.lossAddress, x: 50 + font.widthOfTextAtSize(propPrefix, 8), y, size: 8, font, color: COLOR_DARK });
 
   y -= 20;
   page.drawText('You, the OWNER, may cancel this AGREEMENT by mailing, delivering, or submitting by electronic mail a signed and', {
@@ -1484,32 +1791,49 @@ export async function generateChangeOrder(data: RestorationJobData): Promise<Uin
 
   y -= 26;
   page.drawText('Project Owner:', { x: 50, y, size: 8.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(data.customer.customerName, { x: 125, y, size: 8.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.customerName', value: data.customer.customerName, x: 125, y, size: 8.5, font, color: COLOR_DARK });
   page.drawLine({ start: { x: 120, y: y - 2 }, end: { x: 300, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   page.drawText('Change Order Number:', { x: 330, y, size: 8.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(data.changeOrder.changeOrderNumber || 'CO-01', { x: 440, y, size: 8.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'changeOrder.changeOrderNumber', value: data.changeOrder.changeOrderNumber, fallback: 'CO-01', x: 440, y, size: 8.5, font, color: COLOR_DARK });
   page.drawLine({ start: { x: 435, y: y - 2 }, end: { x: 550, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   y -= 18;
   page.drawText('Job Number:', { x: 50, y, size: 8.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(data.customer.jobNumber, { x: 125, y, size: 8.5, font: fontBold, color: COLOR_RED });
+  drawFieldValue(page, { key: 'customer.jobNumber', value: data.customer.jobNumber, x: 125, y, size: 8.5, font: fontBold, color: COLOR_RED, bold: true });
   page.drawLine({ start: { x: 120, y: y - 2 }, end: { x: 300, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   page.drawText('Change Order Date:', { x: 330, y, size: 8.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(data.changeOrder.changeOrderDate || new Date().toLocaleDateString('en-US'), { x: 440, y, size: 8.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'changeOrder.changeOrderDate', value: data.changeOrder.changeOrderDate, fallback: new Date().toLocaleDateString('en-US'), x: 440, y, size: 8.5, font, color: COLOR_DARK });
   page.drawLine({ start: { x: 435, y: y - 2 }, end: { x: 550, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   y -= 18;
   page.drawText('Property Address:', { x: 50, y, size: 8.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(data.customer.lossAddress, { x: 135, y, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.lossAddress', value: data.customer.lossAddress, x: 135, y, size: 8, font, color: COLOR_DARK });
   page.drawLine({ start: { x: 130, y: y - 2 }, end: { x: 550, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   y -= 18;
-  page.drawText(`Insurance: ${data.insurance.carrier}  |  Claim #: ${data.insurance.claimNumber}`, { x: 50, y, size: 8, font: fontBold, color: COLOR_DARK });
+  const coInsPrefix = 'Insurance: ';
+  const coInsSep = '  |  Claim #: ';
+  page.drawText(coInsPrefix, { x: 50, y, size: 8, font: fontBold, color: COLOR_DARK });
+  let coInsX = 50 + fontBold.widthOfTextAtSize(coInsPrefix, 8);
+  drawFieldValue(page, { key: 'insurance.carrier', value: data.insurance.carrier, x: coInsX, y, size: 8, font: fontBold, color: COLOR_DARK, bold: true });
+  coInsX += fontBold.widthOfTextAtSize(val(data.insurance.carrier), 8);
+  page.drawText(coInsSep, { x: coInsX, y, size: 8, font: fontBold, color: COLOR_DARK });
+  coInsX += fontBold.widthOfTextAtSize(coInsSep, 8);
+  drawFieldValue(page, { key: 'insurance.claimNumber', value: data.insurance.claimNumber, x: coInsX, y, size: 8, font: fontBold, color: COLOR_DARK, bold: true });
   const isIns = data.changeOrder.isInsuranceRelated;
-  page.drawText(`[ ${isIns ? 'X' : '  '} ] Insurance Related`, { x: 330, y, size: 8.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(`[ ${!isIns ? 'X' : '  '} ] Non Insurance Related*`, { x: 435, y, size: 8.5, font: fontBold, color: COLOR_DARK });
+  page.drawText('[ ', { x: 330, y, size: 8.5, font: fontBold, color: COLOR_DARK });
+  let insRelX = 330 + fontBold.widthOfTextAtSize('[ ', 8.5);
+  drawFieldValue(page, { key: 'changeOrder.isInsuranceRelated', value: isIns ? 'X' : '  ', x: insRelX, y, size: 8.5, font: fontBold, color: COLOR_DARK, bold: true, minWidth: 8 });
+  insRelX += fontBold.widthOfTextAtSize(isIns ? 'X' : '  ', 8.5);
+  page.drawText(' ] Insurance Related', { x: insRelX, y, size: 8.5, font: fontBold, color: COLOR_DARK });
+
+  page.drawText('[ ', { x: 435, y, size: 8.5, font: fontBold, color: COLOR_DARK });
+  let nonInsX = 435 + fontBold.widthOfTextAtSize('[ ', 8.5);
+  drawFieldValue(page, { key: 'changeOrder.isInsuranceRelated', value: isIns ? '  ' : 'X', x: nonInsX, y, size: 8.5, font: fontBold, color: COLOR_DARK, bold: true, minWidth: 8 });
+  nonInsX += fontBold.widthOfTextAtSize(isIns ? '  ' : 'X', 8.5);
+  page.drawText(' ] Non Insurance Related*', { x: nonInsX, y, size: 8.5, font: fontBold, color: COLOR_DARK });
 
   // Big Scope Box with Yellow Header
   y -= 25;
@@ -1525,7 +1849,11 @@ export async function generateChangeOrder(data: RestorationJobData): Promise<Uin
     font,
     size: 8.5,
     maxLines: 9,
+    key: 'changeOrder.scopeDescription',
   });
+  if (!val(data.changeOrder.scopeDescription)) {
+    captureEmptyFieldSpan(page, { key: 'changeOrder.scopeDescription', x: 60, y: y - 35, size: 8.5, width: 480 });
+  }
 
   // Warning Banner
   y -= 175;
@@ -1548,11 +1876,11 @@ export async function generateChangeOrder(data: RestorationJobData): Promise<Uin
   // Financial Lines
   y -= 45;
   page.drawText('The original contract sum was: ............................................................................', { x: 50, y, size: 8, font, color: COLOR_DARK });
-  page.drawText(formatCurrency(data.changeOrder.originalContractSum || data.financials.totalApprovedRcv), { x: 450, y, size: 8, font: fontBold, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'changeOrder.originalContractSum', value: formatCurrency(data.changeOrder.originalContractSum || data.financials.totalApprovedRcv), x: 450, y, size: 8, font: fontBold, color: COLOR_DARK, bold: true });
 
   y -= 18;
   page.drawText('Net changes by previous authorized change orders: ...................................................', { x: 50, y, size: 8, font, color: COLOR_DARK });
-  page.drawText(formatCurrency(data.changeOrder.netPreviousChanges || 0), { x: 450, y, size: 8, font: fontBold, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'changeOrder.netPreviousChanges', value: formatCurrency(data.changeOrder.netPreviousChanges || 0), x: 450, y, size: 8, font: fontBold, color: COLOR_DARK, bold: true });
 
   y -= 18;
   const priorSum = Number(data.changeOrder.originalContractSum || data.financials.totalApprovedRcv || 0) + Number(data.changeOrder.netPreviousChanges || 0);
@@ -1560,8 +1888,14 @@ export async function generateChangeOrder(data: RestorationJobData): Promise<Uin
   page.drawText(formatCurrency(priorSum), { x: 450, y, size: 8, font: fontBold, color: COLOR_DARK });
 
   y -= 18;
-  page.drawText(`The contract sum will be (${data.changeOrder.changeType}) by this change order in the amount of: ...`, { x: 50, y, size: 8, font, color: COLOR_DARK });
-  page.drawText(formatCurrency(data.changeOrder.changeAmount || 0), { x: 450, y, size: 8, font: fontBold, color: COLOR_RED });
+  const changeTypePrefix = 'The contract sum will be (';
+  const changeTypeSuffix = ') by this change order in the amount of: ...';
+  page.drawText(changeTypePrefix, { x: 50, y, size: 8, font, color: COLOR_DARK });
+  let changeTypeX = 50 + font.widthOfTextAtSize(changeTypePrefix, 8);
+  drawFieldValue(page, { key: 'changeOrder.changeType', value: data.changeOrder.changeType, x: changeTypeX, y, size: 8, font, color: COLOR_DARK });
+  changeTypeX += font.widthOfTextAtSize(val(data.changeOrder.changeType), 8);
+  page.drawText(changeTypeSuffix, { x: changeTypeX, y, size: 8, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'changeOrder.changeAmount', value: formatCurrency(data.changeOrder.changeAmount || 0), x: 450, y, size: 8, font: fontBold, color: COLOR_RED, bold: true });
 
   y -= 18;
   const delta = (data.changeOrder.changeType === 'decrease' ? -1 : 1) * Number(data.changeOrder.changeAmount || 0);
@@ -1570,7 +1904,13 @@ export async function generateChangeOrder(data: RestorationJobData): Promise<Uin
   page.drawText(formatCurrency(newContractSum), { x: 450, y, size: 8.5, font: fontBold, color: COLOR_DARK });
 
   y -= 18;
-  page.drawText(`The contract time will be (increased) by: (${data.changeOrder.addedDays || 0}) days.`, { x: 50, y, size: 8, font: fontBold, color: COLOR_DARK });
+  const daysPrefix = 'The contract time will be (increased) by: (';
+  const daysSuffix = ') days.';
+  page.drawText(daysPrefix, { x: 50, y, size: 8, font: fontBold, color: COLOR_DARK });
+  let daysX = 50 + fontBold.widthOfTextAtSize(daysPrefix, 8);
+  drawFieldValue(page, { key: 'changeOrder.addedDays', value: data.changeOrder.addedDays, fallback: '0', x: daysX, y, size: 8, font: fontBold, color: COLOR_DARK, bold: true });
+  daysX += fontBold.widthOfTextAtSize(val(data.changeOrder.addedDays, '0'), 8);
+  page.drawText(daysSuffix, { x: daysX, y, size: 8, font: fontBold, color: COLOR_DARK });
 
   // Signature Block
   y -= 45;
@@ -1617,43 +1957,52 @@ export async function generateProductionChecklist(data: RestorationJobData): Pro
 
   y -= 15;
   page.drawText('Homeowner Name:', { x: 50, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(data.customer.customerName, { x: 135, y, size: 8, font: fontBold, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.customerName', value: data.customer.customerName, x: 135, y, size: 8, font: fontBold, color: COLOR_DARK, bold: true });
   page.drawLine({ start: { x: 130, y: y - 2 }, end: { x: 310, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   page.drawText('Job Number:', { x: 330, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(data.customer.jobNumber, { x: 395, y, size: 8, font: fontBold, color: COLOR_RED });
+  drawFieldValue(page, { key: 'customer.jobNumber', value: data.customer.jobNumber, x: 395, y, size: 8, font: fontBold, color: COLOR_RED, bold: true });
   page.drawLine({ start: { x: 390, y: y - 2 }, end: { x: 550, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   y -= 14;
   page.drawText('Property Address:', { x: 50, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(data.customer.lossAddress, { x: 135, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.lossAddress', value: data.customer.lossAddress, x: 135, y, size: 7.5, font, color: COLOR_DARK });
   page.drawLine({ start: { x: 130, y: y - 2 }, end: { x: 310, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   page.drawText('Job Name:', { x: 330, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(data.customer.jobName || `${data.customer.customerName} Restoration`, { x: 395, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.jobName', value: data.customer.jobName, fallback: `${data.customer.customerName} Restoration`, x: 395, y, size: 7.5, font, color: COLOR_DARK });
   page.drawLine({ start: { x: 390, y: y - 2 }, end: { x: 550, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   y -= 14;
   page.drawText('Deductible Amount:', { x: 50, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(formatCurrency(data.financials.deductible), { x: 140, y, size: 7.5, font: fontBold, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'financials.deductible', value: formatCurrency(data.financials.deductible), x: 140, y, size: 7.5, font: fontBold, color: COLOR_DARK, bold: true });
   page.drawLine({ start: { x: 135, y: y - 2 }, end: { x: 250, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
-  page.drawText(`Has deductible been collected?  [ ${data.checklist.hasDeductibleBeenCollected} ]`, {
-    x: 270,
-    y,
-    size: 7.5,
-    font: fontBold,
-    color: COLOR_DARK,
-  });
+  const deductibleCollectedPrefix = 'Has deductible been collected?  [ ';
+  page.drawText(deductibleCollectedPrefix, { x: 270, y, size: 7.5, font: fontBold, color: COLOR_DARK });
+  let deductibleCollectedX = 270 + fontBold.widthOfTextAtSize(deductibleCollectedPrefix, 7.5);
+  drawFieldValue(page, { key: 'checklist.hasDeductibleBeenCollected', value: data.checklist.hasDeductibleBeenCollected, x: deductibleCollectedX, y, size: 7.5, font: fontBold, color: COLOR_DARK, bold: true });
+  deductibleCollectedX += fontBold.widthOfTextAtSize(val(data.checklist.hasDeductibleBeenCollected), 7.5);
+  page.drawText(' ]', { x: deductibleCollectedX, y, size: 7.5, font: fontBold, color: COLOR_DARK });
 
   y -= 14;
   page.drawText('If no, explain:', { x: 50, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(data.checklist.deductibleExplanation || 'Collected at pre-construction walk.', { x: 120, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'checklist.deductibleExplanation', value: data.checklist.deductibleExplanation, fallback: 'Collected at pre-construction walk.', x: 120, y, size: 7.5, font, color: COLOR_DARK });
   page.drawLine({ start: { x: 115, y: y - 2 }, end: { x: 550, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
 
   y -= 14;
-  page.drawText(`Email Address: ${data.customer.email}`, { x: 50, y, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(`Phone: ${data.customer.mainPhone}   |   Alt Phone: ${data.customer.mobilePhone}`, { x: 270, y, size: 7.5, font, color: COLOR_DARK });
+  const emailPrefix = 'Email Address: ';
+  page.drawText(emailPrefix, { x: 50, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'customer.email', value: data.customer.email, x: 50 + font.widthOfTextAtSize(emailPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
+  const phonePrefix = 'Phone: ';
+  const phoneSep = '   |   Alt Phone: ';
+  page.drawText(phonePrefix, { x: 270, y, size: 7.5, font, color: COLOR_DARK });
+  let phoneX = 270 + font.widthOfTextAtSize(phonePrefix, 7.5);
+  drawFieldValue(page, { key: 'customer.mainPhone', value: data.customer.mainPhone, x: phoneX, y, size: 7.5, font, color: COLOR_DARK });
+  phoneX += font.widthOfTextAtSize(val(data.customer.mainPhone), 7.5);
+  page.drawText(phoneSep, { x: phoneX, y, size: 7.5, font, color: COLOR_DARK });
+  phoneX += font.widthOfTextAtSize(phoneSep, 7.5);
+  drawFieldValue(page, { key: 'customer.mobilePhone', value: data.customer.mobilePhone, x: phoneX, y, size: 7.5, font, color: COLOR_DARK });
 
   // Yellow Highlight Header: Estimates and Required Documentation
   y -= 22;
@@ -1669,7 +2018,13 @@ export async function generateProductionChecklist(data: RestorationJobData): Pro
   page.drawText('[X] Pictures / Matterport in DASH', { x: 330, y, size: 7.5, font, color: COLOR_DARK });
 
   y -= 15;
-  page.drawText(`Xactimate Version?  ____${data.checklist.xactimateVersion}_____`, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
+  const xactimatePrefix = 'Xactimate Version?  ____';
+  const xactimateSuffix = '_____';
+  page.drawText(xactimatePrefix, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
+  let xactimateX = 55 + font.widthOfTextAtSize(xactimatePrefix, 7.5);
+  drawFieldValue(page, { key: 'checklist.xactimateVersion', value: data.checklist.xactimateVersion, x: xactimateX, y, size: 7.5, font, color: COLOR_DARK });
+  xactimateX += font.widthOfTextAtSize(val(data.checklist.xactimateVersion), 7.5);
+  page.drawText(xactimateSuffix, { x: xactimateX, y, size: 7.5, font, color: COLOR_DARK });
   page.drawText('[X] Two Copies of APPROVED estimate', { x: 330, y, size: 7.5, font, color: COLOR_DARK });
 
   y -= 15;
@@ -1704,14 +2059,26 @@ export async function generateProductionChecklist(data: RestorationJobData): Pro
   page.drawText('Agent / Adjuster Information - Capture if blank or unknown!', { x: 55, y: y - 10, size: 8, font: fontBold, color: COLOR_DARK });
 
   y -= 22;
-  page.drawText(`Insurance Company: ${data.insurance.carrier || ''}`, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(`Agent Name: ${data.insurance.brokerAgent || ''}`, { x: 280, y, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(`Agent Phone: ${data.insurance.agentPhone || ''}`, { x: 440, y, size: 7.5, font, color: COLOR_DARK });
+  const insCompanyPrefix = 'Insurance Company: ';
+  page.drawText(insCompanyPrefix, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.carrier', value: data.insurance.carrier, x: 55 + font.widthOfTextAtSize(insCompanyPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
+  const agentNamePrefix = 'Agent Name: ';
+  page.drawText(agentNamePrefix, { x: 280, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.brokerAgent', value: data.insurance.brokerAgent, x: 280 + font.widthOfTextAtSize(agentNamePrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
+  const agentPhonePrefix = 'Agent Phone: ';
+  page.drawText(agentPhonePrefix, { x: 440, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.agentPhone', value: data.insurance.agentPhone, x: 440 + font.widthOfTextAtSize(agentPhonePrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
 
   y -= 14;
-  page.drawText(`Adjuster Name: ${data.insurance.primaryAdjuster || ''}`, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(`Adjuster Phone: ${data.insurance.adjusterPhone || ''}`, { x: 280, y, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(`Adjuster Email: ${data.insurance.adjusterEmail || ''}`, { x: 410, y, size: 7.5, font, color: COLOR_DARK });
+  const adjusterNamePrefix = 'Adjuster Name: ';
+  page.drawText(adjusterNamePrefix, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.primaryAdjuster', value: data.insurance.primaryAdjuster, x: 55 + font.widthOfTextAtSize(adjusterNamePrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
+  const adjusterPhonePrefix = 'Adjuster Phone: ';
+  page.drawText(adjusterPhonePrefix, { x: 280, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.adjusterPhone', value: data.insurance.adjusterPhone, x: 280 + font.widthOfTextAtSize(adjusterPhonePrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
+  const adjusterEmailPrefix = 'Adjuster Email: ';
+  page.drawText(adjusterEmailPrefix, { x: 410, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.adjusterEmail', value: data.insurance.adjusterEmail, x: 410 + font.widthOfTextAtSize(adjusterEmailPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
 
   // Yellow Highlight Header: Claim / Check Information
   y -= 22;
@@ -1719,48 +2086,72 @@ export async function generateProductionChecklist(data: RestorationJobData): Pro
   page.drawText('Claim / Check Information', { x: 55, y: y - 10, size: 8, font: fontBold, color: COLOR_DARK });
 
   y -= 20;
-  page.drawText(`Claim #:  ${data.insurance.claimNumber}`, { x: 55, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(`Self Pay: ${data.checklist.isSelfPay ? 'Yes' : 'No'}`, { x: 230, y, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(`Program Claim? ${data.checklist.isProgramClaim ? 'Yes' : 'No'}`, { x: 360, y, size: 7.5, font, color: COLOR_DARK });
+  const claimPrefix = 'Claim #:  ';
+  page.drawText(claimPrefix, { x: 55, y, size: 7.5, font: fontBold, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'insurance.claimNumber', value: data.insurance.claimNumber, x: 55 + fontBold.widthOfTextAtSize(claimPrefix, 7.5), y, size: 7.5, font: fontBold, color: COLOR_DARK, bold: true });
+  const selfPayPrefix = 'Self Pay: ';
+  page.drawText(selfPayPrefix, { x: 230, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'checklist.isSelfPay', value: data.checklist.isSelfPay ? 'Yes' : 'No', x: 230 + font.widthOfTextAtSize(selfPayPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
+  const programClaimPrefix = 'Program Claim? ';
+  page.drawText(programClaimPrefix, { x: 360, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'checklist.isProgramClaim', value: data.checklist.isProgramClaim ? 'Yes' : 'No', x: 360 + font.widthOfTextAtSize(programClaimPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
 
   y -= 14;
-  page.drawText(`Has check been sent?  ${data.checklist.hasCheckBeenSent ? 'Yes' : 'No'}`, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(`To whom?  ${data.checklist.checkToWhom}`, { x: 230, y, size: 7.5, font, color: COLOR_DARK });
+  const checkSentPrefix = 'Has check been sent?  ';
+  page.drawText(checkSentPrefix, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'checklist.hasCheckBeenSent', value: data.checklist.hasCheckBeenSent ? 'Yes' : 'No', x: 55 + font.widthOfTextAtSize(checkSentPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
+  const checkToWhomPrefix = 'To whom?  ';
+  page.drawText(checkToWhomPrefix, { x: 230, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'checklist.checkToWhom', value: data.checklist.checkToWhom, x: 230 + font.widthOfTextAtSize(checkToWhomPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
 
   y -= 14;
-  page.drawText(`Check payable to: ${data.checklist.checkPayableTo}`, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
+  const payablePrefix = 'Check payable to: ';
+  page.drawText(payablePrefix, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'checklist.checkPayableTo', value: data.checklist.checkPayableTo, x: 55 + font.widthOfTextAtSize(payablePrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
 
   y -= 14;
-  page.drawText(`Mortgage on check?  ${data.mortgage.hasMortgage ? 'Yes' : 'No'} (${data.mortgage.mortgageCompany || 'None'})`, {
-    x: 55,
-    y,
-    size: 7.5,
-    font,
-    color: COLOR_DARK,
-  });
+  const mortgageCheckPrefix = 'Mortgage on check?  ';
+  const mortgageCheckMid = ' (';
+  page.drawText(mortgageCheckPrefix, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
+  let mortgageCheckX = 55 + font.widthOfTextAtSize(mortgageCheckPrefix, 7.5);
+  drawFieldValue(page, { key: 'mortgage.hasMortgage', value: data.mortgage.hasMortgage ? 'Yes' : 'No', x: mortgageCheckX, y, size: 7.5, font, color: COLOR_DARK });
+  mortgageCheckX += font.widthOfTextAtSize(data.mortgage.hasMortgage ? 'Yes' : 'No', 7.5);
+  page.drawText(mortgageCheckMid, { x: mortgageCheckX, y, size: 7.5, font, color: COLOR_DARK });
+  mortgageCheckX += font.widthOfTextAtSize(mortgageCheckMid, 7.5);
+  drawFieldValue(page, { key: 'mortgage.mortgageCompany', value: data.mortgage.mortgageCompany, fallback: 'None', x: mortgageCheckX, y, size: 7.5, font, color: COLOR_DARK });
+  mortgageCheckX += font.widthOfTextAtSize(val(data.mortgage.mortgageCompany, 'None'), 7.5);
+  page.drawText(')', { x: mortgageCheckX, y, size: 7.5, font, color: COLOR_DARK });
 
-  page.drawText(`Depreciation withheld?  ${data.checklist.isDepreciationWithheld ? 'Yes' : 'No'} (${formatCurrency(data.checklist.depreciationAmount)})`, {
-    x: 320,
-    y,
-    size: 7.5,
-    font,
-    color: COLOR_DARK,
-  });
+  const depreciationPrefix = 'Depreciation withheld?  ';
+  const depreciationMid = ' (';
+  page.drawText(depreciationPrefix, { x: 320, y, size: 7.5, font, color: COLOR_DARK });
+  let depreciationX = 320 + font.widthOfTextAtSize(depreciationPrefix, 7.5);
+  drawFieldValue(page, { key: 'checklist.isDepreciationWithheld', value: data.checklist.isDepreciationWithheld ? 'Yes' : 'No', x: depreciationX, y, size: 7.5, font, color: COLOR_DARK });
+  depreciationX += font.widthOfTextAtSize(data.checklist.isDepreciationWithheld ? 'Yes' : 'No', 7.5);
+  page.drawText(depreciationMid, { x: depreciationX, y, size: 7.5, font, color: COLOR_DARK });
+  depreciationX += font.widthOfTextAtSize(depreciationMid, 7.5);
+  drawFieldValue(page, { key: 'checklist.depreciationAmount', value: formatCurrency(data.checklist.depreciationAmount), x: depreciationX, y, size: 7.5, font, color: COLOR_DARK });
+  depreciationX += font.widthOfTextAtSize(val(formatCurrency(data.checklist.depreciationAmount)), 7.5);
+  page.drawText(')', { x: depreciationX, y, size: 7.5, font, color: COLOR_DARK });
 
   y -= 14;
-  page.drawText(`Contract Amount:  ${formatCurrency(data.financials.totalApprovedRcv)}`, {
-    x: 55,
-    y,
-    size: 8,
-    font: fontBold,
-    color: COLOR_RED,
-  });
-  page.drawText(`Estimator: ${data.team.estimator}`, { x: 280, y, size: 7.5, font, color: COLOR_DARK });
+  const contractAmountPrefix = 'Contract Amount:  ';
+  page.drawText(contractAmountPrefix, { x: 55, y, size: 8, font: fontBold, color: COLOR_RED });
+  drawFieldValue(page, { key: 'financials.totalApprovedRcv', value: formatCurrency(data.financials.totalApprovedRcv), x: 55 + fontBold.widthOfTextAtSize(contractAmountPrefix, 8), y, size: 8, font: fontBold, color: COLOR_RED, bold: true });
+  const estimatorPrefix = 'Estimator: ';
+  page.drawText(estimatorPrefix, { x: 280, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'team.estimator', value: data.team.estimator, x: 280 + font.widthOfTextAtSize(estimatorPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
 
   y -= 18;
-  page.drawText(`Project Manager: ${data.team.projectManager}`, { x: 55, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  page.drawText(`Start Date: ${data.checklist.startDate || 'TBD'}`, { x: 240, y, size: 7.5, font, color: COLOR_DARK });
-  page.drawText(`Finish Date: ${data.checklist.finishDate || 'TBD'}`, { x: 380, y, size: 7.5, font, color: COLOR_DARK });
+  const pmPrefix = 'Project Manager: ';
+  page.drawText(pmPrefix, { x: 55, y, size: 7.5, font: fontBold, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'team.projectManager', value: data.team.projectManager, x: 55 + fontBold.widthOfTextAtSize(pmPrefix, 7.5), y, size: 7.5, font: fontBold, color: COLOR_DARK, bold: true });
+  const startDatePrefix = 'Start Date: ';
+  page.drawText(startDatePrefix, { x: 240, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'checklist.startDate', value: data.checklist.startDate, fallback: 'TBD', x: 240 + font.widthOfTextAtSize(startDatePrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
+  const finishDatePrefix = 'Finish Date: ';
+  page.drawText(finishDatePrefix, { x: 380, y, size: 7.5, font, color: COLOR_DARK });
+  drawFieldValue(page, { key: 'checklist.finishDate', value: data.checklist.finishDate, fallback: 'TBD', x: 380 + font.widthOfTextAtSize(finishDatePrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
 
   y -= 16;
   page.drawText('PM Notes:', { x: 55, y, size: 7.5, font: fontBold, color: COLOR_DARK });
@@ -1772,6 +2163,7 @@ export async function generateProductionChecklist(data: RestorationJobData): Pro
     font,
     size: 7.5,
     maxLines: 2,
+    key: 'checklist.projectManagerNotes',
   });
 
   return pdfDoc.save();
@@ -1805,7 +2197,7 @@ export async function generateProductionNotes(data: RestorationJobData): Promise
   const RIGHT_VALUE_W = 152;
 
   /** Draws one label + bordered value row. `right` places it in the right column. */
-  const drawField = (label: string, value: string, y: number, right = false) => {
+  const drawField = (label: string, value: string, y: number, right = false, key: string) => {
     const labelX = right ? RIGHT_LABEL_X : LABEL_X;
     const valueX = right ? RIGHT_VALUE_X : VALUE_X;
     const valueW = right ? RIGHT_VALUE_W : VALUE_W;
@@ -1819,30 +2211,28 @@ export async function generateProductionNotes(data: RestorationJobData): Promise
       borderWidth: 0.75,
     });
     const v = cleanTextForPdf(value);
-    if (v) {
-      const maxW = valueW - 8;
-      let size = 7.5;
-      while (font.widthOfTextAtSize(v, size) > maxW && size > 5) size -= 0.25;
-      page.drawText(v, { x: valueX + 4, y, size, font, color: COLOR_DARK });
-    }
+    const maxW = valueW - 8;
+    let size = 7.5;
+    while (v && font.widthOfTextAtSize(v, size) > maxW && size > 5) size -= 0.25;
+    drawFieldValue(page, { key, value: v, x: valueX + 4, y, size, font, color: COLOR_DARK });
   };
 
-  drawField('Job Number:', data.customer.jobNumber || '', 674);
-  drawField('Job Name:', data.customer.jobName || `${data.customer.customerName || ''} Restoration`, 674, true);
-  drawField('Customer:', data.customer.customerName || '', 656);
-  drawField('Loss Address:', data.customer.lossAddress || '', 638);
-  drawField('Date of Loss:', data.insurance.dateOfLoss || '', 620);
-  drawField('Time of Loss:', data.insurance.timeOfLoss || '', 620, true);
-  drawField('Loss Type:', data.insurance.typeOfLoss || '', 602);
-  drawField('Secondary:', data.insurance.typeOfLossSecondary || '', 602, true);
-  drawField('Carrier:', data.insurance.carrier || '', 584);
-  drawField('Claim #:', data.insurance.claimNumber || '', 584, true);
-  drawField('Policy #:', data.insurance.policyNumber || '', 566);
-  drawField('Adjuster:', data.insurance.primaryAdjuster || '', 566, true);
-  drawField('Adjuster Phone:', data.insurance.adjusterPhone || '', 548);
-  drawField('Deductible:', formatCurrency(data.financials.deductible), 548, true);
-  drawField('Approved RCV:', formatCurrency(data.financials.totalApprovedRcv), 530);
-  drawField('Net Claim:', formatCurrency(data.financials.netClaimValue), 530, true);
+  drawField('Job Number:', data.customer.jobNumber || '', 674, false, 'customer.jobNumber');
+  drawField('Job Name:', data.customer.jobName || `${data.customer.customerName || ''} Restoration`, 674, true, 'customer.jobName');
+  drawField('Customer:', data.customer.customerName || '', 656, false, 'customer.customerName');
+  drawField('Loss Address:', data.customer.lossAddress || '', 638, false, 'customer.lossAddress');
+  drawField('Date of Loss:', data.insurance.dateOfLoss || '', 620, false, 'insurance.dateOfLoss');
+  drawField('Time of Loss:', data.insurance.timeOfLoss || '', 620, true, 'insurance.timeOfLoss');
+  drawField('Loss Type:', data.insurance.typeOfLoss || '', 602, false, 'insurance.typeOfLoss');
+  drawField('Secondary:', data.insurance.typeOfLossSecondary || '', 602, true, 'insurance.typeOfLossSecondary');
+  drawField('Carrier:', data.insurance.carrier || '', 584, false, 'insurance.carrier');
+  drawField('Claim #:', data.insurance.claimNumber || '', 584, true, 'insurance.claimNumber');
+  drawField('Policy #:', data.insurance.policyNumber || '', 566, false, 'insurance.policyNumber');
+  drawField('Adjuster:', data.insurance.primaryAdjuster || '', 566, true, 'insurance.primaryAdjuster');
+  drawField('Adjuster Phone:', data.insurance.adjusterPhone || '', 548, false, 'insurance.adjusterPhone');
+  drawField('Deductible:', formatCurrency(data.financials.deductible), 548, true, 'financials.deductible');
+  drawField('Approved RCV:', formatCurrency(data.financials.totalApprovedRcv), 530, false, 'financials.totalApprovedRcv');
+  drawField('Net Claim:', formatCurrency(data.financials.netClaimValue), 530, true, 'financials.netClaimValue');
 
   // Loss description (auto-filled narrative of the damage).
   page.drawText('Loss Description:', { x: 40, y: 508, size: 7.5, font: fontBold, color: COLOR_DARK });
@@ -1862,7 +2252,11 @@ export async function generateProductionNotes(data: RestorationJobData): Promise
     font,
     size: 7.5,
     maxLines: 4,
+    key: 'insurance.lossDescription',
   });
+  if (!val(data.insurance.lossDescription)) {
+    captureEmptyFieldSpan(page, { key: 'insurance.lossDescription', x: 46, y: 490, size: 7.5, width: 518 });
+  }
 
   // ---- Additional Production Notes (user-entered, or blank for handwriting) ----
   page.drawText('Additional Production Notes', {
@@ -1873,13 +2267,13 @@ export async function generateProductionNotes(data: RestorationJobData): Promise
     color: COLOR_DARK,
   });
 
-  const noteFields: Array<{ label: string; value: string }> = [
-    { label: 'Scope & Repairs Summary', value: notes.scopeSummary ?? '' },
-    { label: 'Materials & Equipment', value: notes.materialsAndEquipment ?? '' },
-    { label: 'Schedule & Access', value: notes.scheduleAndAccess ?? '' },
-    { label: 'Safety Considerations', value: notes.safetyConsiderations ?? '' },
-    { label: 'Communication Notes', value: notes.communicationNotes ?? '' },
-    { label: 'Additional Information', value: notes.additionalNotes ?? '' },
+  const noteFields: Array<{ label: string; value: string; key: string }> = [
+    { label: 'Scope & Repairs Summary', value: notes.scopeSummary ?? '', key: 'productionNotes.scopeSummary' },
+    { label: 'Materials & Equipment', value: notes.materialsAndEquipment ?? '', key: 'productionNotes.materialsAndEquipment' },
+    { label: 'Schedule & Access', value: notes.scheduleAndAccess ?? '', key: 'productionNotes.scheduleAndAccess' },
+    { label: 'Safety Considerations', value: notes.safetyConsiderations ?? '', key: 'productionNotes.safetyConsiderations' },
+    { label: 'Communication Notes', value: notes.communicationNotes ?? '', key: 'productionNotes.communicationNotes' },
+    { label: 'Additional Information', value: notes.additionalNotes ?? '', key: 'productionNotes.additionalNotes' },
   ];
 
   const NOTE_BOX_H = 38;
@@ -1907,6 +2301,7 @@ export async function generateProductionNotes(data: RestorationJobData): Promise
         font,
         size: 7.5,
         maxLines: 3,
+        key: field.key,
       });
     } else {
       // Faint guide lines so the blank box can be filled in by hand.
@@ -1921,6 +2316,14 @@ export async function generateProductionNotes(data: RestorationJobData): Promise
         end: { x: 566, y: boxBottom + NOTE_BOX_H - 24 },
         thickness: 0.5,
         color: COLOR_LINE,
+      });
+      // Keep the blank box clickable in the editable preview.
+      captureEmptyFieldSpan(page, {
+        key: field.key,
+        x: 46,
+        y: boxBottom + NOTE_BOX_H - 12,
+        size: 7.5,
+        width: 518,
       });
     }
     ny = boxBottom - NOTE_GAP;

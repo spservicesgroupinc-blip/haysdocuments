@@ -5,7 +5,7 @@ import type { JobDocument } from '../services/documentCatalog';
 import { downloadPdf } from '../services/pdfService';
 
 /** Opens the in-app PDF preview modal (same handler the Documents & Output panel uses). */
-export type PdfPreviewRequest = (title: string, generator: () => Promise<Uint8Array>) => void;
+export type PdfPreviewRequest = (doc: JobDocument) => void;
 
 interface SectionPdfActionsProps {
   /** The live record the document is generated from. */
@@ -57,7 +57,7 @@ export const SectionPdfActions: React.FC<SectionPdfActionsProps> = ({
               <span className="flex shrink-0 items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => onPreview(doc.title, () => doc.generator(jobData))}
+                  onClick={() => onPreview(doc)}
                   title={`Preview ${doc.title} PDF`}
                   aria-label={`Preview ${doc.title} PDF`}
                   className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-700 transition hover:bg-slate-50"

@@ -29,10 +29,11 @@ import {
   formatCurrency,
 } from '../services/pdfService';
 import { isDesktop } from '../services/desktopBridge';
+import { PdfPreviewRequest } from './SectionPdfActions';
 
 interface DocumentGenerationPanelProps {
   jobData: RestorationJobData;
-  onPreview: (title: string, generator: () => Promise<Uint8Array>) => void;
+  onPreview: PdfPreviewRequest;
   onSaveToDrive: () => void;
   onSyncToSheets: () => void;
   isDriveLoading: boolean;
@@ -342,9 +343,16 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
         <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto justify-end shrink-0">
           <button
             onClick={() =>
-              onPreview('Complete 9-Page Restoration Packet', () =>
-                generateCompletePacket(jobData)
-              )
+              onPreview({
+                id: 'completePacket',
+                code: '',
+                label: 'Complete Packet',
+                title: 'Complete 9-Page Restoration Packet',
+                pages: '9 pages',
+                description: 'All eight documents bundled in exact production order.',
+                generator: () => generateCompletePacket(jobData),
+                buildFileName: () => buildCombinedPacketFileName(jobData),
+              })
             }
             type="button"
             className="flex-1 sm:flex-initial inline-flex items-center justify-center px-3.5 py-2.5 rounded-lg text-[13px] font-semibold bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 transition"
@@ -416,7 +424,7 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
 
                 <div className="flex items-center space-x-2 mt-4 pt-3 border-t border-slate-200/70">
                   <button
-                    onClick={() => onPreview(doc.title, () => doc.generator(jobData))}
+                    onClick={() => onPreview(doc)}
                     type="button"
                     className="flex-1 inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-700 hover:bg-slate-100 border border-slate-200 transition"
                   >
