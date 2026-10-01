@@ -19,6 +19,7 @@ Copy `.env.example` to `.env.local` and set:
 | `VITE_APPS_SCRIPT_URL` | Deployed Apps Script `/exec` URL (the job database) |
 | `VITE_GOOGLE_CLIENT_ID` | OAuth client for Google Drive/Sheets features (web only) |
 | `VITE_DEV_SHARED_SECRET` | **Local development only** — disables auth. Never ship a build with this set. |
+| `VITE_DEEPSEEK_API_KEY` | DeepSeek key for AI intake analysis (optional — falls back to the built-in rules parser) |
 
 Vite inlines `VITE_*` values at build time — restart `npm run dev` (or rebuild) after changes.
 
