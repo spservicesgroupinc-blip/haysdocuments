@@ -30,16 +30,27 @@ export interface MirrorJob {
   baseUpdatedAt: string | null;
   /** When this mirror row last changed locally. */
   locallyUpdatedAt: string;
+  /**
+   * Lower-cased account email that made the unsynced edit. Unset on synced rows
+   * because those are just a cache of the shared server data, and unset on rows
+   * written before ownership existed. Pending rows are only ever shown to, and
+   * flushed by, the account that created them.
+   */
+  owner?: string;
 }
 
 export interface OutboxOp {
   id?: number;
-  type: 'save' | 'delete';
+  type: 'save' | 'delete' | 'draft';
   recordId: string;
   job?: RestorationJobData;
+  /** The autosaved workspace record, for `type: 'draft'` operations. */
+  draft?: WorkspaceDraft;
   createdAt: number;
   attempts: number;
   lastError?: string;
+  /** Account that queued the write; only that account replays it. */
+  owner?: string;
 }
 
 export interface WorkspaceDraft {
@@ -47,6 +58,10 @@ export interface WorkspaceDraft {
   job: RestorationJobData;
   recordId?: string;
   savedAt: number;
+  /** `updatedAt` of the server copy this local draft mirrors, when known. */
+  serverUpdatedAt?: string;
+  /** Who last wrote the draft server-side, when known. */
+  updatedBy?: string;
 }
 
 const DB_NAME = 'hays.docsuite';
@@ -132,6 +147,58 @@ export function deleteOutboxOp(id: number): Promise<void> {
 
 export function countOutbox(): Promise<number> {
   return runRequest<number>(OUTBOX, 'readonly', (store) => store.count());
+}
+
+/**
+ * True when `owner` is allowed to replay this queued write: it either belongs
+ * to that account, or it predates ownership tagging.
+ */
+export function outboxOpIsMine(op: OutboxOp, owner: string | null): boolean {
+  if (!op.owner) return true;
+  return owner !== null && op.owner === owner;
+}
+
+export interface OutboxSummary {
+  /** Writes this account can replay right now. */
+  mine: number;
+  /** Writes queued by a different account, waiting for that person to sign in. */
+  stranded: number;
+  /** Account that owns the stranded writes, when it can be determined. */
+  strandedOwner: string | null;
+}
+
+/** Splits the outbox into "mine" and "waiting for another account". */
+export async function summarizeOutbox(owner: string | null): Promise<OutboxSummary> {
+  const ops = await getOutboxOps();
+  let mine = 0;
+  let stranded = 0;
+  let strandedOwner: string | null = null;
+
+  for (const op of ops) {
+    if (outboxOpIsMine(op, owner)) {
+      mine += 1;
+    } else {
+      stranded += 1;
+      if (!strandedOwner) strandedOwner = op.owner ?? null;
+    }
+  }
+
+  return { mine, stranded, strandedOwner };
+}
+
+/**
+ * Queues a draft push, reusing the pending draft operation when there is one so
+ * a long editing session cannot fill the outbox with superseded drafts.
+ */
+export async function queueDraftOutbox(op: Omit<OutboxOp, 'id'>): Promise<void> {
+  const ops = await getOutboxOps();
+  const existing = ops.find((candidate) => candidate.type === 'draft');
+
+  if (existing && existing.id !== undefined) {
+    await updateOutboxOp({ ...op, id: existing.id });
+    return;
+  }
+  await enqueueOutbox(op);
 }
 
 // ---- workspace draft ------------------------------------------------------

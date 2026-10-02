@@ -58,6 +58,7 @@ That single call provisions **everything**:
 - an **`AuditLog`** sheet — append-only trail of who changed what
 - a **`Users`** sheet — login accounts (the `Salt` and `PasswordHash` columns are hidden)
 - a **`Sessions`** sheet — active logins (the `Token` column is hidden)
+- a **`Drafts`** sheet — the shared workspace draft, i.e. the record currently being edited (one row; the `PayloadJson` column is hidden)
 - a **`README`** sheet documenting the schema inside the spreadsheet itself
 - optionally, your **first administrator account** (only when you pass the three arguments)
 
@@ -67,6 +68,29 @@ Calling it with **no arguments** also provisions everything and simply skips cre
 > If step 5 is skipped entirely, the **first web request provisions the database automatically**, so a
 > fresh deployment is never left half-built. The `ping` response reports `provisionedNow: true` when
 > that happens.
+
+### Where the data lives
+
+This spreadsheet is the **system of record** — the single place every account reads from and writes to,
+so signing in from any machine shows the same customer and job data.
+
+| Data | Stored in | Notes |
+| --- | --- | --- |
+| Saved jobs | `Jobs` sheet | Full record JSON per row; soft-deleted rows are flagged, never removed. |
+| In-progress record (workspace draft) | `Drafts` sheet | Autosaved as you type, so an unfinished job is never stranded on one device. |
+| Change history | `AuditLog` sheet | Who saved, deleted or cleared what, and when. |
+| Accounts and logins | `Users` / `Sessions` sheets | Only credential *hashes* are stored. |
+
+Two things stay on the device on purpose, and neither is customer data:
+
+- the **session token**, so a page reload does not sign you out (`Sessions` holds the server side);
+- an **offline cache** of the jobs list, plus an outbox of edits made while offline. Every queued
+  write is replayed to this backend as soon as the device is online — the cache is a copy, never the
+  only home for a record. Queued writes are tagged with the account that made them, so on a shared
+  machine one person's unsaved edits are never shown to, or published by, anyone else.
+
+`saveDraft` / `getDraft` are the two actions behind the shared draft, and the `Drafts` sheet is
+created on first use, so an already-provisioned spreadsheet does not need a repair run.
 
 ### Accounts
 

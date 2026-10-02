@@ -61,9 +61,20 @@
  *                 body: {"action":"login","email":"...","password":"..."}
  *                       {"action":"register","email":"...","name":"...","password":"...","inviteCode":"..."}
  *                       {"action":"saveJob","sessionToken":"<token>","job":{...}}
+ *                       {"action":"saveDraft","sessionToken":"<token>","draft":{"job":{...},"recordId":"..."}}
+ *                       {"action":"getDraft","sessionToken":"<token>"}
  *                 Every response is HTTP 200 with a JSON envelope:
  *                 {"ok":true,"data":{...}}  |  {"ok":false,"error":"...","code":"..."}
  *                 Always branch on 'ok', never on the HTTP status.
+ *
+ *  DATA MODEL
+ *    The spreadsheet is the system of record. Every account reads and writes the
+ *    same "Jobs" sheet, so a record entered under one login is visible under any
+ *    other, on any device. The record currently being edited is autosaved to the
+ *    "Drafts" sheet (saveDraft / getDraft), so an unfinished job is never
+ *    stranded in one browser profile. A device may keep an offline cache plus an
+ *    outbox of pending writes, but those are only copies: the queue is replayed
+ *    here as soon as the device is online.
  * ============================================================================
  */
 
@@ -85,7 +96,8 @@ var PROP = {
   REGISTRATION_CODE: 'REGISTRATION_CODE',
   REGISTRATION_MODE: 'REGISTRATION_MODE',
   REGISTRATION_EMAIL_DOMAINS: 'REGISTRATION_EMAIL_DOMAINS',
-  REGISTRATION_DEFAULT_ROLE: 'REGISTRATION_DEFAULT_ROLE'
+  REGISTRATION_DEFAULT_ROLE: 'REGISTRATION_DEFAULT_ROLE',
+  DRAFTS_SHEET_NAME: 'DRAFTS_SHEET_NAME'
 };
 
 var DEFAULTS = {
@@ -93,6 +105,7 @@ var DEFAULTS = {
   LOG_SHEET_NAME: 'AuditLog',
   USERS_SHEET_NAME: 'Users',
   SESSIONS_SHEET_NAME: 'Sessions',
+  DRAFTS_SHEET_NAME: 'Drafts',
   SCHEMA_VERSION: 1,
   REQUIRE_ID_TOKEN: 'true',
   SPREADSHEET_TITLE: 'Hays + Sons - Customer & Job Database',
@@ -150,6 +163,24 @@ var USER_HEADERS = [
 
 /** Short-lived bearer sessions issued on successful login. */
 var SESSION_HEADERS = ['Token', 'Email', 'Name', 'Role', 'CreatedAt', 'ExpiresAt', 'LastSeenAt'];
+
+/**
+ * The shared workspace draft: the record currently open in the app, stored so
+ * an unfinished record is never stranded on one device and follows the team to
+ * any account. One row, keyed on the fixed id in DRAFT_ROW_ID.
+ */
+var DRAFT_HEADERS = [
+  'DraftId',
+  'UpdatedAt',
+  'UpdatedBy',
+  'RecordId',
+  'JobNumber',
+  'CustomerName',
+  'SchemaVersion',
+  'PayloadJson'
+];
+
+var DRAFT_ROW_ID = 'current';
 
 var ROLE_VALUES = ['admin', 'editor', 'viewer'];
 
@@ -221,17 +252,20 @@ function setupDatabase(adminEmail, adminName, adminPassword) {
   var logSheetName = props.getProperty(PROP.LOG_SHEET_NAME) || DEFAULTS.LOG_SHEET_NAME;
   var usersSheetName = props.getProperty(PROP.USERS_SHEET_NAME) || DEFAULTS.USERS_SHEET_NAME;
   var sessionsSheetName = props.getProperty(PROP.SESSIONS_SHEET_NAME) || DEFAULTS.SESSIONS_SHEET_NAME;
+  var draftsSheetName = props.getProperty(PROP.DRAFTS_SHEET_NAME) || DEFAULTS.DRAFTS_SHEET_NAME;
 
   var jobsResult = ensureSheet_(spreadsheet, jobSheetName, JOB_HEADERS);
   var logResult = ensureSheet_(spreadsheet, logSheetName, LOG_HEADERS);
   var usersResult = ensureSheet_(spreadsheet, usersSheetName, USER_HEADERS);
   var sessionsResult = ensureSheet_(spreadsheet, sessionsSheetName, SESSION_HEADERS);
+  var draftsResult = ensureSheet_(spreadsheet, draftsSheetName, DRAFT_HEADERS);
 
   props.setProperty(PROP.DB_SPREADSHEET_ID, spreadsheet.getId());
   props.setProperty(PROP.DB_SHEET_NAME, jobSheetName);
   props.setProperty(PROP.LOG_SHEET_NAME, logSheetName);
   props.setProperty(PROP.USERS_SHEET_NAME, usersSheetName);
   props.setProperty(PROP.SESSIONS_SHEET_NAME, sessionsSheetName);
+  props.setProperty(PROP.DRAFTS_SHEET_NAME, draftsSheetName);
   if (!props.getProperty(PROP.SCHEMA_VERSION)) {
     props.setProperty(PROP.SCHEMA_VERSION, String(DEFAULTS.SCHEMA_VERSION));
   }
@@ -245,16 +279,18 @@ function setupDatabase(adminEmail, adminName, adminPassword) {
   var logSheet = spreadsheet.getSheetByName(logSheetName);
   var usersSheet = spreadsheet.getSheetByName(usersSheetName);
   var sessionsSheet = spreadsheet.getSheetByName(sessionsSheetName);
+  var draftsSheet = spreadsheet.getSheetByName(draftsSheetName);
 
   applySheetFormatting_(jobsSheet, JOB_HEADERS);
   applySheetFormatting_(logSheet, LOG_HEADERS);
   applySheetFormatting_(usersSheet, USER_HEADERS);
   applySheetFormatting_(sessionsSheet, SESSION_HEADERS);
+  applySheetFormatting_(draftsSheet, DRAFT_HEADERS);
 
   hideColumns_(usersSheet, USER_HEADERS, ['Salt', 'PasswordHash']);
   hideColumns_(sessionsSheet, SESSION_HEADERS, ['Token']);
 
-  writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName, sessionsSheetName);
+  writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName, sessionsSheetName, draftsSheetName);
 
   var userCount = countDataRows_(usersSheet);
 
@@ -266,9 +302,14 @@ function setupDatabase(adminEmail, adminName, adminPassword) {
     logSheet: logSheetName,
     usersSheet: usersSheetName,
     sessionsSheet: sessionsSheetName,
+    draftsSheet: draftsSheetName,
     userCount: userCount,
     columnsAdded:
-      jobsResult.columnsAdded + logResult.columnsAdded + usersResult.columnsAdded + sessionsResult.columnsAdded,
+      jobsResult.columnsAdded +
+      logResult.columnsAdded +
+      usersResult.columnsAdded +
+      sessionsResult.columnsAdded +
+      draftsResult.columnsAdded,
     schemaVersion: Number(props.getProperty(PROP.SCHEMA_VERSION)),
     requiresFirstUser: userCount === 0,
     webAppUrl: ScriptApp.getService().getUrl()
@@ -363,7 +404,15 @@ function applySheetFormatting_(sheet, headers) {
     .setWrap(false);
   sheet.setRowHeight(1, 28);
 
-  var textColumns = ['RecordId', 'JobNumber', 'ClaimNumber', 'RecordJson', 'CreatedAt', 'UpdatedAt'];
+  var textColumns = [
+    'RecordId',
+    'JobNumber',
+    'ClaimNumber',
+    'RecordJson',
+    'PayloadJson',
+    'CreatedAt',
+    'UpdatedAt'
+  ];
   for (var i = 0; i < headers.length; i++) {
     if (textColumns.indexOf(headers[i]) !== -1) {
       sheet.getRange(2, i + 1, Math.max(sheet.getMaxRows() - 1, 1), 1).setNumberFormat('@');
@@ -372,15 +421,17 @@ function applySheetFormatting_(sheet, headers) {
 
   for (var c = 0; c < headers.length; c++) {
     var name = headers[c];
-    if (name === 'RecordJson') sheet.setColumnWidth(c + 1, 120);
+    if (name === 'RecordJson' || name === 'PayloadJson') sheet.setColumnWidth(c + 1, 120);
     else if (name === 'Email' || name === 'LossAddress') sheet.setColumnWidth(c + 1, 200);
     else sheet.setColumnWidth(c + 1, Math.max(120, Math.min(220, name.length * 12 + 60)));
   }
 
   var recordIdCol = headers.indexOf('RecordId');
   var jsonCol = headers.indexOf('RecordJson');
+  var payloadCol = headers.indexOf('PayloadJson');
   if (recordIdCol !== -1) sheet.hideColumns(recordIdCol + 1);
   if (jsonCol !== -1) sheet.hideColumns(jsonCol + 1);
+  if (payloadCol !== -1) sheet.hideColumns(payloadCol + 1);
 }
 
 function hideColumns_(sheet, headers, names) {

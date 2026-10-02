@@ -308,6 +308,14 @@ export function isConfigurationError(err: unknown): boolean {
 }
 
 /**
+ * True when the deployment predates an action the client just called, i.e. the
+ * script needs to be redeployed with the latest Code.gs.
+ */
+export function isMissingActionError(err: unknown): boolean {
+  return err instanceof DatabaseError && err.code === 'unknown_action';
+}
+
+/**
  * Sends one request to the backend and unwraps the JSON envelope.
  * Throws {@link DatabaseError} on any application-level failure.
  */
@@ -460,4 +468,52 @@ export async function searchJobs(
       : jobs;
     return { jobs: matches, count: matches.length, query };
   }
+}
+
+// ---- shared workspace draft ----------------------------------------------
+
+/**
+ * The record the team is currently editing, as stored in the Apps Script
+ * database. There is one shared draft, so in-progress work is never stranded in
+ * a single browser: it survives a cleared profile, a new device and a different
+ * sign-in.
+ */
+export interface ServerDraft {
+  job: RestorationJobData;
+  recordId: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+/** What the client sends when autosaving the workspace. */
+export interface DraftPayload {
+  job: RestorationJobData;
+  recordId?: string;
+  /** Client clock at the moment of the edit, used to resolve local-vs-server. */
+  savedAt?: number;
+}
+
+/** Stores the shared workspace draft. Throws {@link DatabaseError} on failure. */
+export async function saveDraft(auth: AuthContext, draft: DraftPayload): Promise<ServerDraft> {
+  const data = await callApi<any>('saveDraft', { ...auth, draft });
+  const job = (data && typeof data === 'object' && data.job ? data.job : draft.job) as RestorationJobData;
+  return {
+    job,
+    recordId: typeof data?.recordId === 'string' ? data.recordId : draft.recordId ?? job.recordId ?? '',
+    updatedAt: typeof data?.updatedAt === 'string' ? data.updatedAt : new Date().toISOString(),
+    updatedBy: typeof data?.updatedBy === 'string' ? data.updatedBy : '',
+  };
+}
+
+/** Reads the shared workspace draft. Returns null when the workspace is empty. */
+export async function fetchDraft(auth: AuthContext): Promise<ServerDraft | null> {
+  const data = await callApi<any>('getDraft', { ...auth });
+  const draft = data && typeof data === 'object' && data.draft ? data.draft : data;
+  if (!draft || typeof draft !== 'object' || !draft.job) return null;
+  return {
+    job: draft.job as RestorationJobData,
+    recordId: typeof draft.recordId === 'string' ? draft.recordId : '',
+    updatedAt: typeof draft.updatedAt === 'string' ? draft.updatedAt : '',
+    updatedBy: typeof draft.updatedBy === 'string' ? draft.updatedBy : '',
+  };
 }

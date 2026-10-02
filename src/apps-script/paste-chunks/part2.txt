@@ -1,5 +1,5 @@
 
-function writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName, sessionsSheetName) {
+function writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName, sessionsSheetName, draftsSheetName) {
   var sheet = spreadsheet.getSheetByName(DEFAULTS.NOTES_SHEET_NAME);
   if (!sheet) sheet = spreadsheet.insertSheet(DEFAULTS.NOTES_SHEET_NAME);
   sheet.clear();
@@ -19,6 +19,10 @@ function writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName,
     [logSheetName, 'Append-only audit trail of who changed what and when.'],
     [usersSheetName, 'Application accounts. Salt and PasswordHash are hidden.'],
     [sessionsSheetName, 'Active login sessions. The Token column is hidden.'],
+    [
+      draftsSheetName,
+      'The shared workspace draft - the record currently being edited. PayloadJson is hidden. One row, so nothing is lost if a device is replaced.'
+    ],
     [''],
     ['SIGNING IN'],
     ['The app has its own login page. Credentials are checked against the "' + usersSheetName + '" sheet.'],
@@ -39,6 +43,19 @@ function writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName,
   for (var l = 0; l < LOG_HEADERS.length; l++) {
     lines.push(['  ' + (l + 1) + '. ' + LOG_HEADERS[l], '']);
   }
+
+  lines.push(['']);
+  lines.push(['COLUMNS - ' + draftsSheetName]);
+  for (var d = 0; d < DRAFT_HEADERS.length; d++) {
+    lines.push(['  ' + (d + 1) + '. ' + DRAFT_HEADERS[d], '']);
+  }
+  lines.push(['']);
+  lines.push(['DRAFTING']);
+  lines.push([
+    'Shared draft',
+    'The app autosaves the record being edited into ' + draftsSheetName + ', so a browser reset, a new device or a different login never loses in-progress work.'
+  ]);
+  lines.push(['Saved jobs', 'Clicking Save Job promotes the workspace draft into the ' + jobSheetName + ' sheet (the system of record).']);
 
   lines.push(['']);
   lines.push(['SECURITY - do not weaken these in production']);
@@ -142,6 +159,26 @@ function logSheet_() {
   var ss = getSpreadsheet_();
   var name = PropertiesService.getScriptProperties().getProperty(PROP.LOG_SHEET_NAME) || DEFAULTS.LOG_SHEET_NAME;
   return ss.getSheetByName(name);
+}
+
+/**
+ * The Drafts sheet, created on first use so a deployment that has not re-run
+ * setupDatabase() yet still stores the shared draft correctly.
+ */
+function draftsSheet_() {
+  var ss = getSpreadsheet_();
+  var props = PropertiesService.getScriptProperties();
+  var name = props.getProperty(PROP.DRAFTS_SHEET_NAME) || DEFAULTS.DRAFTS_SHEET_NAME;
+  var sheet = ss.getSheetByName(name);
+
+  if (!sheet) {
+    ensureSheet_(ss, name, DRAFT_HEADERS);
+    sheet = ss.getSheetByName(name);
+    applySheetFormatting_(sheet, DRAFT_HEADERS);
+    props.setProperty(PROP.DRAFTS_SHEET_NAME, name);
+    appendLog_('SYSTEM', 'DRAFT_SHEET_CREATED', '', '', 'Created sheet ' + name);
+  }
+  return sheet;
 }
 
 function showInstallInfo() {
@@ -265,6 +302,13 @@ function handleAction_(payload) {
   if (action === 'deleteJob') {
     var delResult = deleteJob_(user, payload.recordId);
     return successResponse_(delResult);
+  }
+  if (action === 'saveDraft') {
+    var draftPayload = payload.draft || (payload.job ? payload : null);
+    return successResponse_(saveDraft_(user, draftPayload));
+  }
+  if (action === 'getDraft') {
+    return successResponse_({ draft: getDraft_(user) });
   }
   if (action === 'listUsers') {
     if (user.role !== 'admin') throw appError_('forbidden', 'Administrator rights required.');
@@ -433,40 +477,4 @@ function registrationMode_() {
 
 function registrationEnabled_() {
   return registrationMode_() !== 'off';
-}
-
-function registrationRequiresCode_() {
-  return registrationMode_() === 'invite';
-}
-
-function selfRegistrationRole_() {
-  var props = PropertiesService.getScriptProperties();
-  return props.getProperty(PROP.REGISTRATION_DEFAULT_ROLE) || DEFAULTS.REGISTRATION_DEFAULT_ROLE;
-}
-
-function describeRegistrationMode_() {
-  var mode = registrationMode_();
-  if (mode === 'off') return 'Disabled. Users must be created by an administrator.';
-  if (mode === 'invite') return 'Invite code required. Script Property REGISTRATION_CODE must match.';
-  return 'Open. Anyone with the web app URL can create an account.';
-}
-
-function enableRegistration() {
-  PropertiesService.getScriptProperties().setProperty(PROP.REGISTRATION_MODE, 'open');
-  Logger.log('Registration is now OPEN.');
-}
-
-function disableRegistration() {
-  PropertiesService.getScriptProperties().setProperty(PROP.REGISTRATION_MODE, 'off');
-  Logger.log('Registration is now OFF.');
-}
-
-function useInviteCode(code) {
-  if (!code || String(code).length < DEFAULTS.MIN_REGISTRATION_CODE_LENGTH) {
-    throw new Error('Invite code must be at least ' + DEFAULTS.MIN_REGISTRATION_CODE_LENGTH + ' characters.');
-  }
-  var props = PropertiesService.getScriptProperties();
-  props.setProperty(PROP.REGISTRATION_MODE, 'invite');
-  props.setProperty(PROP.REGISTRATION_CODE, String(code));
-  Logger.log('Registration set to INVITE with code.');
 }

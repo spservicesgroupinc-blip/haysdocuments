@@ -1,4 +1,40 @@
 
+function registrationRequiresCode_() {
+  return registrationMode_() === 'invite';
+}
+
+function selfRegistrationRole_() {
+  var props = PropertiesService.getScriptProperties();
+  return props.getProperty(PROP.REGISTRATION_DEFAULT_ROLE) || DEFAULTS.REGISTRATION_DEFAULT_ROLE;
+}
+
+function describeRegistrationMode_() {
+  var mode = registrationMode_();
+  if (mode === 'off') return 'Disabled. Users must be created by an administrator.';
+  if (mode === 'invite') return 'Invite code required. Script Property REGISTRATION_CODE must match.';
+  return 'Open. Anyone with the web app URL can create an account.';
+}
+
+function enableRegistration() {
+  PropertiesService.getScriptProperties().setProperty(PROP.REGISTRATION_MODE, 'open');
+  Logger.log('Registration is now OPEN.');
+}
+
+function disableRegistration() {
+  PropertiesService.getScriptProperties().setProperty(PROP.REGISTRATION_MODE, 'off');
+  Logger.log('Registration is now OFF.');
+}
+
+function useInviteCode(code) {
+  if (!code || String(code).length < DEFAULTS.MIN_REGISTRATION_CODE_LENGTH) {
+    throw new Error('Invite code must be at least ' + DEFAULTS.MIN_REGISTRATION_CODE_LENGTH + ' characters.');
+  }
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty(PROP.REGISTRATION_MODE, 'invite');
+  props.setProperty(PROP.REGISTRATION_CODE, String(code));
+  Logger.log('Registration set to INVITE with code.');
+}
+
 function createUser(email, name, password, role) {
   ensureDatabaseReady_();
   if (!email || !password) throw appError_('bad_request', 'Email and password are required.');
@@ -373,30 +409,4 @@ function deleteJob_(user, recordId) {
     }
   }
   throw appError_('not_found', 'Job record not found.');
-}
-
-/* ---------------------------------------------------------------------------
- * 8. AUDIT LOGGING & UTILITIES
- * ------------------------------------------------------------------------ */
-
-function appendLog_(userEmail, action, recordId, jobNumber, detail) {
-  try {
-    var sheet = logSheet_();
-    if (!sheet) return;
-    sheet.appendRow([
-      new Date().toISOString(),
-      userEmail || 'ANONYMOUS',
-      action || '',
-      recordId || '',
-      jobNumber || '',
-      detail || ''
-    ]);
-  } catch (err) {
-    Logger.log('Audit log failure: ' + err);
-  }
-}
-
-function currentSchemaVersion_() {
-  var props = PropertiesService.getScriptProperties();
-  return Number(props.getProperty(PROP.SCHEMA_VERSION)) || DEFAULTS.SCHEMA_VERSION;
 }

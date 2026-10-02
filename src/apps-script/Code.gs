@@ -61,9 +61,20 @@
  *                 body: {"action":"login","email":"...","password":"..."}
  *                       {"action":"register","email":"...","name":"...","password":"...","inviteCode":"..."}
  *                       {"action":"saveJob","sessionToken":"<token>","job":{...}}
+ *                       {"action":"saveDraft","sessionToken":"<token>","draft":{"job":{...},"recordId":"..."}}
+ *                       {"action":"getDraft","sessionToken":"<token>"}
  *                 Every response is HTTP 200 with a JSON envelope:
  *                 {"ok":true,"data":{...}}  |  {"ok":false,"error":"...","code":"..."}
  *                 Always branch on 'ok', never on the HTTP status.
+ *
+ *  DATA MODEL
+ *    The spreadsheet is the system of record. Every account reads and writes the
+ *    same "Jobs" sheet, so a record entered under one login is visible under any
+ *    other, on any device. The record currently being edited is autosaved to the
+ *    "Drafts" sheet (saveDraft / getDraft), so an unfinished job is never
+ *    stranded in one browser profile. A device may keep an offline cache plus an
+ *    outbox of pending writes, but those are only copies: the queue is replayed
+ *    here as soon as the device is online.
  * ============================================================================
  */
 
@@ -85,7 +96,8 @@ var PROP = {
   REGISTRATION_CODE: 'REGISTRATION_CODE',
   REGISTRATION_MODE: 'REGISTRATION_MODE',
   REGISTRATION_EMAIL_DOMAINS: 'REGISTRATION_EMAIL_DOMAINS',
-  REGISTRATION_DEFAULT_ROLE: 'REGISTRATION_DEFAULT_ROLE'
+  REGISTRATION_DEFAULT_ROLE: 'REGISTRATION_DEFAULT_ROLE',
+  DRAFTS_SHEET_NAME: 'DRAFTS_SHEET_NAME'
 };
 
 var DEFAULTS = {
@@ -93,6 +105,7 @@ var DEFAULTS = {
   LOG_SHEET_NAME: 'AuditLog',
   USERS_SHEET_NAME: 'Users',
   SESSIONS_SHEET_NAME: 'Sessions',
+  DRAFTS_SHEET_NAME: 'Drafts',
   SCHEMA_VERSION: 1,
   REQUIRE_ID_TOKEN: 'true',
   SPREADSHEET_TITLE: 'Hays + Sons - Customer & Job Database',
@@ -150,6 +163,24 @@ var USER_HEADERS = [
 
 /** Short-lived bearer sessions issued on successful login. */
 var SESSION_HEADERS = ['Token', 'Email', 'Name', 'Role', 'CreatedAt', 'ExpiresAt', 'LastSeenAt'];
+
+/**
+ * The shared workspace draft: the record currently open in the app, stored so
+ * an unfinished record is never stranded on one device and follows the team to
+ * any account. One row, keyed on the fixed id in DRAFT_ROW_ID.
+ */
+var DRAFT_HEADERS = [
+  'DraftId',
+  'UpdatedAt',
+  'UpdatedBy',
+  'RecordId',
+  'JobNumber',
+  'CustomerName',
+  'SchemaVersion',
+  'PayloadJson'
+];
+
+var DRAFT_ROW_ID = 'current';
 
 var ROLE_VALUES = ['admin', 'editor', 'viewer'];
 
@@ -221,17 +252,20 @@ function setupDatabase(adminEmail, adminName, adminPassword) {
   var logSheetName = props.getProperty(PROP.LOG_SHEET_NAME) || DEFAULTS.LOG_SHEET_NAME;
   var usersSheetName = props.getProperty(PROP.USERS_SHEET_NAME) || DEFAULTS.USERS_SHEET_NAME;
   var sessionsSheetName = props.getProperty(PROP.SESSIONS_SHEET_NAME) || DEFAULTS.SESSIONS_SHEET_NAME;
+  var draftsSheetName = props.getProperty(PROP.DRAFTS_SHEET_NAME) || DEFAULTS.DRAFTS_SHEET_NAME;
 
   var jobsResult = ensureSheet_(spreadsheet, jobSheetName, JOB_HEADERS);
   var logResult = ensureSheet_(spreadsheet, logSheetName, LOG_HEADERS);
   var usersResult = ensureSheet_(spreadsheet, usersSheetName, USER_HEADERS);
   var sessionsResult = ensureSheet_(spreadsheet, sessionsSheetName, SESSION_HEADERS);
+  var draftsResult = ensureSheet_(spreadsheet, draftsSheetName, DRAFT_HEADERS);
 
   props.setProperty(PROP.DB_SPREADSHEET_ID, spreadsheet.getId());
   props.setProperty(PROP.DB_SHEET_NAME, jobSheetName);
   props.setProperty(PROP.LOG_SHEET_NAME, logSheetName);
   props.setProperty(PROP.USERS_SHEET_NAME, usersSheetName);
   props.setProperty(PROP.SESSIONS_SHEET_NAME, sessionsSheetName);
+  props.setProperty(PROP.DRAFTS_SHEET_NAME, draftsSheetName);
   if (!props.getProperty(PROP.SCHEMA_VERSION)) {
     props.setProperty(PROP.SCHEMA_VERSION, String(DEFAULTS.SCHEMA_VERSION));
   }
@@ -245,16 +279,18 @@ function setupDatabase(adminEmail, adminName, adminPassword) {
   var logSheet = spreadsheet.getSheetByName(logSheetName);
   var usersSheet = spreadsheet.getSheetByName(usersSheetName);
   var sessionsSheet = spreadsheet.getSheetByName(sessionsSheetName);
+  var draftsSheet = spreadsheet.getSheetByName(draftsSheetName);
 
   applySheetFormatting_(jobsSheet, JOB_HEADERS);
   applySheetFormatting_(logSheet, LOG_HEADERS);
   applySheetFormatting_(usersSheet, USER_HEADERS);
   applySheetFormatting_(sessionsSheet, SESSION_HEADERS);
+  applySheetFormatting_(draftsSheet, DRAFT_HEADERS);
 
   hideColumns_(usersSheet, USER_HEADERS, ['Salt', 'PasswordHash']);
   hideColumns_(sessionsSheet, SESSION_HEADERS, ['Token']);
 
-  writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName, sessionsSheetName);
+  writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName, sessionsSheetName, draftsSheetName);
 
   var userCount = countDataRows_(usersSheet);
 
@@ -266,9 +302,14 @@ function setupDatabase(adminEmail, adminName, adminPassword) {
     logSheet: logSheetName,
     usersSheet: usersSheetName,
     sessionsSheet: sessionsSheetName,
+    draftsSheet: draftsSheetName,
     userCount: userCount,
     columnsAdded:
-      jobsResult.columnsAdded + logResult.columnsAdded + usersResult.columnsAdded + sessionsResult.columnsAdded,
+      jobsResult.columnsAdded +
+      logResult.columnsAdded +
+      usersResult.columnsAdded +
+      sessionsResult.columnsAdded +
+      draftsResult.columnsAdded,
     schemaVersion: Number(props.getProperty(PROP.SCHEMA_VERSION)),
     requiresFirstUser: userCount === 0,
     webAppUrl: ScriptApp.getService().getUrl()
@@ -363,7 +404,15 @@ function applySheetFormatting_(sheet, headers) {
     .setWrap(false);
   sheet.setRowHeight(1, 28);
 
-  var textColumns = ['RecordId', 'JobNumber', 'ClaimNumber', 'RecordJson', 'CreatedAt', 'UpdatedAt'];
+  var textColumns = [
+    'RecordId',
+    'JobNumber',
+    'ClaimNumber',
+    'RecordJson',
+    'PayloadJson',
+    'CreatedAt',
+    'UpdatedAt'
+  ];
   for (var i = 0; i < headers.length; i++) {
     if (textColumns.indexOf(headers[i]) !== -1) {
       sheet.getRange(2, i + 1, Math.max(sheet.getMaxRows() - 1, 1), 1).setNumberFormat('@');
@@ -372,15 +421,17 @@ function applySheetFormatting_(sheet, headers) {
 
   for (var c = 0; c < headers.length; c++) {
     var name = headers[c];
-    if (name === 'RecordJson') sheet.setColumnWidth(c + 1, 120);
+    if (name === 'RecordJson' || name === 'PayloadJson') sheet.setColumnWidth(c + 1, 120);
     else if (name === 'Email' || name === 'LossAddress') sheet.setColumnWidth(c + 1, 200);
     else sheet.setColumnWidth(c + 1, Math.max(120, Math.min(220, name.length * 12 + 60)));
   }
 
   var recordIdCol = headers.indexOf('RecordId');
   var jsonCol = headers.indexOf('RecordJson');
+  var payloadCol = headers.indexOf('PayloadJson');
   if (recordIdCol !== -1) sheet.hideColumns(recordIdCol + 1);
   if (jsonCol !== -1) sheet.hideColumns(jsonCol + 1);
+  if (payloadCol !== -1) sheet.hideColumns(payloadCol + 1);
 }
 
 function hideColumns_(sheet, headers, names) {
@@ -402,7 +453,7 @@ function countDataRows_(sheet) {
   return lastRow < 2 ? 0 : lastRow - 1;
 }
 
-function writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName, sessionsSheetName) {
+function writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName, sessionsSheetName, draftsSheetName) {
   var sheet = spreadsheet.getSheetByName(DEFAULTS.NOTES_SHEET_NAME);
   if (!sheet) sheet = spreadsheet.insertSheet(DEFAULTS.NOTES_SHEET_NAME);
   sheet.clear();
@@ -422,6 +473,10 @@ function writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName,
     [logSheetName, 'Append-only audit trail of who changed what and when.'],
     [usersSheetName, 'Application accounts. Salt and PasswordHash are hidden.'],
     [sessionsSheetName, 'Active login sessions. The Token column is hidden.'],
+    [
+      draftsSheetName,
+      'The shared workspace draft - the record currently being edited. PayloadJson is hidden. One row, so nothing is lost if a device is replaced.'
+    ],
     [''],
     ['SIGNING IN'],
     ['The app has its own login page. Credentials are checked against the "' + usersSheetName + '" sheet.'],
@@ -442,6 +497,19 @@ function writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName,
   for (var l = 0; l < LOG_HEADERS.length; l++) {
     lines.push(['  ' + (l + 1) + '. ' + LOG_HEADERS[l], '']);
   }
+
+  lines.push(['']);
+  lines.push(['COLUMNS - ' + draftsSheetName]);
+  for (var d = 0; d < DRAFT_HEADERS.length; d++) {
+    lines.push(['  ' + (d + 1) + '. ' + DRAFT_HEADERS[d], '']);
+  }
+  lines.push(['']);
+  lines.push(['DRAFTING']);
+  lines.push([
+    'Shared draft',
+    'The app autosaves the record being edited into ' + draftsSheetName + ', so a browser reset, a new device or a different login never loses in-progress work.'
+  ]);
+  lines.push(['Saved jobs', 'Clicking Save Job promotes the workspace draft into the ' + jobSheetName + ' sheet (the system of record).']);
 
   lines.push(['']);
   lines.push(['SECURITY - do not weaken these in production']);
@@ -545,6 +613,26 @@ function logSheet_() {
   var ss = getSpreadsheet_();
   var name = PropertiesService.getScriptProperties().getProperty(PROP.LOG_SHEET_NAME) || DEFAULTS.LOG_SHEET_NAME;
   return ss.getSheetByName(name);
+}
+
+/**
+ * The Drafts sheet, created on first use so a deployment that has not re-run
+ * setupDatabase() yet still stores the shared draft correctly.
+ */
+function draftsSheet_() {
+  var ss = getSpreadsheet_();
+  var props = PropertiesService.getScriptProperties();
+  var name = props.getProperty(PROP.DRAFTS_SHEET_NAME) || DEFAULTS.DRAFTS_SHEET_NAME;
+  var sheet = ss.getSheetByName(name);
+
+  if (!sheet) {
+    ensureSheet_(ss, name, DRAFT_HEADERS);
+    sheet = ss.getSheetByName(name);
+    applySheetFormatting_(sheet, DRAFT_HEADERS);
+    props.setProperty(PROP.DRAFTS_SHEET_NAME, name);
+    appendLog_('SYSTEM', 'DRAFT_SHEET_CREATED', '', '', 'Created sheet ' + name);
+  }
+  return sheet;
 }
 
 function showInstallInfo() {
@@ -668,6 +756,13 @@ function handleAction_(payload) {
   if (action === 'deleteJob') {
     var delResult = deleteJob_(user, payload.recordId);
     return successResponse_(delResult);
+  }
+  if (action === 'saveDraft') {
+    var draftPayload = payload.draft || (payload.job ? payload : null);
+    return successResponse_(saveDraft_(user, draftPayload));
+  }
+  if (action === 'getDraft') {
+    return successResponse_({ draft: getDraft_(user) });
   }
   if (action === 'listUsers') {
     if (user.role !== 'admin') throw appError_('forbidden', 'Administrator rights required.');
@@ -1251,6 +1346,107 @@ function deleteJob_(user, recordId) {
 }
 
 /* ---------------------------------------------------------------------------
+ * 7B. SHARED WORKSPACE DRAFT
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Stores the record currently open in the workspace.
+ *
+ * The draft is deliberately shared by the whole team: a single row keyed on
+ * 'current'. It exists so that in-progress work is never stranded on one device
+ * (the previous behaviour kept it in the browser only). Whoever autosaves last
+ * wins, and whoever opens the app next picks it up - including on a brand new
+ * machine or under a different account.
+ */
+function saveDraft_(user, draft) {
+  if (user.role === 'viewer') {
+    throw appError_('forbidden', 'Viewer role does not have permission to save the workspace draft.');
+  }
+  if (!draft || typeof draft !== 'object' || !draft.job || typeof draft.job !== 'object') {
+    throw appError_('bad_request', 'Draft payload is missing or invalid.');
+  }
+
+  // Guard against the 50,000-character Google Sheets cell limit, same as saveJob_.
+  var payloadJson = JSON.stringify(draft.job);
+  if (payloadJson.length > 49000) {
+    throw appError_(
+      'record_too_large',
+      'The draft is ' + payloadJson.length + ' characters, over the 50,000-character storage limit. Shorten the Production Notes or other long text fields.'
+    );
+  }
+
+  var job = draft.job;
+  var nowIso = new Date().toISOString();
+  var recordId = String(draft.recordId || job.recordId || '');
+  var customer = job.customer && typeof job.customer === 'object' ? job.customer : {};
+  var rowValues = [
+    DRAFT_ROW_ID,
+    nowIso,
+    user.email,
+    recordId,
+    String(job.jobNumber || customer.jobNumber || ''),
+    String(job.customerName || customer.customerName || ''),
+    currentSchemaVersion_(),
+    payloadJson
+  ];
+
+  var sheet = draftsSheet_();
+  var data = sheet.getDataRange().getValues();
+  var targetRow = -1;
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === DRAFT_ROW_ID) {
+      targetRow = i + 1;
+      break;
+    }
+  }
+
+  if (targetRow !== -1) {
+    sheet.getRange(targetRow, 1, 1, rowValues.length).setValues([rowValues]);
+  } else {
+    sheet.appendRow(rowValues);
+  }
+
+  return {
+    draftId: DRAFT_ROW_ID,
+    updatedAt: nowIso,
+    updatedBy: user.email,
+    recordId: recordId,
+    job: job
+  };
+}
+
+/** Returns the shared workspace draft, or null when the workspace is empty. */
+function getDraft_(user) {
+  var sheet = draftsSheet_();
+  var data = sheet.getDataRange().getValues();
+
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) !== DRAFT_ROW_ID) continue;
+
+    var payloadJson = data[i][7];
+    if (!payloadJson) return null;
+
+    var job = null;
+    try {
+      job = JSON.parse(payloadJson);
+    } catch (err) {
+      throw appError_('data_corrupt', 'The stored draft could not be parsed: ' + err);
+    }
+    if (!job) return null;
+
+    return {
+      draftId: DRAFT_ROW_ID,
+      updatedAt: data[i][1] ? String(data[i][1]) : '',
+      updatedBy: data[i][2] ? String(data[i][2]) : '',
+      recordId: data[i][3] ? String(data[i][3]) : '',
+      job: job
+    };
+  }
+
+  return null;
+}
+
+/* ---------------------------------------------------------------------------
  * 8. AUDIT LOGGING & UTILITIES
  * ------------------------------------------------------------------------ */
 
@@ -1313,7 +1509,24 @@ function selfTest() {
   var deleted = deleteJob_(loginResult.user, saved.recordId);
   if (!deleted.deleted) throw new Error('SelfTest: Job deletion failed.');
 
-  // 6. Cleanup
+  // 6. Shared workspace draft round trip
+  saveDraft_(loginResult.user, { job: template, recordId: saved.recordId });
+  var draft = getDraft_(loginResult.user);
+  if (!draft || !draft.job) throw new Error('SelfTest: Draft save failed.');
+  if (draft.updatedBy !== testEmail) throw new Error('SelfTest: Draft updatedBy mismatch.');
+  if (draft.job.jobName !== 'Self-Test Drying Phase') throw new Error('SelfTest: Draft payload mismatch.');
+  if (!draftsSheet_()) throw new Error('SelfTest: Drafts sheet is missing.');
+
+  // 7. Cleanup. Remove the self-test draft row, but never a real one: the
+  //    draft only goes if this test wrote it.
+  var draftCleanupSheet = draftsSheet_();
+  var draftRows = draftCleanupSheet.getDataRange().getValues();
+  for (var dr = draftRows.length - 1; dr >= 1; dr--) {
+    if (String(draftRows[dr][0]) === DRAFT_ROW_ID && String(draftRows[dr][2]) === testEmail) {
+      draftCleanupSheet.deleteRow(dr + 1);
+    }
+  }
+
   removeUser_(testEmail);
   cleanupSessions();
 

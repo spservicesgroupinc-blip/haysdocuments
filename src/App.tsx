@@ -53,6 +53,7 @@ import {
   saveJobOffline,
   scheduleDraftSave,
   subscribeSyncState,
+  type RestoredDraft,
   type SyncState,
 } from './services/jobSync';
 import type { SyncJobSummary } from './services/localDb';
@@ -145,6 +146,9 @@ export default function App() {
   // Dirty tracking compares the record against the last saved/loaded baseline,
   // so programmatic whole-record replacements never look like user edits.
   const baselineRef = React.useRef<string>(JSON.stringify(jobData));
+  // True once the workspace has been filled from the shared/draft copy, so a
+  // later sign-in does not overwrite work already on screen.
+  const draftRestoredRef = React.useRef(false);
 
   useEffect(() => {
     setIsDirty(JSON.stringify(jobData) !== baselineRef.current);
@@ -167,14 +171,28 @@ export default function App() {
     scheduleDraftSave(jobData, recordId);
   }, [jobData, recordId]);
 
+  // The workspace draft is stored in the Apps Script database (and mirrored
+  // locally so it still works offline), which is what keeps an unfinished
+  // record from being stranded in one browser profile.
+  const applyRestoredDraft = (draft: RestoredDraft) => {
+    if (draftRestoredRef.current) return;
+    draftRestoredRef.current = true;
+    replaceJob(draft.job);
+    setRecordId(draft.recordId ?? draft.job.recordId);
+    showStatus(
+      'info',
+      draft.origin === 'server'
+        ? `Restored the shared workspace draft${draft.updatedBy ? ` last edited by ${draft.updatedBy}` : ''}.`
+        : 'Restored your last workspace from this device.'
+    );
+  };
+
   // …and restore it once when the app starts.
   useEffect(() => {
     let cancelled = false;
     void restoreDraft().then((draft) => {
       if (cancelled || !draft) return;
-      replaceJob(draft.job);
-      setRecordId(draft.recordId ?? draft.job.recordId);
-      showStatus('info', 'Restored your last workspace from this device.');
+      applyRestoredDraft(draft);
     });
     return () => {
       cancelled = true;
@@ -182,6 +200,22 @@ export default function App() {
     // Restore once on mount; the workspace is autosaved from then on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // A device with no draft of its own (a new machine, or a different account)
+  // picks up the shared draft as soon as the session is live.
+  useEffect(() => {
+    if (!isAuthReady || draftRestoredRef.current) return;
+    if (!getCurrentUser() && !isDeveloperBypassEnabled()) return;
+    let cancelled = false;
+    void restoreDraft().then((draft) => {
+      if (cancelled || !draft || draft.origin !== 'server') return;
+      applyRestoredDraft(draft);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthReady, currentUser]);
 
   // Restore and verify any stored session before rendering the app.
   useEffect(() => {

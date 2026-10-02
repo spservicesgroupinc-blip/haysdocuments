@@ -19,6 +19,7 @@
     "apps:chunks": "node scripts/make-paste-chunks.mjs",
     "apps:paste": "node scripts/make-paste-file.mjs",
     "apps:test": "tsx scripts/test-apps-script.ts",
+    "apps:test:drafts": "tsx scripts/test-apps-script-drafts.ts",
     "apps:register": "tsx scripts/test-registration.ts",
     "parser:test": "tsx scripts/test-intake-parser.ts",
     "spans:test": "tsx scripts/test-pdf-spans.ts",

@@ -57,11 +57,14 @@ export const PwaStatus: React.FC = () => {
   }, []);
 
   const showInstall = !!installEvent && !installed && !dismissedInstall && !isDesktop();
-  const showSyncCard = !sync.online || sync.pendingCount > 0;
+  const showSyncCard = !sync.online || sync.pendingCount > 0 || sync.strandedCount > 0;
 
   if (!showInstall && !showSyncCard && !updateReady && !sync.conflictNotice) return null;
 
   const pendingLabel = `${sync.pendingCount} change${sync.pendingCount === 1 ? '' : 's'}`;
+  const strandedLabel = `${sync.strandedCount} change${
+    sync.strandedCount === 1 ? '' : 's'
+  } saved by ${sync.strandedOwner ?? 'another account'}`;
 
   const handleInstall = async () => {
     if (!installEvent) return;
@@ -123,14 +126,18 @@ export const PwaStatus: React.FC = () => {
           <div className="min-w-0">
             <p className="text-[13px] font-semibold text-slate-900">
               {sync.online
-                ? sync.syncing
-                  ? `Syncing ${pendingLabel}…`
-                  : `${pendingLabel} waiting to sync`
+                ? sync.pendingCount > 0
+                  ? sync.syncing
+                    ? `Syncing ${pendingLabel}…`
+                    : `${pendingLabel} waiting to sync`
+                  : `${strandedLabel} waiting to sync`
                 : 'Offline — working from saved copies'}
             </p>
             <p className="text-[12px] text-slate-500 mt-0.5 leading-snug">
               {sync.online
-                ? 'Saving to the customer database automatically.'
+                ? sync.pendingCount > 0
+                  ? 'Saving to the customer database automatically.'
+                  : `Sign in as ${sync.strandedOwner ?? 'the account that made them'} to send them to the customer database.`
                 : sync.pendingCount > 0
                   ? 'Changes are saved on this device and will sync when the connection returns.'
                   : 'You can keep editing and generating documents.'}

@@ -15,17 +15,19 @@
 import {
   acquireAuthContext,
   deleteJob,
+  fetchDraft,
   getCurrentUser,
   getJob,
   isDatabaseConfigured,
+  isDeveloperBypassEnabled,
   listJobs,
+  saveDraft,
   saveJob,
   DatabaseError,
   type AuthContext,
   type JobSummary,
 } from './appsScriptService';
 import {
-  countOutbox,
   deleteMirrorJob,
   deleteOutboxOp,
   enqueueOutbox,
@@ -33,12 +35,16 @@ import {
   getDraft,
   getMirrorJob,
   getOutboxOps,
+  outboxOpIsMine,
   putDraft,
   putMirrorJob,
+  queueDraftOutbox,
+  summarizeOutbox,
   updateOutboxOp,
   type MirrorJob,
   type OutboxOp,
   type SyncJobSummary,
+  type WorkspaceDraft,
 } from './localDb';
 import { createRecordId, type RestorationJobData } from '../types/jobData';
 import { requestOutboxSync } from './pwa';
@@ -51,6 +57,10 @@ export interface SyncState {
   lastError: string | null;
   /** Transient message shown when a server copy changed underneath a local edit. */
   conflictNotice: string | null;
+  /** Queued writes on this device that belong to a different account. */
+  strandedCount: number;
+  /** The account those stranded writes belong to, when it can be determined. */
+  strandedOwner: string | null;
 }
 
 const NETWORK_ERROR_CODES = new Set(['network_error', 'timeout']);
@@ -63,6 +73,35 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * The account whose local edits this session may read and replay.
+ *
+ * Local mirrors and the outbox are per-account: on a shared machine one person
+ * must never see - or publish - another person's unsaved work. Rows that are
+ * fully synced carry no owner, because they are only a cache of the shared
+ * server data that every account is entitled to.
+ */
+function currentOwner(): string | null {
+  if (isDeveloperBypassEnabled()) return 'dev';
+  const user = getCurrentUser();
+  return user?.email ? user.email.toLowerCase() : null;
+}
+
+/** True when a locally queued row was written by somebody else's account. */
+function ownedByOther(owner: string | undefined, mine: string | null): boolean {
+  return !!owner && owner !== mine;
+}
+
+/** Keeps the sync badge in step with what this account can actually flush. */
+async function refreshPendingState(): Promise<void> {
+  const summary = await summarizeOutbox(currentOwner());
+  patchState({
+    pendingCount: summary.mine,
+    strandedCount: summary.stranded,
+    strandedOwner: summary.strandedOwner,
+  });
+}
+
 // ---- state (tiny pub/sub for the UI) --------------------------------------
 
 let state: SyncState = {
@@ -72,6 +111,8 @@ let state: SyncState = {
   lastSyncAt: null,
   lastError: null,
   conflictNotice: null,
+  strandedCount: 0,
+  strandedOwner: null,
 };
 
 const listeners = new Set<(next: SyncState) => void>();
@@ -154,9 +195,11 @@ function displaySummary(server: JobSummary, record: RestorationJobData | null): 
 
 /** Instantly available summaries from the local mirror (no network). */
 export async function readCachedJobSummaries(): Promise<SyncJobSummary[]> {
+  const owner = currentOwner();
   const all = await getAllMirrorJobs();
   return all
     .filter((row) => row.syncState !== 'pending-delete')
+    .filter((row) => row.syncState === 'synced' || !ownedByOther(row.owner, owner))
     .map((row) => ({
       ...(row.record ? summaryFromRecord(row.record, row.summary) : row.summary),
       syncState: row.syncState,
@@ -187,8 +230,8 @@ export async function refreshJobs(): Promise<RefreshJobsResult> {
     patchState({
       lastSyncAt: new Date().toISOString(),
       lastError: null,
-      pendingCount: await countOutbox(),
     });
+    await refreshPendingState();
     return { jobs: merged, fromCache: false };
   } catch (err) {
     const cached = await readCachedJobSummaries();
@@ -201,6 +244,7 @@ export async function refreshJobs(): Promise<RefreshJobsResult> {
 }
 
 async function mergeServerList(serverJobs: JobSummary[]): Promise<SyncJobSummary[]> {
+  const owner = currentOwner();
   const mirror = await getAllMirrorJobs();
   const byId = new Map(mirror.map((row) => [row.recordId, row]));
   const seen = new Set<string>();
@@ -210,6 +254,13 @@ async function mergeServerList(serverJobs: JobSummary[]): Promise<SyncJobSummary
   for (const job of serverJobs) {
     seen.add(job.recordId);
     const local = byId.get(job.recordId);
+
+    // Another account has unsynced edits for this record. Leave its row exactly
+    // as it is - that person will publish it - and show the server copy here.
+    if (local && local.syncState !== 'synced' && ownedByOther(local.owner, owner)) {
+      results.push({ ...stripRecord(job), syncState: 'synced' });
+      continue;
+    }
 
     if (!local) {
       const next: MirrorJob = {
@@ -258,7 +309,7 @@ async function mergeServerList(serverJobs: JobSummary[]): Promise<SyncJobSummary
       await deleteMirrorJob(row.recordId);
       continue;
     }
-    if (row.syncState === 'pending-save') {
+    if (row.syncState === 'pending-save' && !ownedByOther(row.owner, owner)) {
       results.push({
         ...(row.record ? summaryFromRecord(row.record, row.summary) : row.summary),
         syncState: 'pending-save',
@@ -282,25 +333,29 @@ export interface LoadedJob {
 
 /** Opens one record: local copy wins when it has unsynced edits; else server-first. */
 export async function loadJobOffline(recordId: string): Promise<LoadedJob> {
+  const owner = currentOwner();
   const mirror = await getMirrorJob(recordId);
-  if (mirror && mirror.syncState !== 'synced' && mirror.record) {
-    return { job: mirror.record, fromCache: true };
+  // Another account's unsynced copy is off limits: fall through to the server.
+  const cached = mirror && !ownedByOther(mirror.owner, owner) ? mirror : undefined;
+
+  if (cached && cached.syncState !== 'synced' && cached.record) {
+    return { job: cached.record, fromCache: true };
   }
   try {
     const auth = await acquireAuthContext();
     const result = await getJob(auth, { recordId });
     await putMirrorJob({
       recordId,
-      summary: summaryFromRecord(result.job, mirror?.summary ?? null),
+      summary: summaryFromRecord(result.job, cached?.summary ?? null),
       record: result.job,
       syncState: 'synced',
-      baseUpdatedAt: result.updatedAt || mirror?.summary?.updatedAt || null,
+      baseUpdatedAt: result.updatedAt || cached?.summary?.updatedAt || null,
       locallyUpdatedAt: new Date().toISOString(),
     });
     return { job: result.job, fromCache: false };
   } catch (err) {
-    if (isNetworkish(err) && mirror?.record) {
-      return { job: mirror.record, fromCache: true };
+    if (isNetworkish(err) && cached?.record) {
+      return { job: cached.record, fromCache: true };
     }
     throw err;
   }
@@ -318,6 +373,7 @@ export interface SaveJobOutcome {
 
 /** Saves a job through the mirror + outbox. Never loses the edit when offline. */
 export async function saveJobOffline(job: RestorationJobData): Promise<SaveJobOutcome> {
+  const owner = currentOwner();
   const recordId = job.recordId || createRecordId();
   const record: RestorationJobData = { ...job, recordId };
   const existing = await getMirrorJob(recordId);
@@ -330,9 +386,17 @@ export async function saveJobOffline(job: RestorationJobData): Promise<SaveJobOu
     syncState: 'pending-save',
     baseUpdatedAt: existing?.baseUpdatedAt ?? existing?.summary?.updatedAt ?? null,
     locallyUpdatedAt: new Date().toISOString(),
+    owner: owner ?? undefined,
   });
-  await enqueueOutbox({ type: 'save', recordId, job: record, createdAt: Date.now(), attempts: 0 });
-  patchState({ pendingCount: await countOutbox() });
+  await enqueueOutbox({
+    type: 'save',
+    recordId,
+    job: record,
+    createdAt: Date.now(),
+    attempts: 0,
+    owner: owner ?? undefined,
+  });
+  await refreshPendingState();
 
   if (state.online) await flushOutboxNow();
   else void requestOutboxSync();
@@ -352,6 +416,7 @@ export interface DeleteJobOutcome {
 
 /** Deletes a job through the mirror + outbox (soft delete server-side). */
 export async function deleteJobOffline(recordId: string): Promise<DeleteJobOutcome> {
+  const owner = currentOwner();
   const existing = await getMirrorJob(recordId);
   if (!existing) {
     // Not in the mirror — still queue the delete so the server converges.
@@ -362,16 +427,24 @@ export async function deleteJobOffline(recordId: string): Promise<DeleteJobOutco
       syncState: 'pending-delete',
       baseUpdatedAt: null,
       locallyUpdatedAt: new Date().toISOString(),
+      owner: owner ?? undefined,
     });
   } else {
     await putMirrorJob({
       ...existing,
       syncState: 'pending-delete',
       locallyUpdatedAt: new Date().toISOString(),
+      owner: owner ?? undefined,
     });
   }
-  await enqueueOutbox({ type: 'delete', recordId, createdAt: Date.now(), attempts: 0 });
-  patchState({ pendingCount: await countOutbox() });
+  await enqueueOutbox({
+    type: 'delete',
+    recordId,
+    createdAt: Date.now(),
+    attempts: 0,
+    owner: owner ?? undefined,
+  });
+  await refreshPendingState();
 
   if (state.online) await flushOutboxNow();
   else void requestOutboxSync();
@@ -398,9 +471,13 @@ export const syncNow = flushOutboxNow;
 
 async function doFlush(): Promise<void> {
   if (!isDatabaseConfigured()) return;
-  const ops = await getOutboxOps();
+  const owner = currentOwner();
+  // Only this account's writes are replayed. Anything queued by a different
+  // account on this device stays put until that person signs in, so nobody ever
+  // publishes - or is credited with - somebody else's edit.
+  const ops = (await getOutboxOps()).filter((op) => outboxOpIsMine(op, owner));
   if (ops.length === 0) {
-    if (state.pendingCount !== 0) patchState({ pendingCount: 0 });
+    await refreshPendingState();
     return;
   }
 
@@ -430,7 +507,10 @@ async function doFlush(): Promise<void> {
     for (const op of ops) {
       const mirror = await getMirrorJob(op.recordId);
       try {
-        if (op.type === 'save' && op.job) {
+        let published = true;
+        if (op.type === 'draft' && op.draft) {
+          published = await pushDraft(auth, op);
+        } else if (op.type === 'save' && op.job) {
           const serverRow = serverRows?.get(op.recordId);
           if (
             mirror?.baseUpdatedAt &&
@@ -449,19 +529,29 @@ async function doFlush(): Promise<void> {
           await deleteJob(auth, op.recordId);
           await deleteMirrorJob(op.recordId);
         }
-        await deleteOutboxOp(op.id as number);
-        patchState({ pendingCount: await countOutbox() });
+        if (published) await deleteOutboxOp(op.id as number);
+        await refreshPendingState();
       } catch (err) {
         if (isNetworkish(err)) {
           await updateOutboxOp({ ...op, attempts: op.attempts + 1, lastError: errorMessage(err) });
           patchState({ lastError: errorMessage(err) });
           throw err; // stop this run; retry on the next trigger
         }
-        if (err instanceof DatabaseError && err.code === 'not_found') {
+        if (err instanceof DatabaseError && err.code === 'not_found' && op.type !== 'draft') {
           // The server no longer has this record — clear local traces and move on.
           await deleteMirrorJob(op.recordId);
           await deleteOutboxOp(op.id as number);
-          patchState({ pendingCount: await countOutbox() });
+          await refreshPendingState();
+          continue;
+        }
+        if (op.type === 'draft' && err instanceof DatabaseError && err.code === 'unknown_action') {
+          // The deployed script predates draft support. Retrying cannot help, and
+          // the local draft still holds the work, so drop the queued copy.
+          await deleteOutboxOp(op.id as number);
+          console.warn(
+            'The Apps Script backend does not store workspace drafts yet. Paste the latest Code.gs into the editor and redeploy to back up in-progress work.'
+          );
+          await refreshPendingState();
           continue;
         }
         // Rejected write (role, validation, …): keep it queued, report, continue.
@@ -491,6 +581,51 @@ async function applyServerSave(recordId: string, serverRecord: RestorationJobDat
     baseUpdatedAt: null,
     locallyUpdatedAt: new Date().toISOString(),
   });
+}
+
+// ---- drafts ---------------------------------------------------------------
+
+/**
+ * Publishes one queued workspace draft.
+ *
+ * Returns false when the local draft has already moved on: every autosave reuses
+ * the same outbox slot, so the newer payload stays queued and goes out on the
+ * next pass instead of being dropped.
+ */
+async function pushDraft(auth: AuthContext, op: OutboxOp): Promise<boolean> {
+  if (!op.draft) return true;
+  const draft = op.draft;
+
+  const saved = await saveDraft(auth, {
+    job: draft.job,
+    recordId: draft.recordId,
+    savedAt: draft.savedAt,
+  });
+
+  const latest = await safeGetDraft();
+  if (latest && latest.savedAt > draft.savedAt) return false;
+
+  try {
+    await putDraft({
+      id: 'current',
+      job: draft.job,
+      recordId: draft.recordId,
+      savedAt: draft.savedAt,
+      serverUpdatedAt: saved.updatedAt,
+      updatedBy: saved.updatedBy,
+    });
+  } catch {
+    /* cache-only write */
+  }
+  return true;
+}
+
+async function safeGetDraft(): Promise<WorkspaceDraft | undefined> {
+  try {
+    return await getDraft();
+  } catch {
+    return undefined;
+  }
 }
 
 // ---- lifecycle ------------------------------------------------------------
@@ -524,7 +659,7 @@ export function initJobSync(): () => void {
     if (state.online && state.pendingCount > 0 && !state.syncing) void flushOutboxNow();
   }, 60_000);
 
-  void countOutbox().then((count) => patchState({ pendingCount: count }));
+  void refreshPendingState();
   void flushOutboxNow();
 
   return () => {
@@ -541,20 +676,138 @@ export function initJobSync(): () => void {
 // ---- workspace drafts -----------------------------------------------------
 
 let draftTimer: number | null = null;
+let draftPushTimer: number | null = null;
 
-/** Debounced autosave of the current workspace record. */
+/**
+ * Debounced autosave of the current workspace record.
+ *
+ * The local mirror write is quick (500ms) so nothing in progress is ever lost;
+ * the push to the Apps Script database waits for a longer idle gap (4s), so a
+ * long typing session cannot hammer the backend with one request per pause. The
+ * queued push is durable either way: it is replayed on the next start, on
+ * reconnect, and by the periodic flush.
+ */
 export function scheduleDraftSave(job: RestorationJobData, recordId?: string) {
   if (draftTimer) window.clearTimeout(draftTimer);
   draftTimer = window.setTimeout(() => {
-    void putDraft({ id: 'current', job, recordId, savedAt: Date.now() });
+    void putDraft({ id: 'current', job, recordId, savedAt: Date.now() }).catch(() => {
+      /* storage unavailable (private mode) - the server copy still goes out */
+    });
   }, 500);
+
+  if (draftPushTimer) window.clearTimeout(draftPushTimer);
+  draftPushTimer = window.setTimeout(() => {
+    void queueCurrentDraftPush();
+  }, 4000);
 }
 
-/** Restores the last workspace record, if one was autosaved. */
-export async function restoreDraft() {
+/**
+ * Queues the local draft for publishing. Used when the local copy is ahead of
+ * the shared one, including drafts that were never pushed.
+ */
+async function queueCurrentDraftPush(): Promise<void> {
+  const draft = await safeGetDraft();
+  if (!draft) return;
+
   try {
-    return await getDraft();
+    await queueDraftOutbox({
+      type: 'draft',
+      recordId: draft.recordId ?? draft.job.recordId ?? '',
+      draft,
+      createdAt: Date.now(),
+      attempts: 0,
+    });
   } catch {
-    return undefined;
+    return;
+  }
+
+  await refreshPendingState();
+  if (state.online) void flushOutboxNow();
+}
+
+export interface RestoredDraft {
+  job: RestorationJobData;
+  recordId?: string;
+  updatedBy?: string;
+  updatedAt?: string;
+  /** Where the record came from, so the UI can say so. */
+  origin: 'server' | 'local';
+}
+
+/** Failures that mean "no server draft to read", not "something is broken". */
+function isDraftReadMiss(err: unknown): boolean {
+  if (!(err instanceof DatabaseError)) return false;
+  return (
+    err.code === 'unknown_action' ||
+    err.code === 'not_configured' ||
+    err.code === 'network_error' ||
+    err.code === 'timeout' ||
+    err.code === 'bad_response' ||
+    err.code === 'no_session' ||
+    err.code === 'session_expired' ||
+    err.code === 'unauthenticated' ||
+    err.code === 'unauthorized'
+  );
+}
+
+/**
+ * Returns the record the workspace should open with.
+ *
+ * The Apps Script copy is the shared system of record, which is what makes an
+ * unfinished job reappear on another machine or under another account. It only
+ * displaces the local copy when the shared draft has genuinely moved on since
+ * this device last saw it - decided from server timestamps, so a wrong device
+ * clock can never cause a newer local edit to be discarded. Offline, or on a
+ * deployment without draft support, the local mirror is used.
+ */
+export async function restoreDraft(): Promise<RestoredDraft | undefined> {
+  const local = await safeGetDraft();
+  const localResult: RestoredDraft | undefined = local
+    ? { job: local.job, recordId: local.recordId, updatedBy: local.updatedBy, origin: 'local' }
+    : undefined;
+
+  if (!isDatabaseConfigured()) return localResult;
+
+  try {
+    const auth = await acquireAuthContext();
+    const server = await fetchDraft(auth);
+
+    if (!server) {
+      // Nothing shared yet: publish whatever this device already had.
+      if (local) void queueCurrentDraftPush();
+      return localResult;
+    }
+
+    const seenAt = Date.parse(local?.serverUpdatedAt ?? '');
+    const sharedMovedOn = !Number.isNaN(seenAt) && Date.parse(server.updatedAt) > seenAt;
+    if (local && !sharedMovedOn) {
+      void queueCurrentDraftPush();
+      return localResult;
+    }
+
+    const mirrored: WorkspaceDraft = {
+      id: 'current',
+      job: server.job,
+      recordId: server.recordId || server.job.recordId,
+      savedAt: Date.parse(server.updatedAt) || Date.now(),
+      serverUpdatedAt: server.updatedAt,
+      updatedBy: server.updatedBy,
+    };
+    try {
+      await putDraft(mirrored);
+    } catch {
+      /* cache-only write */
+    }
+
+    return {
+      job: mirrored.job,
+      recordId: mirrored.recordId,
+      updatedBy: server.updatedBy,
+      updatedAt: server.updatedAt,
+      origin: 'server',
+    };
+  } catch (err) {
+    if (isDraftReadMiss(err)) return localResult;
+    throw err;
   }
 }
