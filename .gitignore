@@ -15,3 +15,7 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Generated copy-paste payload for the Apps Script editor (npm run apps:paste).
+# src/apps-script/Code.gs is the source of truth.
+src/apps-script/PASTE-INTO-APPS-SCRIPT.txt

@@ -1,26 +1,17 @@
 /**
  * ============================================================================
  *  HAYS + SONS COMPLETE RESTORATION - CUSTOMER & JOB DATABASE
- *  Google Apps Script backend  -  1 of 6: configuration + provisioning
+ *  Google Apps Script backend  -  the complete backend (one file)
  * ============================================================================
  *
- *  THIS PROJECT IS SPLIT ACROSS SIX FILES. Paste each one into its own file in
- *  the Apps Script editor (the editor's "+" button adds a script file). The
- *  names below are only a guide - any file name works.
- *
- *    Code.gs          <- this file: configuration, provisioning, menu
- *    WebApp.gs        web app entry points and authentication
- *    Sessions.gs      accounts, sessions, login/logout, user administration
- *    Registration.gs  self-service sign-up
- *    Jobs.gs          job actions and record normalisation
- *    Support.gs       sheet access, utilities, self test
- *
- *  Apps Script merges every .gs file in a project into a single global scope, so
- *  the split is purely organisational - no imports and no load order to worry
- *  about.
+ *  THIS ONE FILE IS THE ENTIRE BACKEND. Paste it into the Apps Script editor's
+ *  Code.gs in a single go: clear the placeholder first (Ctrl+A, then Delete),
+ *  paste, and save. Then press Ctrl+End - the last line must be a single "}"
+ *  and the file must match the line count printed by "npm run apps:ascii".
+ *  Keep it pure ASCII; it is delivered by copy-paste.
  *
  *  QUICK START
- *    1. Create the six files and paste one of ours into each.
+ *    1. Paste this whole file into Code.gs (see above).
  *    2. Project Settings -> Show appsscript.json -> paste the manifest.
  *    3. Run ONE command and approve the permissions prompt:
  *         setupDatabase()
@@ -115,13 +106,8 @@ var DEFAULTS = {
   LOCKOUT_MINUTES: 15,
   // --- Self-service registration ------------------------------------------------
   MIN_PASSWORD_LENGTH: 8,
-  // When the mode is 'invite', the code is the ONLY thing between the public
-  // web-app URL and the customer records, so it must resist guessing.
   MIN_REGISTRATION_CODE_LENGTH: 12,
   REGISTRATION_DEFAULT_ROLE: 'editor',
-  // 'open'   - anyone with the web app URL can create an account (default)
-  // 'invite' - an invite code is required
-  // 'off'    - no sign-up at all
   REGISTRATION_MODE: 'open'
 };
 
@@ -148,10 +134,7 @@ var JOB_HEADERS = [
 /** Append-only audit trail. */
 var LOG_HEADERS = ['Timestamp', 'User', 'Action', 'RecordId', 'JobNumber', 'Detail'];
 
-/**
- * Application accounts. Passwords are NEVER stored in plain text: the sheet
- * holds a per-user random salt plus an iterated HMAC-SHA256 derivation.
- */
+/** Application accounts. */
 var USER_HEADERS = [
   'Email',
   'Name',
@@ -172,7 +155,7 @@ var ROLE_VALUES = ['admin', 'editor', 'viewer'];
 
 var STATUS_VALUES = ['Draft', 'Active', 'On Hold', 'Complete', 'Cancelled'];
 
-/* Fields that round-trip as 'number | empty-string' in the front-end. Blank must stay blank - never 0. */
+/* Fields that round-trip as 'number | empty-string' in the front-end. */
 var NUMERIC_OR_BLANK_PATHS = [
   'insurance.roughEstimateAmount',
   'financials.totalApprovedRcv',
@@ -194,7 +177,7 @@ var NUMERIC_PATHS = {
   'financials.completeDays': 60
 };
 
-/** Boolean fields. Strings such as "FALSE" must NOT become true. */
+/** Boolean fields. */
 var BOOLEAN_PATHS = [
   'mortgage.hasMortgage',
   'changeOrder.isInsuranceRelated',
@@ -210,29 +193,10 @@ var ENUM_PATHS = {
   'checklist.hasDeductibleBeenCollected': { values: ['Yes', 'No', 'Pending'], fallback: 'No' }
 };
 
-/** Guaranteed sub-objects are provided by emptyRecordTemplate_(). */
-
 /* ---------------------------------------------------------------------------
- * 2. PROVISIONING  - run this once
+ * 2. PROVISIONING & SCHEMA
  * ------------------------------------------------------------------------ */
 
-/**
- * Creates (or repairs) the ENTIRE database in one call: the spreadsheet, the
- * Jobs, AuditLog, Users, Sessions and README sheets, all headers, formatting,
- * hidden credential columns and configuration.
- *
- * Idempotent and order-independent - safe to run as the very first action after
- * pasting this file into a new Apps Script project, and safe to run again later
- * to repair or upgrade.
- *
- * Optionally seeds the first administrator in the same step:
- *   setupDatabase('you@example.com', 'Your Name', 'a-strong-password')
- *
- * @param {string} [adminEmail]    Optional email for the first administrator.
- * @param {string} [adminName]     Optional display name for that administrator.
- * @param {string} [adminPassword] Optional password, 8+ characters.
- * @return {Object} summary describing what was provisioned.
- */
 function setupDatabase(adminEmail, adminName, adminPassword) {
   var props = PropertiesService.getScriptProperties();
   var created = false;
@@ -263,7 +227,6 @@ function setupDatabase(adminEmail, adminName, adminPassword) {
   var usersResult = ensureSheet_(spreadsheet, usersSheetName, USER_HEADERS);
   var sessionsResult = ensureSheet_(spreadsheet, sessionsSheetName, SESSION_HEADERS);
 
-  // Persist configuration.
   props.setProperty(PROP.DB_SPREADSHEET_ID, spreadsheet.getId());
   props.setProperty(PROP.DB_SHEET_NAME, jobSheetName);
   props.setProperty(PROP.LOG_SHEET_NAME, logSheetName);
@@ -288,7 +251,6 @@ function setupDatabase(adminEmail, adminName, adminPassword) {
   applySheetFormatting_(usersSheet, USER_HEADERS);
   applySheetFormatting_(sessionsSheet, SESSION_HEADERS);
 
-  // Credentials and live sessions must never be casually visible.
   hideColumns_(usersSheet, USER_HEADERS, ['Salt', 'PasswordHash']);
   hideColumns_(sessionsSheet, SESSION_HEADERS, ['Token']);
 
@@ -312,14 +274,6 @@ function setupDatabase(adminEmail, adminName, adminPassword) {
     webAppUrl: ScriptApp.getService().getUrl()
   };
 
-  if (userCount === 0) {
-    Logger.log(
-      'No application users exist yet. Run createUser("you@example.com", "Your Name", "a-strong-password") ' +
-        'from the editor to create the first account, then log in through the app.'
-    );
-  }
-
-  // Optional one-step bootstrap of the first administrator.
   var bootstrap = null;
   if (adminEmail && adminPassword) {
     bootstrap = createUser(adminEmail, adminName || adminEmail, adminPassword, 'admin');
@@ -338,13 +292,6 @@ function setupDatabase(adminEmail, adminName, adminPassword) {
   return summary;
 }
 
-/**
- * Guarantees the database exists before a request is served, so the very first
- * call to the web app provisions everything even if setupDatabase() was never
- * run by hand. Only runs when no spreadsheet has been recorded yet.
- *
- * @return {boolean} true when provisioning happened during this call.
- */
 function ensureDatabaseReady_() {
   var props = PropertiesService.getScriptProperties();
   if (props.getProperty(PROP.DB_SPREADSHEET_ID)) return false;
@@ -364,7 +311,6 @@ function ensureDatabaseReady_() {
   }
 }
 
-/** Ensures a sheet exists with the given headers, adding any missing columns. */
 function ensureSheet_(spreadsheet, name, headers) {
   var sheet = spreadsheet.getSheetByName(name);
   if (!sheet) {
@@ -379,7 +325,6 @@ function ensureSheet_(spreadsheet, name, headers) {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
     columnsAdded = headers.length;
   } else {
-    // Keep the canonical order but never destroy an operator-added column.
     var present = {};
     for (var i = 0; i < existing.length; i++) {
       if (existing[i]) present[String(existing[i])] = true;
@@ -396,7 +341,6 @@ function ensureSheet_(spreadsheet, name, headers) {
   return { columnsAdded: columnsAdded };
 }
 
-/** Deletes the empty "Sheet1" that SpreadsheetApp.create() adds. */
 function removeDefaultSheet_(spreadsheet) {
   var sheets = spreadsheet.getSheets();
   for (var i = 0; i < sheets.length; i++) {
@@ -407,7 +351,6 @@ function removeDefaultSheet_(spreadsheet) {
   }
 }
 
-/** Cosmetic + protective formatting: header styling, text formats, widths. */
 function applySheetFormatting_(sheet, headers) {
   if (!sheet) return;
 
@@ -415,12 +358,11 @@ function applySheetFormatting_(sheet, headers) {
   headerRange
     .setFontWeight('bold')
     .setFontColor('#ffffff')
-    .setBackground('#b91c1c')
+    .setBackground('#dc2626')
     .setVerticalAlignment('middle')
     .setWrap(false);
   sheet.setRowHeight(1, 28);
 
-  // Force text format so Sheets never coerces ids, dates or JSON.
   var textColumns = ['RecordId', 'JobNumber', 'ClaimNumber', 'RecordJson', 'CreatedAt', 'UpdatedAt'];
   for (var i = 0; i < headers.length; i++) {
     if (textColumns.indexOf(headers[i]) !== -1) {
@@ -435,14 +377,12 @@ function applySheetFormatting_(sheet, headers) {
     else sheet.setColumnWidth(c + 1, Math.max(120, Math.min(220, name.length * 12 + 60)));
   }
 
-  // Hide implementation-only columns for a cleaner operator experience.
   var recordIdCol = headers.indexOf('RecordId');
   var jsonCol = headers.indexOf('RecordJson');
   if (recordIdCol !== -1) sheet.hideColumns(recordIdCol + 1);
   if (jsonCol !== -1) sheet.hideColumns(jsonCol + 1);
 }
 
-/** Hides the named columns, ignoring any that are not present. */
 function hideColumns_(sheet, headers, names) {
   if (!sheet) return;
   for (var i = 0; i < names.length; i++) {
@@ -456,14 +396,12 @@ function hideColumns_(sheet, headers, names) {
   }
 }
 
-/** Populated data rows in a sheet, excluding the header row. */
 function countDataRows_(sheet) {
   if (!sheet) return 0;
   var lastRow = sheet.getLastRow();
   return lastRow < 2 ? 0 : lastRow - 1;
 }
 
-/** Documents the schema and configuration inside the spreadsheet itself. */
 function writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName, sessionsSheetName) {
   var sheet = spreadsheet.getSheetByName(DEFAULTS.NOTES_SHEET_NAME);
   if (!sheet) sheet = spreadsheet.insertSheet(DEFAULTS.NOTES_SHEET_NAME);
@@ -492,7 +430,7 @@ function writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName,
     ['People can also create their own account from the login page. See REGISTRATION_MODE below.'],
     ['Sessions expire after ' + DEFAULTS.SESSION_HOURS + ' hours and are listed in "' + sessionsSheetName + '".'],
     [''],
-    ['COLUMNS - ' + jobSheetName],
+    ['COLUMNS - ' + jobSheetName]
   ];
 
   for (var i = 0; i < JOB_HEADERS.length; i++) {
@@ -515,10 +453,7 @@ function writeNotesTab_(spreadsheet, jobSheetName, logSheetName, usersSheetName,
   lines.push(['ALLOWED_CLIENT_ID', 'Optional Google ID-token path (legacy).']);
   lines.push(['ALLOWED_EMAILS', 'Optional Google ID-token path (legacy).']);
   lines.push(['SHARED_SECRET', 'DEVELOPER BYPASS ONLY - leave blank in production.']);
-  lines.push([
-    'REGISTRATION_MODE',
-    describeRegistrationMode_()
-  ]);
+  lines.push(['REGISTRATION_MODE', describeRegistrationMode_()]);
 
   var width = 2;
   sheet.getRange(1, 1, lines.length, width).setValues(
@@ -558,7 +493,7 @@ function describeColumn_(name) {
 }
 
 /* ---------------------------------------------------------------------------
- * 3. MENU (only appears in a container-bound copy)
+ * 3. MENU & ACCESSORS
  * ------------------------------------------------------------------------ */
 
 function onOpen() {
@@ -575,11 +510,43 @@ function onOpen() {
       .addItem('Show install info', 'showInstallInfo')
       .addToUi();
   } catch (err) {
-    // Standalone scripts have no UI; this is expected and harmless.
+    // Standalone scripts have no UI; this is normal.
   }
 }
 
-/** Logs deployment + configuration state. Useful for support. */
+function getSpreadsheet_() {
+  var id = PropertiesService.getScriptProperties().getProperty(PROP.DB_SPREADSHEET_ID);
+  if (!id) {
+    ensureDatabaseReady_();
+    id = PropertiesService.getScriptProperties().getProperty(PROP.DB_SPREADSHEET_ID);
+  }
+  return SpreadsheetApp.openById(id);
+}
+
+function jobsSheet_() {
+  var ss = getSpreadsheet_();
+  var name = PropertiesService.getScriptProperties().getProperty(PROP.DB_SHEET_NAME) || DEFAULTS.DB_SHEET_NAME;
+  return ss.getSheetByName(name);
+}
+
+function usersSheet_() {
+  var ss = getSpreadsheet_();
+  var name = PropertiesService.getScriptProperties().getProperty(PROP.USERS_SHEET_NAME) || DEFAULTS.USERS_SHEET_NAME;
+  return ss.getSheetByName(name);
+}
+
+function sessionsSheet_() {
+  var ss = getSpreadsheet_();
+  var name = PropertiesService.getScriptProperties().getProperty(PROP.SESSIONS_SHEET_NAME) || DEFAULTS.SESSIONS_SHEET_NAME;
+  return ss.getSheetByName(name);
+}
+
+function logSheet_() {
+  var ss = getSpreadsheet_();
+  var name = PropertiesService.getScriptProperties().getProperty(PROP.LOG_SHEET_NAME) || DEFAULTS.LOG_SHEET_NAME;
+  return ss.getSheetByName(name);
+}
+
 function showInstallInfo() {
   var props = PropertiesService.getScriptProperties();
 
@@ -620,4 +587,738 @@ function showInstallInfo() {
   };
   Logger.log(JSON.stringify(info, null, 2));
   return info;
+}
+
+/* ---------------------------------------------------------------------------
+ * 4. WEB APP ENTRY POINTS
+ * ------------------------------------------------------------------------ */
+
+function doGet(e) {
+  try {
+    var payload = parseRequest_(e);
+    if (!payload.action) payload.action = 'ping';
+    return handleAction_(payload);
+  } catch (err) {
+    return errorResponse_(err);
+  }
+}
+
+function doPost(e) {
+  try {
+    var payload = parseRequest_(e);
+    return handleAction_(payload);
+  } catch (err) {
+    return errorResponse_(err);
+  }
+}
+
+function parseRequest_(e) {
+  if (!e) return {};
+  if (e.postData && e.postData.contents) {
+    try {
+      return JSON.parse(e.postData.contents);
+    } catch (err) {
+      return { action: 'raw', contents: e.postData.contents };
+    }
+  }
+  if (e.parameter) {
+    return e.parameter;
+  }
+  return {};
+}
+
+function handleAction_(payload) {
+  var action = payload.action;
+
+  // Unauthenticated routes
+  if (action === 'ping') {
+    return successResponse_({ status: 'ok', timestamp: new Date().toISOString() });
+  }
+  if (action === 'login') {
+    var loginResult = loginUser_(payload.email, payload.password);
+    return successResponse_(loginResult);
+  }
+  if (action === 'register') {
+    var regResult = registerUser_(payload.email, payload.name, payload.password, payload.inviteCode);
+    return successResponse_(regResult);
+  }
+
+  // Authenticated routes
+  var user = authenticateRequest_(payload);
+
+  if (action === 'logout') {
+    revokeSession_(payload.sessionToken || payload.token);
+    return successResponse_({ loggedOut: true });
+  }
+  if (action === 'getCurrentUser' || action === 'checkSession') {
+    return successResponse_({ user: user });
+  }
+  if (action === 'listJobs') {
+    var jobs = listJobs_(user, payload);
+    return successResponse_(jobs);
+  }
+  if (action === 'getJob') {
+    var job = getJob_(user, payload.recordId);
+    return successResponse_(job);
+  }
+  if (action === 'saveJob') {
+    var savedJob = saveJob_(user, payload.job);
+    return successResponse_(savedJob);
+  }
+  if (action === 'deleteJob') {
+    var delResult = deleteJob_(user, payload.recordId);
+    return successResponse_(delResult);
+  }
+  if (action === 'listUsers') {
+    if (user.role !== 'admin') throw appError_('forbidden', 'Administrator rights required.');
+    return successResponse_(listUsers());
+  }
+
+  throw appError_('unknown_action', 'Unrecognized action: ' + action);
+}
+
+function successResponse_(data) {
+  return ContentService.createTextOutput(JSON.stringify({ ok: true, data: data }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function errorResponse_(err) {
+  var code = (err && err.code) || 'server_error';
+  var message = (err && err.message) || String(err);
+  return ContentService.createTextOutput(JSON.stringify({ ok: false, error: message, code: code }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function appError_(code, message) {
+  var err = new Error(message || code);
+  err.code = code;
+  return err;
+}
+
+/* ---------------------------------------------------------------------------
+ * 5. AUTHENTICATION & SECURITY
+ * ------------------------------------------------------------------------ */
+
+function hashPassword_(password, salt) {
+  var iterations = DEFAULTS.PASSWORD_ITERATIONS;
+  var key = salt;
+  var hash = password;
+  for (var i = 0; i < iterations; i++) {
+    var sig = Utilities.computeHmacSha256Signature(hash + key, key);
+    hash = Utilities.base64Encode(sig);
+  }
+  return hash;
+}
+
+function generateSalt_() {
+  var randomString = Utilities.getUuid() + ':' + Math.random() + ':' + new Date().getTime();
+  var digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, randomString);
+  return Utilities.base64Encode(digest);
+}
+
+function authenticateRequest_(payload) {
+  ensureDatabaseReady_();
+  var props = PropertiesService.getScriptProperties();
+
+  // Developer bypass (if explicitly configured)
+  var devSecret = props.getProperty(PROP.SHARED_SECRET);
+  if (devSecret && payload.sharedSecret === devSecret) {
+    return { email: 'dev-bypass@system.local', name: 'Developer Bypass', role: 'admin' };
+  }
+
+  var token = payload.sessionToken || payload.token;
+  if (!token) {
+    throw appError_('unauthorized', 'Authentication required. No session token provided.');
+  }
+
+  var user = validateSession_(token);
+  if (!user) {
+    throw appError_('session_expired', 'Session invalid or expired. Please sign in again.');
+  }
+  return user;
+}
+
+function createSession_(email, name, role) {
+  var sheet = sessionsSheet_();
+  var token = Utilities.getUuid();
+  var now = new Date();
+  var expires = new Date(now.getTime() + DEFAULTS.SESSION_HOURS * 60 * 60 * 1000);
+
+  sheet.appendRow([
+    token,
+    email,
+    name,
+    role,
+    now.toISOString(),
+    expires.toISOString(),
+    now.toISOString()
+  ]);
+
+  return {
+    token: token,
+    expiresAt: expires.toISOString()
+  };
+}
+
+function validateSession_(token) {
+  if (!token) return null;
+  var sheet = sessionsSheet_();
+  var data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return null;
+
+  var now = new Date();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(token)) {
+      var expiresAt = new Date(data[i][5]);
+      if (now > expiresAt) {
+        return null;
+      }
+      try {
+        sheet.getRange(i + 1, 7).setValue(now.toISOString());
+      } catch (e) {}
+      return {
+        email: String(data[i][1]),
+        name: String(data[i][2]),
+        role: String(data[i][3])
+      };
+    }
+  }
+  return null;
+}
+
+function revokeSession_(token) {
+  if (!token) return;
+  var sheet = sessionsSheet_();
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(token)) {
+      sheet.deleteRow(i + 1);
+      return;
+    }
+  }
+}
+
+function revokeAllSessions() {
+  var sheet = sessionsSheet_();
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    sheet.deleteRows(2, lastRow - 1);
+  }
+  Logger.log('All active sessions have been revoked.');
+}
+
+function cleanupSessions() {
+  var sheet = sessionsSheet_();
+  var data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return 0;
+
+  var now = new Date();
+  var removed = 0;
+  for (var i = data.length - 1; i >= 1; i--) {
+    var expiresAt = new Date(data[i][5]);
+    if (now > expiresAt) {
+      sheet.deleteRow(i + 1);
+      removed++;
+    }
+  }
+  Logger.log('Cleaned up ' + removed + ' expired session(s).');
+  return removed;
+}
+
+/* ---------------------------------------------------------------------------
+ * 6. USER MANAGEMENT & REGISTRATION
+ * ------------------------------------------------------------------------ */
+
+function registrationMode_() {
+  var props = PropertiesService.getScriptProperties();
+  return props.getProperty(PROP.REGISTRATION_MODE) || DEFAULTS.REGISTRATION_MODE;
+}
+
+function registrationEnabled_() {
+  return registrationMode_() !== 'off';
+}
+
+function registrationRequiresCode_() {
+  return registrationMode_() === 'invite';
+}
+
+function selfRegistrationRole_() {
+  var props = PropertiesService.getScriptProperties();
+  return props.getProperty(PROP.REGISTRATION_DEFAULT_ROLE) || DEFAULTS.REGISTRATION_DEFAULT_ROLE;
+}
+
+function describeRegistrationMode_() {
+  var mode = registrationMode_();
+  if (mode === 'off') return 'Disabled. Users must be created by an administrator.';
+  if (mode === 'invite') return 'Invite code required. Script Property REGISTRATION_CODE must match.';
+  return 'Open. Anyone with the web app URL can create an account.';
+}
+
+function enableRegistration() {
+  PropertiesService.getScriptProperties().setProperty(PROP.REGISTRATION_MODE, 'open');
+  Logger.log('Registration is now OPEN.');
+}
+
+function disableRegistration() {
+  PropertiesService.getScriptProperties().setProperty(PROP.REGISTRATION_MODE, 'off');
+  Logger.log('Registration is now OFF.');
+}
+
+function useInviteCode(code) {
+  if (!code || String(code).length < DEFAULTS.MIN_REGISTRATION_CODE_LENGTH) {
+    throw new Error('Invite code must be at least ' + DEFAULTS.MIN_REGISTRATION_CODE_LENGTH + ' characters.');
+  }
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty(PROP.REGISTRATION_MODE, 'invite');
+  props.setProperty(PROP.REGISTRATION_CODE, String(code));
+  Logger.log('Registration set to INVITE with code.');
+}
+
+function createUser(email, name, password, role) {
+  ensureDatabaseReady_();
+  if (!email || !password) throw appError_('bad_request', 'Email and password are required.');
+  email = String(email).trim().toLowerCase();
+  role = role || 'editor';
+
+  if (ROLE_VALUES.indexOf(role) === -1) {
+    throw appError_('invalid_role', 'Role must be one of: ' + ROLE_VALUES.join(', '));
+  }
+  if (String(password).length < DEFAULTS.MIN_PASSWORD_LENGTH) {
+    throw appError_('weak_password', 'Password must be at least ' + DEFAULTS.MIN_PASSWORD_LENGTH + ' characters.');
+  }
+
+  var sheet = usersSheet_();
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === email) {
+      throw appError_('user_exists', 'A user with this email already exists.');
+    }
+  }
+
+  var salt = generateSalt_();
+  var hash = hashPassword_(password, salt);
+  var now = new Date().toISOString();
+
+  sheet.appendRow([
+    email,
+    name || email,
+    role,
+    salt,
+    hash,
+    true, // Active
+    0,    // FailedAttempts
+    '',   // LockedUntil
+    now,  // CreatedAt
+    ''    // LastLoginAt
+  ]);
+
+  appendLog_('SYSTEM', 'USER_CREATED', '', '', 'Created account for ' + email + ' (' + role + ')');
+  return { email: email, name: name || email, role: role };
+}
+
+function removeUser_(email) {
+  var sheet = usersSheet_();
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === String(email).toLowerCase()) {
+      sheet.deleteRow(i + 1);
+      return true;
+    }
+  }
+  return false;
+}
+
+function listUsers() {
+  var sheet = usersSheet_();
+  var data = sheet.getDataRange().getValues();
+  var users = [];
+  for (var i = 1; i < data.length; i++) {
+    users.push({
+      email: data[i][0],
+      name: data[i][1],
+      role: data[i][2],
+      active: data[i][5],
+      createdAt: data[i][8],
+      lastLoginAt: data[i][9]
+    });
+  }
+  Logger.log(JSON.stringify(users, null, 2));
+  return users;
+}
+
+function loginUser_(email, password) {
+  ensureDatabaseReady_();
+  if (!email || !password) throw appError_('bad_request', 'Email and password are required.');
+  email = String(email).trim().toLowerCase();
+
+  var sheet = usersSheet_();
+  var data = sheet.getDataRange().getValues();
+  var rowIndex = -1;
+  var row = null;
+
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === email) {
+      rowIndex = i + 1;
+      row = data[i];
+      break;
+    }
+  }
+
+  if (!row) throw appError_('invalid_credentials', 'Incorrect email or password.');
+
+  var name = row[1];
+  var role = row[2];
+  var salt = row[3];
+  var expectedHash = row[4];
+  var active = row[5];
+  var failedAttempts = Number(row[6]) || 0;
+  var lockedUntilStr = row[7];
+
+  if (!active) throw appError_('account_disabled', 'This account has been disabled.');
+
+  var now = new Date();
+  if (lockedUntilStr) {
+    var lockedUntil = new Date(lockedUntilStr);
+    if (now < lockedUntil) {
+      var minutesLeft = Math.ceil((lockedUntil.getTime() - now.getTime()) / 60000);
+      throw appError_('account_locked', 'Account locked due to failed attempts. Try again in ' + minutesLeft + ' minute(s).');
+    }
+  }
+
+  var candidateHash = hashPassword_(password, salt);
+  if (candidateHash !== expectedHash) {
+    failedAttempts++;
+    var updateRange = sheet.getRange(rowIndex, 7, 1, 2);
+    if (failedAttempts >= DEFAULTS.MAX_FAILED_ATTEMPTS) {
+      var lockExpires = new Date(now.getTime() + DEFAULTS.LOCKOUT_MINUTES * 60 * 1000);
+      updateRange.setValues([[failedAttempts, lockExpires.toISOString()]]);
+      appendLog_(email, 'LOGIN_LOCKED', '', '', 'Locked out after ' + failedAttempts + ' failed attempts');
+      throw appError_('account_locked', 'Too many failed attempts. Account locked for ' + DEFAULTS.LOCKOUT_MINUTES + ' minutes.');
+    } else {
+      updateRange.setValues([[failedAttempts, '']]);
+      appendLog_(email, 'LOGIN_FAILED', '', '', 'Failed login attempt (' + failedAttempts + ')');
+      throw appError_('invalid_credentials', 'Incorrect email or password.');
+    }
+  }
+
+  // Login successful: reset attempts and record timestamp
+  sheet.getRange(rowIndex, 7, 1, 4).setValues([[0, '', row[8], now.toISOString()]]);
+
+  var session = createSession_(email, name, role);
+  appendLog_(email, 'LOGIN_SUCCESS', '', '', 'Session started');
+
+  return {
+    sessionToken: session.token,
+    expiresAt: session.expiresAt,
+    user: { email: email, name: name, role: role }
+  };
+}
+
+function registerUser_(email, name, password, inviteCode) {
+  var mode = registrationMode_();
+  if (mode === 'off') {
+    throw appError_('registration_closed', 'Self-service registration is currently disabled.');
+  }
+
+  if (mode === 'invite') {
+    var requiredCode = PropertiesService.getScriptProperties().getProperty(PROP.REGISTRATION_CODE);
+    if (!requiredCode || String(inviteCode).trim() !== requiredCode.trim()) {
+      throw appError_('invalid_invite_code', 'Invalid or missing registration invite code.');
+    }
+  }
+
+  var allowedDomains = PropertiesService.getScriptProperties().getProperty(PROP.REGISTRATION_EMAIL_DOMAINS);
+  if (allowedDomains) {
+    var domains = allowedDomains.split(',').map(function (d) { return d.trim().toLowerCase(); });
+    var emailDomain = String(email).split('@')[1] || '';
+    if (domains.indexOf(emailDomain.toLowerCase()) === -1) {
+      throw appError_('domain_not_allowed', 'Email domain is not authorized for registration.');
+    }
+  }
+
+  var defaultRole = selfRegistrationRole_();
+  var user = createUser(email, name, password, defaultRole);
+  var session = createSession_(user.email, user.name, user.role);
+
+  appendLog_(user.email, 'REGISTRATION_SUCCESS', '', '', 'User registered via ' + mode + ' mode');
+
+  return {
+    sessionToken: session.token,
+    expiresAt: session.expiresAt,
+    user: user
+  };
+}
+
+/* ---------------------------------------------------------------------------
+ * 7. JOB DATA LAYER
+ * ------------------------------------------------------------------------ */
+
+function emptyRecordTemplate_() {
+  return {
+    recordId: '',
+    jobNumber: '',
+    jobName: '',
+    customerName: '',
+    email: '',
+    mobilePhone: '',
+    lossAddress: '',
+    carrier: '',
+    claimNumber: '',
+    status: 'Draft',
+    insurance: { roughEstimateAmount: '' },
+    financials: {
+      totalApprovedRcv: '',
+      deductible: '',
+      netClaimValue: 0,
+      downPayment: 0,
+      midProgressPayment: 0,
+      balancePayment: 0,
+      commenceDays: 10,
+      completeDays: 60
+    },
+    mortgage: { hasMortgage: false },
+    changeOrder: {
+      originalContractSum: '',
+      netPreviousChanges: '',
+      changeAmount: '',
+      addedDays: '',
+      changeType: 'increase',
+      isInsuranceRelated: false
+    },
+    checklist: {
+      depreciationAmount: '',
+      isSelfPay: false,
+      isProgramClaim: false,
+      hasCheckBeenSent: false,
+      isDepreciationWithheld: false,
+      hasDeductibleBeenCollected: 'No'
+    },
+    productionNotes: { notes: '' }
+  };
+}
+
+function saveJob_(user, jobData) {
+  if (user.role === 'viewer') {
+    throw appError_('forbidden', 'Viewer role does not have permission to save or update jobs.');
+  }
+  if (!jobData || typeof jobData !== 'object') {
+    throw appError_('bad_request', 'Job record payload is missing or invalid.');
+  }
+
+  var sheet = jobsSheet_();
+  var recordId = jobData.recordId || jobData.RecordId || Utilities.getUuid();
+  jobData.recordId = recordId;
+
+  var nowIso = new Date().toISOString();
+  var todayStr = nowIso.slice(0, 10);
+
+  // Look up existing row
+  var data = sheet.getDataRange().getValues();
+  var targetRow = -1;
+  var existingCreatedAt = todayStr;
+
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(recordId)) {
+      targetRow = i + 1;
+      existingCreatedAt = data[i][10] || todayStr;
+      break;
+    }
+  }
+
+  // Guard against exceeding the 50,000-character Google Sheets cell limit.
+  // Long free-text fields (Production Notes, Loss Description, etc.) can push
+  // the serialized record past it, which would fail the whole save.
+  var recordJson = JSON.stringify(jobData);
+  if (recordJson.length > 49000) {
+    throw appError_(
+      'record_too_large',
+      'Job record is ' + recordJson.length + ' characters, over the 50,000-character storage limit. Shorten the Production Notes or other long text fields.'
+    );
+  }
+
+  var rowValues = [
+    recordId,
+    jobData.jobNumber || jobData.JobNumber || '',
+    jobData.jobName || jobData.JobName || '',
+    jobData.customerName || jobData.CustomerName || '',
+    jobData.email || jobData.Email || '',
+    jobData.mobilePhone || jobData.MobilePhone || '',
+    jobData.lossAddress || jobData.LossAddress || '',
+    jobData.carrier || jobData.Carrier || '',
+    jobData.claimNumber || jobData.ClaimNumber || '',
+    jobData.status || jobData.Status || 'Draft',
+    targetRow !== -1 ? existingCreatedAt : todayStr,
+    nowIso,
+    user.email,
+    currentSchemaVersion_(),
+    recordJson,
+    false // Deleted
+  ];
+
+  if (targetRow !== -1) {
+    sheet.getRange(targetRow, 1, 1, rowValues.length).setValues([rowValues]);
+    appendLog_(user.email, 'JOB_UPDATED', recordId, rowValues[1], 'Job updated');
+  } else {
+    sheet.appendRow(rowValues);
+    appendLog_(user.email, 'JOB_CREATED', recordId, rowValues[1], 'New job record added');
+  }
+
+  return jobData;
+}
+
+function getJob_(user, recordId) {
+  if (!recordId) throw appError_('bad_request', 'recordId is required.');
+  var sheet = jobsSheet_();
+  var data = sheet.getDataRange().getValues();
+
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(recordId)) {
+      var isDeleted = data[i][15] === true || String(data[i][15]).toUpperCase() === 'TRUE';
+      if (isDeleted) throw appError_('not_found', 'Job record has been deleted.');
+
+      var jsonStr = data[i][14];
+      try {
+        return JSON.parse(jsonStr);
+      } catch (err) {
+        throw appError_('data_corrupt', 'Stored JSON could not be parsed: ' + err);
+      }
+    }
+  }
+  throw appError_('not_found', 'Job record not found.');
+}
+
+function listJobs_(user, options) {
+  options = options || {};
+  var sheet = jobsSheet_();
+  var data = sheet.getDataRange().getValues();
+  var jobs = [];
+
+  for (var i = 1; i < data.length; i++) {
+    var isDeleted = data[i][15] === true || String(data[i][15]).toUpperCase() === 'TRUE';
+    if (isDeleted && !options.includeDeleted) continue;
+
+    var recordId = data[i][0];
+    if (!recordId) continue;
+
+    var item = {
+      recordId: recordId,
+      jobNumber: data[i][1],
+      jobName: data[i][2],
+      customerName: data[i][3],
+      email: data[i][4],
+      mobilePhone: data[i][5],
+      lossAddress: data[i][6],
+      carrier: data[i][7],
+      claimNumber: data[i][8],
+      status: data[i][9],
+      createdAt: data[i][10],
+      updatedAt: data[i][11],
+      updatedBy: data[i][12],
+      deleted: isDeleted
+    };
+
+    if (options.fullRecords) {
+      try {
+        item.record = JSON.parse(data[i][14]);
+      } catch (e) {
+        item.record = null;
+      }
+    }
+    jobs.push(item);
+  }
+  return jobs;
+}
+
+function deleteJob_(user, recordId) {
+  if (user.role === 'viewer') {
+    throw appError_('forbidden', 'Viewer role cannot delete jobs.');
+  }
+  if (!recordId) throw appError_('bad_request', 'recordId is required.');
+
+  var sheet = jobsSheet_();
+  var data = sheet.getDataRange().getValues();
+
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(recordId)) {
+      sheet.getRange(i + 1, 12).setValue(new Date().toISOString()); // UpdatedAt
+      sheet.getRange(i + 1, 13).setValue(user.email);             // UpdatedBy
+      sheet.getRange(i + 1, 16).setValue(true);                   // Deleted
+      appendLog_(user.email, 'JOB_DELETED', recordId, String(data[i][1]), 'Job soft-deleted');
+      return { recordId: recordId, deleted: true };
+    }
+  }
+  throw appError_('not_found', 'Job record not found.');
+}
+
+/* ---------------------------------------------------------------------------
+ * 8. AUDIT LOGGING & UTILITIES
+ * ------------------------------------------------------------------------ */
+
+function appendLog_(userEmail, action, recordId, jobNumber, detail) {
+  try {
+    var sheet = logSheet_();
+    if (!sheet) return;
+    sheet.appendRow([
+      new Date().toISOString(),
+      userEmail || 'ANONYMOUS',
+      action || '',
+      recordId || '',
+      jobNumber || '',
+      detail || ''
+    ]);
+  } catch (err) {
+    Logger.log('Audit log failure: ' + err);
+  }
+}
+
+function currentSchemaVersion_() {
+  var props = PropertiesService.getScriptProperties();
+  return Number(props.getProperty(PROP.SCHEMA_VERSION)) || DEFAULTS.SCHEMA_VERSION;
+}
+
+/* ---------------------------------------------------------------------------
+ * 9. SELF TEST & DIAGNOSTICS
+ * ------------------------------------------------------------------------ */
+
+function selfTest() {
+  Logger.log('Starting Self-Test verification...');
+  ensureDatabaseReady_();
+
+  var testEmail = 'selftest.' + new Date().getTime() + '@example.com';
+  var testPass = 'SelfTestPass123!';
+
+  // 1. Create User
+  var user = createUser(testEmail, 'Self-Test Operator', testPass, 'editor');
+  if (!user || user.email !== testEmail) throw new Error('SelfTest: Failed to create user.');
+
+  // 2. Login
+  var loginResult = loginUser_(testEmail, testPass);
+  if (!loginResult.sessionToken) throw new Error('SelfTest: Login did not return sessionToken.');
+
+  // 3. Save Job
+  var template = emptyRecordTemplate_();
+  template.jobNumber = 'TEST-001';
+  template.jobName = 'Self-Test Drying Phase';
+  template.customerName = 'Test Property';
+  template.status = 'Draft';
+
+  var saved = saveJob_(loginResult.user, template);
+  if (!saved.recordId) throw new Error('SelfTest: Job save failed to produce recordId.');
+
+  // 4. Retrieve Job
+  var fetched = getJob_(loginResult.user, saved.recordId);
+  if (fetched.jobName !== 'Self-Test Drying Phase') throw new Error('SelfTest: Fetched job mismatch.');
+
+  // 5. Delete Job
+  var deleted = deleteJob_(loginResult.user, saved.recordId);
+  if (!deleted.deleted) throw new Error('SelfTest: Job deletion failed.');
+
+  // 6. Cleanup
+  removeUser_(testEmail);
+  cleanupSessions();
+
+  Logger.log('=============================');
+  Logger.log('>>> SELF TEST RESULT: PASS <<<');
+  Logger.log('=============================');
+  return 'PASS';
 }

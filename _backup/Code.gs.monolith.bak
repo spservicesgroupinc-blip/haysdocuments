@@ -865,11 +865,14 @@ function timingSafeEqual_(a, b) {
 function hashPassword_(password, salt, iterations) {
   var rounds = Number(iterations) > 0 ? Number(iterations) : DEFAULTS.PASSWORD_ITERATIONS;
   var key = String(salt || '');
-  var bytes = Utilities.computeHmacSha256Signature(String(password), key);
+  // computeHmacSha256Signature only accepts (String, String) or (Byte[], Byte[]).
+  // Convert each round's bytes to hex so the next round passes a String, not a
+  // Byte[] (number[]), which the V8 runtime rejects with a signature mismatch.
+  var hex = bytesToHex_(Utilities.computeHmacSha256Signature(String(password), key));
   for (var i = 1; i < rounds; i++) {
-    bytes = Utilities.computeHmacSha256Signature(bytes, key);
+    hex = bytesToHex_(Utilities.computeHmacSha256Signature(hex, key));
   }
-  return bytesToHex_(bytes);
+  return hex;
 }
 
 /** Signed bytes -> lowercase hex. */

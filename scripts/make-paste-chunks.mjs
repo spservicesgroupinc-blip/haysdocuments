@@ -12,9 +12,15 @@
  * Safe to re-run: it rebuilds src/apps-script/paste-chunks/ every time.
  */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
 
-const DIR = 'C:/Desktop/src/apps-script';
+// Resolve against this script, never a hardcoded absolute path. An earlier
+// version pointed at C:/Desktop/src/apps-script, so it happily rebuilt the
+// chunks from a stale copy while the repo's Code.gs moved on - which surfaces
+// later as a "someFunction_ is not defined" error inside the Apps Script editor.
+const here = dirname(fileURLToPath(import.meta.url));
+const DIR = resolve(here, '..', 'src', 'apps-script');
 const SOURCE = join(DIR, 'Code.gs');
 const OUT = join(DIR, 'paste-chunks');
 

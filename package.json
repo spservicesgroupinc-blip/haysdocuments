@@ -17,11 +17,12 @@
     "lint": "tsc --noEmit",
     "apps:ascii": "tsx scripts/check-appsscript-ascii.ts",
     "apps:chunks": "node scripts/make-paste-chunks.mjs",
+    "apps:paste": "node scripts/make-paste-file.mjs",
     "apps:test": "tsx scripts/test-apps-script.ts",
     "apps:register": "tsx scripts/test-registration.ts",
     "parser:test": "tsx scripts/test-intake-parser.ts",
     "spans:test": "tsx scripts/test-pdf-spans.ts",
-    "verify": "npm run lint && npm run apps:ascii && npm run apps:test && npm run apps:register && npm run parser:test && npm run build"
+    "verify": "npm run lint && npm run apps:ascii && npm run apps:paste && npm run apps:test && npm run apps:register && npm run parser:test && npm run build"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

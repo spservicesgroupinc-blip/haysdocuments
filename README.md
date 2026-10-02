@@ -87,9 +87,14 @@ connection returns (last write wins; a notice appears when the server copy moved
 
 ## Known issues
 
-- `npm run apps:test` (and therefore `npm run verify`) currently fails: `apps-script/Code.gs`
-  (1,312 lines) diverged from the test suite and `apps-script/paste-chunks/` (~2,410 lines) —
-  `normalizeRecord_`/`oneOf_` exist only in `_backup/Code.gs.monolith.bak` and the chunks.
-  Reconcile `Code.gs` with the backup before deploying backend changes.
+- `npm run apps:test` (and therefore `npm run verify`) still fails: the test harness
+  `scripts/test-apps-script.ts` targets the **superseded** backend API. It calls helpers such as
+  `normalizeRecord_` and `oneOf_`, which exist only in `_backup/Code.gs.monolith.bak` and in the
+  six-file split. The live backend is the single file `src/apps-script/Code.gs` (1,324 lines),
+  which implements the HTTP actions the front-end uses and needs no porting of its own — the
+  harness does.
+- Do **not** paste `_backup/apps-script-six-file/*.gs` into the Apps Script editor; those six
+  files are stale and only work if all six are present. See
+  `_backup/apps-script-six-file/OBSOLETE.md`.
 - `npm run clean` references a `server.js` that has never existed (template leftover).
 
