@@ -1,7 +1,0 @@
-{
-  "name": "Remix Lore",
-  "description": "Transform your spoken stories and notes into full-length e-books using Gemini AI.",
-  "requestFramePermissions": [
-    "microphone"
-  ]
-}
