@@ -75,7 +75,7 @@ export const PwaStatus: React.FC = () => {
   };
 
   return (
-    <div className="fixed bottom-5 right-5 z-50 flex flex-col items-end gap-2 max-w-sm">
+    <div className="fixed inset-x-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] sm:inset-x-auto sm:right-5 sm:bottom-5 sm:max-w-sm z-50 flex flex-col items-stretch sm:items-end gap-2">
       {updateReady && (
         <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-lg flex items-start gap-3">
           <RotateCw className="w-4 h-4 text-red-600 mt-0.5 shrink-0" />

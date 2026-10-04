@@ -41,6 +41,23 @@
 }
 
 /* ---------------------------------------------------------------------------
+ * Mobile form controls
+ *
+ * iOS Safari auto-zooms into any <input>/<select>/<textarea> whose computed
+ * font-size is below 16px. This rule is intentionally un-layered so it outranks
+ * Tailwind's layered utility classes (text-[13px], text-sm, …) on small screens,
+ * while element-attached (inline) styles — used by the click-to-edit PDF overlay
+ * to match the on-page type size — still win and are left alone.
+ * ------------------------------------------------------------------------ */
+@media (max-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
  * Utilities
  * ------------------------------------------------------------------------ */
 
@@ -54,3 +71,19 @@
   }
 }
 
+/* Safe-area padding for notched phones in standalone / PWA mode. */
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@utility pl-safe {
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+@utility pr-safe {
+  padding-right: env(safe-area-inset-right, 0px);
+}

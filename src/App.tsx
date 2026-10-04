@@ -814,8 +814,8 @@ export default function App() {
 
       {/* Status toast */}
       {statusNotification && (
-        <div className="fixed top-20 right-5 z-50 animate-in slide-in-from-top-2 duration-200">
-          <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-lg max-w-sm">
+        <div className="fixed top-[calc(5rem+env(safe-area-inset-top))] inset-x-4 sm:inset-x-auto sm:right-5 z-50 animate-in slide-in-from-top-2 duration-200">
+          <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-lg w-full sm:w-auto sm:max-w-sm">
             <span
               className={`mt-1 w-2 h-2 rounded-full shrink-0 ${
                 statusNotification.type === 'success'

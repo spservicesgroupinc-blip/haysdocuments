@@ -78,11 +78,15 @@ export const Navbar: React.FC<NavbarProps> = ({
     : 'Saved — save again to overwrite';
 
   return (
-    <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200">
+    <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 pt-safe">
       <div className="max-w-[1400px] mx-auto px-5">
         <div className="flex items-center justify-between gap-4 h-16">
           {/* Brand */}
-          <BrandLogo size={34} sublabel="Restoration Document Suite" />
+          <BrandLogo
+            size={34}
+            sublabel="Restoration Document Suite"
+            sublabelClassName="hidden sm:block"
+          />
 
           {/* Job context */}
           <div className="hidden lg:flex items-center gap-2 min-w-0 rounded-lg border border-slate-200 bg-slate-50/80 px-3 h-9">

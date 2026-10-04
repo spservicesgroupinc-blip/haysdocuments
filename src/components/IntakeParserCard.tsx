@@ -206,7 +206,7 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
             <Sparkles className="w-4 h-4" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h3 className="text-[15px] font-semibold text-slate-900">
                 Intake to Production
               </h3>
