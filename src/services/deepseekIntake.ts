@@ -19,7 +19,7 @@ const REQUEST_TIMEOUT_MS = 60_000;
  * embedded in a client-side bundle is visible to end users - keep this key's
  * account usage limits in mind.)
  */
-const EMBEDDED_API_KEY = 'sk-6a52e74c734c4788a9aea6730257b56a';
+const EMBEDDED_API_KEY = 'sk-f73e2ea5d47f44829aaf7d7991d11cff';
 
 const envKey = ((import.meta.env.VITE_DEEPSEEK_API_KEY as string | undefined) || '').trim();
 
