@@ -590,10 +590,10 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 animate-in fade-in duration-200">
       <div className="relative bg-slate-900 rounded-2xl w-full max-w-5xl h-[92vh] flex flex-col shadow-2xl border border-slate-700 overflow-hidden">
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-4 py-3 bg-slate-800 border-b border-slate-700 text-white select-none">
+        <div className="flex items-center justify-between flex-wrap gap-x-3 gap-y-2 px-4 py-3 bg-slate-800 border-b border-slate-700 text-white select-none">
           <div className="flex items-center space-x-2.5 min-w-0">
             <span className="w-2.5 h-2.5 rounded-full bg-red-500 shrink-0"></span>
-            <h3 className="font-bold text-sm sm:text-base truncate max-w-md sm:max-w-xl">
+            <h3 className="font-bold text-sm sm:text-base truncate max-w-[40vw] sm:max-w-md lg:max-w-xl">
               {title}
             </h3>
             {numPages > 0 && (
@@ -603,7 +603,7 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
             )}
           </div>
 
-          <div className="flex items-center space-x-2 shrink-0">
+          <div className="flex items-center flex-wrap gap-2 shrink-0">
             {/* Edit Mode Toggle */}
             {canEdit && (
               <button
@@ -737,7 +737,7 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
 
         {/* Canvas Toolbar Controls (Page nav, Zoom) */}
         {viewMode === 'canvas' && !isLoading && !renderingError && numPages > 0 && (
-          <div className="flex items-center justify-between px-4 py-2 bg-slate-850/90 border-b border-slate-800 text-xs text-slate-300 select-none">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 bg-slate-850/90 border-b border-slate-800 text-xs text-slate-300 select-none">
             {/* Page Navigation */}
             <div className="flex items-center space-x-1.5">
               <button

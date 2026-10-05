@@ -2,11 +2,11 @@
  * Generates the single copy-paste payload for the Apps Script editor.
  *
  * Why: the backend is one file (src/apps-script/Code.gs), but that folder also
- * holds appsscript.json, README.md and paste-chunks/, and _backup/ holds
- * superseded splits that still look deployable. Pasting the wrong one surfaces
- * as "someFunction_ is not defined" at runtime, because Apps Script merges a
- * project's .gs files into one global scope - so a file that references helpers
- * living in a file you did not paste fails only when that line is reached.
+ * holds appsscript.json, README.md and paste-chunks/, which are not the payload.
+ * Pasting the wrong one surfaces as "someFunction_ is not defined" at runtime,
+ * because Apps Script merges a project's .gs files into one global scope - so a
+ * file that references helpers living in a file you did not paste fails only
+ * when that line is reached.
  *
  * This writes ONE obvious file - src/apps-script/PASTE-INTO-APPS-SCRIPT.txt -
  * and proves it is pure ASCII, byte-identical to Code.gs, and ends on a lone "}".

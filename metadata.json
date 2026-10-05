@@ -1,7 +1,0 @@
-{
-  "name": "Hays + Sons Restoration Document Automation",
-  "description": "Single-entry document automation engine to capture job data and generate PDF contracts, reports, and production packets.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
-
