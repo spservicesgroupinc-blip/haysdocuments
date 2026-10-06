@@ -217,14 +217,18 @@ const InlineSpanEditor: React.FC<InlineSpanEditorProps> = ({
   onFieldChange,
   onClose,
 }) => {
+  const pageWidth = 612 * scale;
+  const editorWidth = Math.min(pageWidth - 4, Math.max(span.width * scale, field?.parts?.length ? 240 : 140));
+  const editorLeft = Math.max(2, Math.min(span.x * scale, pageWidth - editorWidth - 2));
+  const minimumFontSize = window.matchMedia('(max-width: 640px)').matches ? 16 : 0;
   if (field?.parts && field.parts.length > 0) {
     return (
       <div
         className="absolute z-20 bg-white rounded-lg shadow-2xl ring-2 ring-red-600 p-2.5 flex flex-col gap-2"
         style={{
-          left: span.x * scale,
+          left: editorLeft,
           top: span.y * scale,
-          width: Math.max(span.width * scale, 240),
+          width: editorWidth,
         }}
       >
         <div className="flex items-center justify-between gap-2">
@@ -250,7 +254,7 @@ const InlineSpanEditor: React.FC<InlineSpanEditorProps> = ({
               prefill={lookupJobValue(jobData, part.field)}
               autoFocus={idx === 0}
               className="w-full bg-white border border-slate-300 rounded px-1.5 py-1 text-sm text-[#1A1A1A] outline-none focus:border-red-600 focus:ring-2 focus:ring-red-600/40"
-              editorStyle={{ fontFamily: 'Helvetica, Arial, sans-serif', fontSize: 13 }}
+              editorStyle={{ fontFamily: 'Helvetica, Arial, sans-serif', fontSize: Math.max(13, minimumFontSize) }}
               onCommit={(v) => onFieldChange?.(part.field, v)}
             />
           </div>
@@ -260,14 +264,14 @@ const InlineSpanEditor: React.FC<InlineSpanEditorProps> = ({
   }
 
   const kind: PdfFieldKind = field?.kind ?? 'text';
-  const fontSize = span.size * scale;
+  const fontSize = Math.max(span.size * scale, minimumFontSize);
   return (
     <div
       className="absolute z-20"
       style={{
-        left: span.x * scale,
+        left: editorLeft,
         top: span.y * scale,
-        width: Math.max(span.width * scale, 140),
+        width: editorWidth,
         fontFamily: 'Helvetica, Arial, sans-serif',
         fontSize,
         fontWeight: span.bold ? 700 : 400,
@@ -310,6 +314,8 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
   const [docVersion, setDocVersion] = useState<number>(0);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [scale, setScale] = useState<number>(1.25);
+  const [fitToWidth, setFitToWidth] = useState(true);
+  const [viewerWidth, setViewerWidth] = useState(0);
   const [renderingError, setRenderingError] = useState<string | null>(null);
   const [isPageRendering, setIsPageRendering] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<'canvas' | 'native'>('canvas');
@@ -321,8 +327,31 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
   const [drawerInlineKey, setDrawerInlineKey] = useState<string | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const viewerRef = useRef<HTMLDivElement | null>(null);
   const pdfDocRef = useRef<any>(null);
   const renderTaskRef = useRef<any>(null);
+
+  // Measure the actual viewer so opening and rotating a phone both fit the page.
+  useEffect(() => {
+    if (!isOpen || !viewerRef.current) return;
+    setFitToWidth(true);
+    const observer = new ResizeObserver(([entry]) => {
+      setViewerWidth(entry.contentRect.width);
+    });
+    observer.observe(viewerRef.current);
+    return () => observer.disconnect();
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !fitToWidth || !viewerWidth || !pdfDocRef.current) return;
+    let cancelled = false;
+    void pdfDocRef.current.getPage(currentPage).then((page: any) => {
+      if (!cancelled) {
+        setScale(Math.min(1.25, Math.max(1, viewerWidth - 4) / page.getViewport({ scale: 1 }).width));
+      }
+    });
+    return () => { cancelled = true; };
+  }, [isOpen, fitToWidth, viewerWidth, currentPage, docVersion]);
 
   // Reset state when modal opens or closes or new bytes arrive
   useEffect(() => {
@@ -588,7 +617,7 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 animate-in fade-in duration-200">
-      <div className="relative bg-slate-900 rounded-2xl w-full max-w-5xl h-[92vh] flex flex-col shadow-2xl border border-slate-700 overflow-hidden">
+      <div className="relative bg-slate-900 rounded-2xl w-full max-w-5xl h-[calc(100dvh-1rem)] sm:h-[92dvh] flex flex-col shadow-2xl border border-slate-700 overflow-hidden">
         {/* Modal Header */}
         <div className="flex items-center justify-between flex-wrap gap-x-3 gap-y-2 px-4 py-3 bg-slate-800 border-b border-slate-700 text-white select-none">
           <div className="flex items-center space-x-2.5 min-w-0">
@@ -774,7 +803,7 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
             <div className="flex items-center space-x-2">
               <button
                 type="button"
-                onClick={() => setScale((s) => Math.max(0.75, Number((s - 0.2).toFixed(2))))}
+                onClick={() => { setFitToWidth(false); setScale((s) => Math.max(0.25, Number((s - 0.2).toFixed(2)))); }}
                 className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition"
                 title="Zoom Out"
               >
@@ -787,7 +816,7 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
 
               <button
                 type="button"
-                onClick={() => setScale((s) => Math.min(2.5, Number((s + 0.2).toFixed(2))))}
+                onClick={() => { setFitToWidth(false); setScale((s) => Math.min(2.5, Number((s + 0.2).toFixed(2)))); }}
                 className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition"
                 title="Zoom In"
               >
@@ -796,11 +825,11 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
 
               <button
                 type="button"
-                onClick={() => setScale(1.25)}
+                onClick={() => setFitToWidth(true)}
                 className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-300 transition"
-                title="Reset Zoom"
+                title="Fit page to screen"
               >
-                Reset
+                Fit
               </button>
             </div>
           </div>
@@ -808,7 +837,7 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
 
         {/* Modal Body / Viewer */}
         <div className="flex-1 relative overflow-hidden">
-          <div className="h-full bg-slate-950 relative flex items-center justify-center overflow-auto p-4">
+          <div ref={viewerRef} className="h-full bg-slate-950 relative overflow-auto p-2 sm:p-4">
             {isLoading ? (
               <div className="flex flex-col items-center justify-center text-slate-400 space-y-3">
                 <Loader2 className="w-9 h-9 animate-spin text-red-500" />
@@ -816,7 +845,7 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
                 <p className="text-xs text-slate-500">Compiling vectors, branding, and legal clauses</p>
               </div>
             ) : viewMode === 'canvas' && !renderingError ? (
-              <div className="flex flex-col items-center justify-start min-h-full py-2">
+              <div className="flex flex-col items-center justify-start w-max min-w-full min-h-full py-2">
                 <div className="relative">
                   <div className="shadow-2xl rounded-sm overflow-hidden bg-white border border-slate-700/80 transition-all">
                     <canvas ref={canvasRef} className="block mx-auto" />

@@ -833,7 +833,7 @@ export default function App() {
       )}
 
       {/* Main */}
-      <main className="flex-1 w-full max-w-[1400px] mx-auto px-5 py-6">
+      <main className="flex-1 w-full min-w-0 max-w-[1400px] mx-auto px-3 py-4 sm:px-5 sm:py-6">
         {/* Compact section menu below the lg breakpoint */}
         <MobileSectionNav
           activeTab={activeTab}
@@ -853,7 +853,7 @@ export default function App() {
           />
 
           {/* Section workspace */}
-          <div className="flex-1 min-w-0 space-y-6">
+          <div className="flex-1 min-w-0 space-y-4 sm:space-y-6">
             {/* The intake parser always sits at the top — paste an intake to refresh every section. */}
             <IntakeParserCard
               onApplyIntake={handleApplyIntake}
@@ -972,7 +972,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="border-t border-slate-200 mt-auto">
-        <div className="max-w-[1400px] mx-auto px-5 py-6 flex flex-col sm:flex-row items-center justify-between gap-2 text-[12px] text-slate-500">
+        <div className="max-w-[1400px] mx-auto px-3 sm:px-5 py-6 flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-left text-[12px] text-slate-500">
           <p className="font-medium text-slate-600">
             Hays &amp; Sons Complete Restoration — Fort Wayne Division
           </p>

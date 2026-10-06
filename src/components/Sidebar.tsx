@@ -62,7 +62,7 @@ const NavItem: React.FC<NavItemProps> = ({
   const base =
     variant === 'sidebar'
       ? 'flex w-full items-center gap-2.5 px-2.5 h-10 rounded-lg text-[13px] font-medium border transition-colors'
-      : 'inline-flex items-center gap-2 px-3 h-9 rounded-lg text-[13px] font-medium border transition-colors whitespace-nowrap';
+      : 'inline-flex shrink-0 items-center gap-2 px-3 h-9 rounded-lg text-[13px] font-medium border transition-colors whitespace-nowrap';
 
   return (
     <button
@@ -176,8 +176,23 @@ export const MobileSectionNav: React.FC<MobileSectionNavProps> = ({
   onNavigate,
   savedJobsCount,
 }) => (
-  <div className="lg:hidden mb-5 -mx-5 px-5 overflow-x-auto no-scrollbar">
-    <nav className="flex gap-1 min-w-max" aria-label="Workspace navigation">
+  <div className="lg:hidden mb-4 min-w-0">
+    <label className="block sm:hidden text-xs font-semibold text-slate-600 mb-1.5" htmlFor="workspace-section">
+      Workspace section
+    </label>
+    <select
+      id="workspace-section"
+      value={activeTab}
+      onChange={(event) => onNavigate(event.target.value as WorkspaceTab)}
+      className="sm:hidden w-full min-w-0 min-h-11 rounded-xl border border-slate-300 bg-white px-3 text-slate-900 font-medium"
+    >
+      {WORKSPACE_SECTIONS.map((section) => (
+        <option key={section.id} value={section.id}>
+          {section.label}{section.id === 'home' && savedJobsCount > 0 ? ` (${savedJobsCount})` : ''}
+        </option>
+      ))}
+    </select>
+    <nav className="hidden sm:flex gap-1 overflow-x-auto no-scrollbar" aria-label="Workspace navigation">
       {WORKSPACE_SECTIONS.map((section) => (
         <NavItem
           key={section.id}

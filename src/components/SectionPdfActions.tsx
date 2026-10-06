@@ -46,7 +46,7 @@ export const SectionPdfActions: React.FC<SectionPdfActionsProps> = ({
         {docs.map((doc) => {
           const isDownloading = downloadingId === doc.id;
           return (
-            <div key={doc.id} className="flex flex-wrap items-center justify-between gap-3">
+            <div key={doc.id} className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-3">
               <span className="inline-flex min-w-0 items-center gap-2 text-[12px] text-slate-500">
                 <FileText className="w-3.5 h-3.5 shrink-0 text-slate-400" />
                 <span className="truncate font-medium text-slate-600">{doc.label}</span>
@@ -54,7 +54,7 @@ export const SectionPdfActions: React.FC<SectionPdfActionsProps> = ({
                   {doc.code}
                 </span>
               </span>
-              <span className="flex shrink-0 items-center gap-2">
+              <span className="grid grid-cols-2 sm:flex shrink-0 items-center gap-2">
                 <button
                   type="button"
                   onClick={() => onPreview(doc)}

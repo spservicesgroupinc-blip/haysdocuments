@@ -20,7 +20,7 @@ export const SectionTeam: React.FC<SectionTeamProps> = ({
   onChange,
 }) => {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5">
+    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5">
       <div className="flex items-center gap-3 mb-5 pb-4 border-b border-slate-100">
         <div className="p-2 rounded-lg bg-slate-100 text-slate-500">
           <Users className="w-4 h-4" />

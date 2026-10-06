@@ -79,8 +79,8 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   return (
     <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 pt-safe">
-      <div className="max-w-[1400px] mx-auto px-5">
-        <div className="flex items-center justify-between gap-4 h-16">
+      <div className="max-w-[1400px] mx-auto px-3 sm:px-5">
+        <div className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 sm:gap-4 min-h-16 py-2 sm:py-0">
           {/* Brand */}
           <BrandLogo
             size={34}
@@ -128,6 +128,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               type="button"
               onClick={onOpenSavedCustomers}
+              aria-label="Open saved customers"
               title={databaseEmail ? `Saved customers — signed in as ${databaseEmail}` : 'Open the saved customers page'}
               className={`${BTN_BASE} h-9 px-3 border border-slate-200 text-slate-700 hover:bg-slate-50 hover:text-slate-900`}
             >
@@ -163,6 +164,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 type="button"
                 onClick={() => setIsMenuOpen((open) => !open)}
                 title="Account and job actions"
+                aria-label="Account and job actions"
                 aria-expanded={isMenuOpen}
                 className={`${BTN_BASE} h-9 w-9 border border-slate-200 text-slate-600 hover:bg-slate-50`}
               >
@@ -178,7 +180,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     onClick={() => setIsMenuOpen(false)}
                     className="fixed inset-0 z-40 cursor-default"
                   />
-                  <div className="absolute right-0 top-11 z-50 w-72 rounded-xl border border-slate-200 bg-white shadow-lg overflow-hidden">
+                  <div className="absolute right-0 top-11 z-50 w-72 max-w-[calc(100vw-1.5rem)] rounded-xl border border-slate-200 bg-white shadow-lg overflow-hidden">
                     {/* Connection status */}
                     <div className="px-3.5 py-3 border-b border-slate-100">
                       <div className="flex items-start gap-2.5">

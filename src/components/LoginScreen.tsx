@@ -186,7 +186,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const isRegistering = mode === 'register';
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center px-5 py-10">
+    <div className="min-h-dvh bg-slate-50 flex flex-col items-center justify-center px-3 py-6 sm:px-5 sm:py-10">
       <div className="w-full max-w-[400px]">
         {/* Brand */}
         <div className="flex flex-col items-center mb-7">
@@ -195,7 +195,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         </div>
 
         {/* Card */}
-        <div className="bg-white rounded-xl border border-slate-200 p-6">
+        <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-6">
           <h2 className="text-[15px] font-semibold text-slate-900">
             {isRegistering ? 'Create account' : 'Sign in'}
           </h2>

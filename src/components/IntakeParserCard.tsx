@@ -199,7 +199,7 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
   };
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5 mb-6">
+    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 mb-6">
       <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 pb-4 border-b border-slate-100">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-slate-100 text-slate-500">
@@ -245,12 +245,12 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
 
       {/* Uploaded File Chip */}
       {uploadedFileInfo && (
-        <div className="mt-3 flex items-center justify-between px-3 py-1.5 bg-slate-100 border border-slate-200 rounded-lg text-xs">
-          <div className="flex items-center gap-2">
+        <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 py-1.5 bg-slate-100 border border-slate-200 rounded-lg text-xs">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
             <span className={`font-bold px-1.5 py-0.5 rounded text-[10px] ${uploadedFileInfo.isPdf ? 'bg-red-600 text-white' : 'bg-slate-700 text-white'}`}>
               {uploadedFileInfo.isPdf ? 'PDF DOCUMENT' : 'TEXT FILE'}
             </span>
-            <span className="font-semibold text-slate-800">{uploadedFileInfo.name}</span>
+            <span className="font-semibold text-slate-800 break-all">{uploadedFileInfo.name}</span>
             <span className="text-slate-500 text-[11px]">({uploadedFileInfo.sizeKb} KB)</span>
           </div>
           <span className="text-[11px] text-emerald-700 font-medium flex items-center gap-1">

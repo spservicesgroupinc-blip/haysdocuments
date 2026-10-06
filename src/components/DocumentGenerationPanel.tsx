@@ -191,7 +191,7 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
   };
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5 mt-8 mb-10">
+    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 mt-8 mb-10">
       {/* Header */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-100">
         <div>
@@ -278,7 +278,7 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
           </div>
         </div>
 
-        <div className="flex items-center gap-2 text-[11px] font-mono text-slate-600">
+        <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono text-slate-600">
           <span className="bg-white px-2 py-1 rounded border border-slate-200">
             RCV: {formatCurrency(jobData.financials.totalApprovedRcv)}
           </span>
@@ -321,7 +321,7 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
       )}
 
       {/* Complete packet */}
-      <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-5 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-5">
+      <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-3 sm:p-5 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-5">
         <div className="flex items-start gap-3.5 min-w-0">
           <div className="w-10 h-10 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0">
             <FileCheck2 className="w-5 h-5 text-slate-500" />

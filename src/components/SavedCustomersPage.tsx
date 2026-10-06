@@ -77,7 +77,7 @@ export const SavedCustomersPage: React.FC<SavedCustomersPageProps> = ({
   return (
     <section className="bg-white rounded-xl border border-slate-200" aria-label="Saved customers">
       {/* Page header */}
-      <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div className="px-3 sm:px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-red-50 text-red-600">
             <Database className="w-4 h-4" />
@@ -103,7 +103,7 @@ export const SavedCustomersPage: React.FC<SavedCustomersPageProps> = ({
       </div>
 
       {/* Toolbar */}
-      <div className="px-5 py-3 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center gap-3">
+      <div className="px-3 sm:px-5 py-3 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center gap-3">
         <div className="relative flex-1">
           <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
             <Search className="w-4 h-4" />
@@ -132,7 +132,7 @@ export const SavedCustomersPage: React.FC<SavedCustomersPageProps> = ({
       </div>
 
       {/* Body */}
-      <div className="px-5 py-4 min-h-[240px]">
+      <div className="px-3 sm:px-5 py-4 min-h-[240px]">
         {!isDatabaseConfigured && (
           <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900">
             <CloudOff className="w-5 h-5 shrink-0 mt-0.5" />
@@ -273,7 +273,7 @@ export const SavedCustomersPage: React.FC<SavedCustomersPageProps> = ({
       </div>
 
       {/* Footer */}
-      <div className="px-5 py-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] text-slate-500">
+      <div className="px-3 sm:px-5 py-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] text-slate-500">
         <span>
           {isDatabaseConfigured
             ? `${visible.length} of ${jobs.length} saved job${jobs.length === 1 ? '' : 's'}`

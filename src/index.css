@@ -23,6 +23,7 @@
   }
 
   body {
+    margin: 0;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
@@ -54,6 +55,36 @@
   select,
   textarea {
     font-size: 16px;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  input:not([type='checkbox']):not([type='radio']):not([type='file']),
+  select {
+    min-height: 44px;
+  }
+
+  button,
+  label:has(input[type='file']) {
+    min-height: 44px;
+  }
+
+  input[type='checkbox'],
+  input[type='radio'] {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+  }
+
+  /* Allow long customer names, emails and imported file names to fit cards. */
+  main p,
+  main h3,
+  main h5 {
+    overflow-wrap: anywhere;
+  }
+
+  main .grid > * {
+    min-width: 0;
   }
 }
 
