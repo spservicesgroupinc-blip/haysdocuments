@@ -230,3 +230,56 @@ test('a transaction aborted after request success is reported as a failed local 
     assert.equal((await engine.storage.getOutboxOps()).length, 0);
   } finally { IDBObjectStore.prototype.put = original; }
 });
+
+test('a failed device autosave can retry without requiring the user to type again', async (t) => {
+  const engine = setup(t, (body) => reply({ job: body.draft.job, updatedAt: '2026-10-06T12:00:00Z' }));
+  const original = IDBObjectStore.prototype.put;
+  IDBObjectStore.prototype.put = function (...args: Parameters<typeof original>) {
+    const request = original.apply(this, args);
+    request.addEventListener('success', () => request.transaction!.abort());
+    return request;
+  };
+  try {
+    engine.scheduleDraftSave(job, job.recordId);
+    await assert.rejects(engine.flushDraftSave());
+    assert.equal(engine.getSyncState().draftStatus, 'error');
+    assert.equal((await engine.storage.getOutboxOps()).length, 0);
+  } finally { IDBObjectStore.prototype.put = original; }
+  await engine.syncNow();
+  assert.equal(engine.getSyncState().draftStatus, 'saved');
+  assert.equal((await engine.storage.getDraft(owner)).job.recordId, job.recordId);
+  assert.equal(engine.getSyncState().lastError, null);
+});
+
+test('a delayed customer list cannot replace a job saved and synced after the read started', async (t) => {
+  const engine = setup(t, () => reply(job));
+  const storage = engine.storage;
+  const summary = { recordId: job.recordId, customerName: 'Stale server name' };
+  const server = { recordId: job.recordId, summary, record: job, syncState: 'synced',
+    baseUpdatedAt: null, locallyUpdatedAt: '2026-10-06T12:00:00Z' };
+  const latest = { ...server, record: { ...job, customer: { ...job.customer, customerName: 'Newly synced name' } }, locallyUpdatedAt: '2026-10-06T12:01:00Z' };
+  await storage.putMirrorJob(latest);
+  const startedAt = Date.parse('2026-10-06T12:00:30Z');
+  const cached = await storage.cacheServerMirrorJob(server, startedAt);
+  assert.equal(cached.record.customer.customerName, 'Newly synced name');
+  await storage.deleteSyncedMirrorJob(job.recordId, startedAt);
+  assert.ok(await storage.getMirrorJob(job.recordId));
+});
+
+test('session expiry returns to sign-in without losing the pending save', async (t) => {
+  const engine = setup(t, () => new Response(JSON.stringify({ ok: false, code: 'session_expired', error: 'Sign in again.' })));
+  await engine.saveJobOffline(job);
+  await engine.flushOutboxNow();
+  assert.equal((await engine.storage.getOutboxOps()).length, 1);
+  assert.equal(engine.getSyncState().errorCode, 'session_expired');
+  await assert.rejects(engine.saveJobOffline(job), /Sign in to save/);
+});
+
+test('a busy backend keeps edits queued and schedules a delayed retry', async (t) => {
+  const engine = setup(t, () => new Response(JSON.stringify({ ok: false, code: 'busy', error: 'Database is busy.' })));
+  await engine.saveJobOffline(job);
+  await engine.flushOutboxNow();
+  assert.equal((await engine.storage.getOutboxOps()).length, 1);
+  assert.equal(engine.getSyncState().errorCode, 'busy');
+  assert.ok(engine.getSyncState().nextRetryAt > Date.now());
+});

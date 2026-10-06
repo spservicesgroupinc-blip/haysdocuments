@@ -33,7 +33,6 @@ import {
   getMirrorJob,
   getOutboxOps,
   outboxOpIsMine,
-  putDraft,
   queueDraftOutbox,
   summarizeOutbox,
   updateOutboxOp,
@@ -42,6 +41,7 @@ import {
   completeOutboxOp,
   cacheServerMirrorJob,
   deleteSyncedMirrorJob,
+  cacheServerDraft,
   type MirrorJob,
   type OutboxOp,
   type SyncJobSummary,
@@ -907,18 +907,19 @@ export async function restoreDraft(onLocal?: (draft: RestoredDraft) => void): Pr
       serverUpdatedAt: server.updatedAt,
       updatedBy: server.updatedBy,
     };
+    let restored = mirrored;
     try {
-      await putDraft(mirrored);
+      restored = await cacheServerDraft(mirrored, local?.savedAt);
     } catch {
       /* cache-only write */
     }
 
     return {
-      job: mirrored.job,
-      recordId: mirrored.recordId,
+      job: restored.job,
+      recordId: restored.recordId,
       updatedBy: server.updatedBy,
       updatedAt: server.updatedAt,
-      origin: 'server',
+      origin: restored === mirrored ? 'server' : 'local',
     };
   } catch (err) {
     if (isDraftReadMiss(err)) return localResult;

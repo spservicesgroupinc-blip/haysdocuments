@@ -317,6 +317,23 @@ export function putDraft(draft: WorkspaceDraft): Promise<void> {
   return runRequest<void>(DRAFTS, 'readwrite', (store) => store.put(draft));
 }
 
+export async function cacheServerDraft(draft: WorkspaceDraft, expectedSavedAt?: number): Promise<WorkspaceDraft> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DRAFTS, 'readwrite');
+    const store = tx.objectStore(DRAFTS);
+    let result = draft;
+    const request = store.get(draft.id);
+    request.onsuccess = () => {
+      const current = request.result as WorkspaceDraft | undefined;
+      if (current && current.savedAt !== expectedSavedAt) result = current;
+      else store.put(draft);
+    };
+    tx.oncomplete = () => resolve(result);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
 export async function getDraft(owner?: string | null): Promise<WorkspaceDraft | undefined> {
   const draft = await runRequest<WorkspaceDraft | undefined>(DRAFTS, 'readonly', (store) => store.get(draftKey(owner)));
   if (draft || !owner) return draft;
