@@ -136,7 +136,9 @@ export const PwaStatus: React.FC = () => {
             <p className="text-[12px] text-slate-500 mt-0.5 leading-snug">
               {sync.online
                 ? sync.pendingCount > 0
-                  ? 'Saving to the customer database automatically.'
+                  ? sync.lastError
+                    ? 'Changes are saved on this device. Database sync will retry automatically.'
+                    : 'Saving to the customer database automatically.'
                   : `Sign in as ${sync.strandedOwner ?? 'the account that made them'} to send them to the customer database.`
                 : sync.pendingCount > 0
                   ? 'Changes are saved on this device and will sync when the connection returns.'

@@ -20,6 +20,7 @@
     "apps:paste": "node scripts/make-paste-file.mjs",
     "apps:test": "tsx scripts/test-apps-script.ts",
     "apps:test:drafts": "tsx scripts/test-apps-script-drafts.ts",
+    "database:test": "tsx --test scripts/test-database-transport.ts scripts/test-database-sync.ts",
     "apps:register": "tsx scripts/test-registration.ts",
     "parser:test": "tsx scripts/test-intake-parser.ts",
     "spans:test": "tsx scripts/test-pdf-spans.ts",

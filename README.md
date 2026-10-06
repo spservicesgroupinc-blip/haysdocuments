@@ -23,6 +23,13 @@ Copy `.env.example` to `.env.local` and set:
 
 Vite inlines `VITE_*` values at build time — restart `npm run dev` (or rebuild) after changes.
 
+If saving reports a non-JSON response, check the configured `/exec` URL first. The client
+normalizes copied links and Google account-specific URLs to the public deployment URL.
+Google sign-in pages, unavailable deployments and invalid responses produce separate
+instructions; failed writes stay queued on the device. After correcting the URL, rebuild
+the app, reload it (apply any pending app update), and select **Sync now**.
+Run `npm run database:test` to verify the save transport and response handling.
+
 ## Commands
 
 | Command | What it does |

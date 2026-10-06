@@ -9,6 +9,8 @@
  *    branch on the JSON envelope's `ok` field rather than `res.ok`.
  */
 import { RestorationJobData } from '../types/jobData';
+import { DatabaseError, normalizeDatabaseUrl, requestDatabase } from './appsScriptTransport';
+export { DatabaseError } from './appsScriptTransport';
 
 /** Lightweight row used by the job library list (no full record). */
 export interface JobSummary {
@@ -31,31 +33,9 @@ export interface JobSummary {
   record?: RestorationJobData;
 }
 
-interface Envelope<T> {
-  ok: boolean;
-  data?: T;
-  error?: string;
-  code?: string;
-  schemaVersion?: number;
-}
-
-/** Error carrying the backend's machine-readable code. */
-export class DatabaseError extends Error {
-  readonly code: string;
-
-  constructor(message: string, code = 'unknown') {
-    super(message);
-    this.name = 'DatabaseError';
-    this.code = code;
-  }
-}
-
-const REQUEST_TIMEOUT_MS = 30000;
-
 /** The configured Apps Script Web App URL, or null when not set up yet. */
 export function getDatabaseUrl(): string | null {
-  const url = (import.meta.env.VITE_APPS_SCRIPT_URL as string | undefined)?.trim();
-  return url && /^https:\/\/script\.google\.com\/macros\/s\/.+\/exec/.test(url) ? url : null;
+  return normalizeDatabaseUrl(import.meta.env.VITE_APPS_SCRIPT_URL as string | undefined);
 }
 
 export function isDatabaseConfigured(): boolean {
@@ -328,47 +308,7 @@ async function callApi<T>(action: string, payload: Record<string, unknown> = {})
     );
   }
 
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      // Must stay text/plain to avoid a CORS preflight that Apps Script cannot answer.
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action, ...payload }),
-      redirect: 'follow',
-      signal: controller.signal,
-    });
-  } catch (err: any) {
-    if (err?.name === 'AbortError') {
-      throw new DatabaseError('The database request timed out. Please try again.', 'timeout');
-    }
-    throw new DatabaseError(
-      'Could not reach the customer database. Check your connection and that the web app is deployed.',
-      'network_error'
-    );
-  } finally {
-    window.clearTimeout(timer);
-  }
-
-  const text = await response.text();
-  let envelope: Envelope<T>;
-  try {
-    envelope = JSON.parse(text) as Envelope<T>;
-  } catch {
-    throw new DatabaseError(
-      'The database returned an unreadable response. The Apps Script deployment may need to be redeployed.',
-      'bad_response'
-    );
-  }
-
-  if (!envelope.ok) {
-    throw new DatabaseError(envelope.error || 'The database rejected the request.', envelope.code || 'unknown');
-  }
-
-  return envelope.data as T;
+  return requestDatabase<T>(url, action, payload);
 }
 
 /** Unauthenticated liveness check. */

@@ -491,6 +491,8 @@ async function doFlush(): Promise<void> {
 
   patchState({ syncing: true });
   let conflictLine: string | null = null;
+  let hadFailure = false;
+  let publishedAny = false;
 
   try {
     const needsBaseCheck = ops.some((op) => op.type === 'save');
@@ -529,7 +531,10 @@ async function doFlush(): Promise<void> {
           await deleteJob(auth, op.recordId);
           await deleteMirrorJob(op.recordId);
         }
-        if (published) await deleteOutboxOp(op.id as number);
+        if (published) {
+          await deleteOutboxOp(op.id as number);
+          publishedAny = true;
+        }
         await refreshPendingState();
       } catch (err) {
         if (isNetworkish(err)) {
@@ -555,12 +560,17 @@ async function doFlush(): Promise<void> {
           continue;
         }
         // Rejected write (role, validation, …): keep it queued, report, continue.
+        hadFailure = true;
         await updateOutboxOp({ ...op, attempts: op.attempts + 1, lastError: errorMessage(err) });
         patchState({ lastError: errorMessage(err) });
+        // An invalid deployment response affects every operation. Keep the rest
+        // queued rather than sending more writes without acknowledgements.
+        if (err instanceof DatabaseError && err.code === 'bad_response') return;
       }
     }
 
-    patchState({ lastSyncAt: new Date().toISOString() });
+    if (publishedAny) patchState({ lastSyncAt: new Date().toISOString() });
+    if (!hadFailure) patchState({ lastError: null });
     if (conflictLine) {
       noticeConflict(`${conflictLine}. Your version was saved last — review it when convenient.`);
     }
