@@ -80,13 +80,19 @@ interface StoredSession {
 const SESSION_STORAGE_KEY = 'hays.db.session';
 
 let currentSession: StoredSession | null = null;
+const sessionListeners = new Set<(user: AppUser | null) => void>();
+
+export function subscribeSession(listener: (user: AppUser | null) => void): () => void {
+  sessionListeners.add(listener);
+  return () => { sessionListeners.delete(listener); };
+}
 
 function readStoredSession(): StoredSession | null {
   try {
     const raw = localStorage.getItem(SESSION_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as StoredSession;
-    if (!parsed || !parsed.token || !parsed.expiresAt) return null;
+    if (!parsed || !parsed.token || !parsed.user?.email || !Number.isFinite(Date.parse(parsed.expiresAt))) return null;
     if (new Date(parsed.expiresAt).getTime() <= Date.now()) {
       localStorage.removeItem(SESSION_STORAGE_KEY);
       return null;
@@ -105,6 +111,7 @@ function writeStoredSession(session: StoredSession | null) {
   } catch {
     /* storage unavailable (private mode) — memory only */
   }
+  for (const listener of sessionListeners) listener(session?.user ?? null);
 }
 
 // Restore eagerly so a page reload keeps the user signed in.
@@ -245,13 +252,13 @@ export async function verifySession(): Promise<AppUser | null> {
   };
 
   try {
-    const result = await callApi<{ user: AppUser }>('session', { sessionToken: session.token });
+    const result = await callApi<{ user: AppUser }>('checkSession', { sessionToken: session.token });
     return adopt(result.user);
   } catch (err) {
     if (err instanceof DatabaseError && err.code === 'unknown_action') {
-      // Deployments that expose `checkSession` instead of `session`.
+      // Older deployments may expose `session` instead.
       try {
-        const result = await callApi<{ user: AppUser }>('checkSession', {
+        const result = await callApi<{ user: AppUser }>('session', {
           sessionToken: session.token,
         });
         return adopt(result.user);
@@ -277,8 +284,8 @@ export async function verifySession(): Promise<AppUser | null> {
  */
 export async function acquireAuthContext(): Promise<AuthContext> {
   const secret = getDevSharedSecret();
-  if (secret) return { secret };
-  if (currentSession) return { sessionToken: currentSession.token };
+  if (secret) return { sharedSecret: secret };
+  if (getCurrentUser() && currentSession) return { sessionToken: currentSession.token };
   throw new DatabaseError('You are signed out. Please sign in again.', 'no_session');
 }
 
@@ -308,7 +315,13 @@ async function callApi<T>(action: string, payload: Record<string, unknown> = {})
     );
   }
 
-  return requestDatabase<T>(url, action, payload);
+  try {
+    return await requestDatabase<T>(url, action, payload);
+  } catch (err) {
+    if (err instanceof DatabaseError && ['session_expired', 'unauthorized', 'unauthenticated'].includes(err.code)
+      && payload.sessionToken && payload.sessionToken === currentSession?.token) writeStoredSession(null);
+    throw err;
+  }
 }
 
 /** Unauthenticated liveness check. */
@@ -332,6 +345,11 @@ export async function saveJob(
   job: RestorationJobData
 ): Promise<{ record: RestorationJobData; created: boolean; recordId: string }> {
   const data = await callApi<any>('saveJob', { ...auth, job });
+  const acknowledged = data?.record ?? data;
+  if (!acknowledged || typeof acknowledged !== 'object' || !acknowledged.recordId
+    || acknowledged.recordId !== job.recordId) {
+    throw new DatabaseError('The database did not acknowledge this job. Your save remains on this device.', 'bad_response');
+  }
   if (data && typeof data === 'object' && data.record) {
     return data as { record: RestorationJobData; created: boolean; recordId: string };
   }
@@ -347,6 +365,9 @@ export async function listJobs(
   options: { includeDeleted?: boolean; limit?: number; fullRecords?: boolean } = {}
 ): Promise<{ jobs: JobSummary[]; count: number }> {
   const data = await callApi<any>('listJobs', { ...auth, ...options });
+  if (!Array.isArray(data) && !Array.isArray(data?.jobs)) {
+    throw new DatabaseError('The database returned an unreadable customer list.', 'bad_response');
+  }
   const jobs: JobSummary[] = Array.isArray(data) ? data : Array.isArray(data?.jobs) ? data.jobs : [];
   return { jobs, count: typeof data?.count === 'number' ? data.count : jobs.length };
 }
@@ -436,6 +457,9 @@ export interface DraftPayload {
 /** Stores the shared workspace draft. Throws {@link DatabaseError} on failure. */
 export async function saveDraft(auth: AuthContext, draft: DraftPayload): Promise<ServerDraft> {
   const data = await callApi<any>('saveDraft', { ...auth, draft });
+  if (!data?.job || typeof data.job !== 'object' || typeof data.updatedAt !== 'string') {
+    throw new DatabaseError('The database did not acknowledge your draft. It remains saved on this device.', 'bad_response');
+  }
   const job = (data && typeof data === 'object' && data.job ? data.job : draft.job) as RestorationJobData;
   return {
     job,

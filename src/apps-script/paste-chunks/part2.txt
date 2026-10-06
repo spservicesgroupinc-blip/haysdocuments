@@ -414,9 +414,10 @@ function validateSession_(token) {
       if (now > expiresAt) {
         return null;
       }
-      try {
-        sheet.getRange(i + 1, 7).setValue(now.toISOString());
-      } catch (e) {}
+      // Autosave must not rewrite Sessions on every keystroke pause.
+      if (!data[i][6] || now.getTime() - new Date(data[i][6]).getTime() >= 300000) {
+        try { sheet.getRange(i + 1, 7).setValue(now.toISOString()); } catch (e) {}
+      }
       return {
         email: String(data[i][1]),
         name: String(data[i][2]),
@@ -473,8 +474,4 @@ function cleanupSessions() {
 function registrationMode_() {
   var props = PropertiesService.getScriptProperties();
   return props.getProperty(PROP.REGISTRATION_MODE) || DEFAULTS.REGISTRATION_MODE;
-}
-
-function registrationEnabled_() {
-  return registrationMode_() !== 'off';
 }

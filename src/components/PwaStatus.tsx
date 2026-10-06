@@ -6,6 +6,7 @@ import {
   getSyncState,
   subscribeSyncState,
   syncNow,
+  flushDraftSave,
   type SyncState,
 } from '../services/jobSync';
 import { isDesktop } from '../services/desktopBridge';
@@ -57,7 +58,8 @@ export const PwaStatus: React.FC = () => {
   }, []);
 
   const showInstall = !!installEvent && !installed && !dismissedInstall && !isDesktop();
-  const showSyncCard = !sync.online || sync.pendingCount > 0 || sync.strandedCount > 0;
+  const showSyncCard = !sync.online || sync.pendingCount > 0 || sync.strandedCount > 0 || !!sync.lastError;
+  const retryable = ['network_error', 'timeout', 'busy', 'server_error', 'internal_error'].includes(sync.errorCode ?? '');
 
   if (!showInstall && !showSyncCard && !updateReady && !sync.conflictNotice) return null;
 
@@ -86,7 +88,7 @@ export const PwaStatus: React.FC = () => {
             </p>
             <button
               type="button"
-              onClick={() => void updateReady()}
+              onClick={() => void flushDraftSave().then(() => updateReady()).catch(() => {})}
               className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors"
             >
               Reload now
@@ -130,24 +132,24 @@ export const PwaStatus: React.FC = () => {
                   ? sync.syncing
                     ? `Syncing ${pendingLabel}…`
                     : `${pendingLabel} waiting to sync`
-                  : `${strandedLabel} waiting to sync`
+                  : sync.lastError ? 'Saving needs attention' : `${strandedLabel} waiting to sync`
                 : 'Offline — working from saved copies'}
             </p>
             <p className="text-[12px] text-slate-500 mt-0.5 leading-snug">
-              {sync.online
+              {sync.errorCode === 'device_storage' ? 'The latest changes could not be saved. Keep this window open and try saving again.' : sync.online
                 ? sync.pendingCount > 0
                   ? sync.lastError
-                    ? 'Changes are saved on this device. Database sync will retry automatically.'
+                    ? retryable ? 'Changes are saved on this device. Retrying the connection automatically.' : 'Changes are saved on this device. Resolve the connection issue, then select Sync now.'
                     : 'Saving to the customer database automatically.'
-                  : `Sign in as ${sync.strandedOwner ?? 'the account that made them'} to send them to the customer database.`
+                  : sync.lastError ? 'Keep this window open until your changes are saved.' : `Sign in as ${sync.strandedOwner ?? 'the account that made them'} to send them to the customer database.`
                 : sync.pendingCount > 0
                   ? 'Changes are saved on this device and will sync when the connection returns.'
                   : 'You can keep editing and generating documents.'}
             </p>
-            {sync.lastError && sync.pendingCount > 0 && (
+            {sync.lastError && (
               <p className="text-[11px] text-rose-700 mt-1 leading-snug">Last sync error: {sync.lastError}</p>
             )}
-            {sync.online && !sync.syncing && sync.pendingCount > 0 && (
+            {sync.online && !sync.syncing && (sync.pendingCount > 0 || sync.errorCode === 'device_storage') && (
               <button
                 type="button"
                 onClick={() => void syncNow()}

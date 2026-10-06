@@ -40,6 +40,7 @@ import {
   logout as logoutFromDatabase,
   verifySession,
   getCurrentUser,
+  subscribeSession,
   AppUser,
 } from './services/appsScriptService';
 import {
@@ -52,6 +53,7 @@ import {
   restoreDraft,
   saveJobOffline,
   scheduleDraftSave,
+  flushDraftSave,
   subscribeSyncState,
   type RestoredDraft,
   type SyncState,
@@ -104,9 +106,7 @@ export default function App() {
   const jobDataRef = React.useRef<RestorationJobData>(jobData);
   const previewRegenTimerRef = React.useRef<number | null>(null);
 
-  useEffect(() => {
-    jobDataRef.current = jobData;
-  }, [jobData]);
+  jobDataRef.current = jobData;
 
   // Confirm Modal state (for Workspace changes)
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -141,6 +141,7 @@ export default function App() {
   const [databaseEmail, setDatabaseEmail] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(() => getCurrentUser());
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [workspaceReady, setWorkspaceReady] = useState(false);
   const [syncState, setSyncState] = useState<SyncState>(getSyncState);
 
   // Dirty tracking compares the record against the last saved/loaded baseline,
@@ -149,6 +150,10 @@ export default function App() {
   // True once the workspace has been filled from the shared/draft copy, so a
   // later sign-in does not overwrite work already on screen.
   const draftRestoredRef = React.useRef(false);
+  const lastDraftScheduledRef = React.useRef<string>('');
+  const saveInProgressRef = React.useRef(false);
+  const workspaceGenerationRef = React.useRef(0);
+  const notificationTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setIsDirty(JSON.stringify(jobData) !== baselineRef.current);
@@ -156,6 +161,7 @@ export default function App() {
 
   /** Replaces the whole record and treats it as the new clean baseline. */
   const replaceJob = (next: RestorationJobData) => {
+    workspaceGenerationRef.current++;
     const normalized = ensureRecordDefaults(next);
     baselineRef.current = JSON.stringify(normalized);
     setJobData(normalized);
@@ -165,51 +171,52 @@ export default function App() {
   // Offline-first sync engine: connectivity listeners, outbox flush, status.
   useEffect(() => initJobSync(), []);
   useEffect(() => subscribeSyncState(setSyncState), []);
+  useEffect(() => subscribeSession((next) => {
+    setCurrentUser(next);
+    if (!next) {
+      draftRestoredRef.current = false;
+      setWorkspaceReady(false);
+    }
+  }), []);
+  useEffect(() => {
+    if (!currentUser && !isDeveloperBypassEnabled()) return;
+    void readCachedJobSummaries().then(setSavedJobs).catch(() => {});
+  }, [syncState.lastSyncAt, currentUser]);
 
   // Autosave the workspace record (debounced) so a reload never loses work…
   useEffect(() => {
+    if (!workspaceReady || (!currentUser && !isDeveloperBypassEnabled())) return;
+    const serialized = JSON.stringify({ jobData, recordId });
+    if (serialized === lastDraftScheduledRef.current) return;
+    lastDraftScheduledRef.current = serialized;
     scheduleDraftSave(jobData, recordId);
-  }, [jobData, recordId]);
+  }, [jobData, recordId, workspaceReady, currentUser]);
 
-  // The workspace draft is stored in the Apps Script database (and mirrored
-  // locally so it still works offline), which is what keeps an unfinished
-  // record from being stranded in one browser profile.
-  const applyRestoredDraft = (draft: RestoredDraft) => {
-    if (draftRestoredRef.current) return;
-    draftRestoredRef.current = true;
-    replaceJob(draft.job);
-    setRecordId(draft.recordId ?? draft.job.recordId);
-    showStatus(
-      'info',
-      draft.origin === 'server'
-        ? `Restored the shared workspace draft${draft.updatedBy ? ` last edited by ${draft.updatedBy}` : ''}.`
-        : 'Restored your last workspace from this device.'
-    );
-  };
-
-  // …and restore it once when the app starts.
-  useEffect(() => {
-    let cancelled = false;
-    void restoreDraft().then((draft) => {
-      if (cancelled || !draft) return;
-      applyRestoredDraft(draft);
-    });
-    return () => {
-      cancelled = true;
-    };
-    // Restore once on mount; the workspace is autosaved from then on.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // A device with no draft of its own (a new machine, or a different account)
-  // picks up the shared draft as soon as the session is live.
+  // Restore after authentication, before autosave can publish the empty form.
   useEffect(() => {
     if (!isAuthReady || draftRestoredRef.current) return;
     if (!getCurrentUser() && !isDeveloperBypassEnabled()) return;
     let cancelled = false;
-    void restoreDraft().then((draft) => {
-      if (cancelled || !draft || draft.origin !== 'server') return;
-      applyRestoredDraft(draft);
+    let restoredSnapshot = jobDataRef.current;
+    const apply = (draft: RestoredDraft) => {
+      if (cancelled || jobDataRef.current !== restoredSnapshot) return;
+      const normalized = ensureRecordDefaults(draft.job);
+      baselineRef.current = JSON.stringify(normalized);
+      restoredSnapshot = normalized;
+      jobDataRef.current = normalized;
+      lastDraftScheduledRef.current = JSON.stringify({ jobData: normalized, recordId: draft.recordId ?? draft.job.recordId });
+      setJobData(normalized);
+      setRecordId(draft.recordId ?? draft.job.recordId);
+      setWorkspaceReady(true);
+    };
+    void restoreDraft(apply).then((draft) => {
+      if (cancelled) return;
+      if (draft) apply(draft);
+      else lastDraftScheduledRef.current = JSON.stringify({ jobData: jobDataRef.current, recordId: undefined });
+      draftRestoredRef.current = true;
+      setWorkspaceReady(true);
+    }).catch((err) => {
+      if (!cancelled) { setWorkspaceReady(true); showStatus('error', err?.message || 'Could not restore the workspace draft.'); }
     });
     return () => {
       cancelled = true;
@@ -243,15 +250,21 @@ export default function App() {
   }, []);
 
   const handleRefreshJobs = async () => {
+    const owner = getCurrentUser()?.email;
     setIsLoadingJobs(true);
     setJobListError(null);
     // Paint the cached list instantly, then reconcile with the server.
-    const cached = await readCachedJobSummaries();
-    if (cached.length) setSavedJobs(cached);
-    const result = await refreshJobs();
-    setSavedJobs(result.jobs);
-    setJobListError(result.error ?? null);
-    setIsLoadingJobs(false);
+    try {
+      const cached = await readCachedJobSummaries();
+      if (getCurrentUser()?.email !== owner) return;
+      if (cached.length) setSavedJobs(cached);
+      const result = await refreshJobs();
+      if (getCurrentUser()?.email !== owner) return;
+      setSavedJobs(result.jobs);
+      setJobListError(result.error ?? null);
+    } catch (err) {
+      setJobListError(err instanceof Error ? err.message : 'Could not load saved customers.');
+    } finally { if (getCurrentUser()?.email === owner) setIsLoadingJobs(false); }
   };
 
   // Load the saved-customer list as soon as the workspace becomes available.
@@ -280,7 +293,6 @@ export default function App() {
     setCurrentUser(user);
     setDatabaseEmail(user.email);
     showStatus('success', `Signed in as ${user.name || user.email}.`);
-    await handleRefreshJobs();
   };
 
   const handleAppRegister = async (values: {
@@ -293,29 +305,43 @@ export default function App() {
     setCurrentUser(user);
     setDatabaseEmail(user.email);
     showStatus('success', `Account created. Welcome, ${user.name || user.email}.`);
-    await handleRefreshJobs();
   };
 
   const handleAppSignOut = async () => {
+    try { await flushDraftSave(); }
+    catch (err: any) { showStatus('error', err?.message || 'Could not save your draft before signing out.'); return; }
     await logoutFromDatabase();
     setCurrentUser(null);
     setDatabaseEmail(null);
     setSavedJobs([]);
     setRecordId(undefined);
+    replaceJob(createEmptyJob());
+    draftRestoredRef.current = false;
+    lastDraftScheduledRef.current = '';
+    setWorkspaceReady(false);
     showStatus('info', 'Signed out.');
   };
 
   const handleSaveJob = async () => {
-    if (isSavingJob) return;
+    if (saveInProgressRef.current) return;
+    saveInProgressRef.current = true;
+    const snapshot = jobDataRef.current;
+    const generation = workspaceGenerationRef.current;
     setIsSavingJob(true);
     try {
-      const outcome = await saveJobOffline({ ...jobData, recordId: jobData.recordId ?? recordId });
-      setRecordId(outcome.recordId);
-      replaceJob(outcome.record);
+      const outcome = await saveJobOffline({ ...snapshot, recordId: snapshot.recordId ?? recordId });
+      // Never replace edits made while device persistence was in flight.
+      if (workspaceGenerationRef.current === generation && jobDataRef.current === snapshot) {
+        setRecordId(outcome.recordId);
+        replaceJob(outcome.record);
+      } else if (workspaceGenerationRef.current === generation) {
+        setRecordId(outcome.recordId);
+        setJobData(prev => ({ ...prev, recordId: outcome.recordId }));
+      }
       if (outcome.queued) {
         showStatus(
           'info',
-          `Job ${jobData.customer.jobNumber} saved on this device — it will sync when you're back online.`
+          `Job ${snapshot.customer.jobNumber || ''} saved on this device. ${navigator.onLine ? 'Syncing to the customer database.' : 'It will sync when the connection returns.'}`
         );
       } else {
         showStatus(
@@ -325,10 +351,11 @@ export default function App() {
             : `Updated job ${jobData.customer.jobNumber} in the customer database.`
         );
       }
-      if (activeTab === 'home') await handleRefreshJobs();
+      void readCachedJobSummaries().then(setSavedJobs).catch(() => {});
     } catch (err: any) {
       showStatus('error', err?.message || 'Could not save to the customer database.');
     } finally {
+      saveInProgressRef.current = false;
       setIsSavingJob(false);
     }
   };
@@ -412,7 +439,8 @@ export default function App() {
 
   const showStatus = (type: 'success' | 'error' | 'info', message: string) => {
     setStatusNotification({ type, message });
-    setTimeout(() => {
+    if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+    notificationTimerRef.current = setTimeout(() => {
       setStatusNotification(null);
     }, 5000);
   };
@@ -788,6 +816,12 @@ export default function App() {
     );
   }
 
+  if (!workspaceReady) return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center gap-2 text-sm text-slate-500" role="status">
+      <Loader2 className="w-5 h-5 animate-spin" /> Restoring your workspace…
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col">
       {/* Top Navbar */}
@@ -810,6 +844,8 @@ export default function App() {
         onSignOut={handleAppSignOut}
         pendingSyncCount={syncState.pendingCount}
         isOffline={!syncState.online}
+        draftStatus={syncState.draftStatus}
+        isSyncing={syncState.syncing}
       />
 
       {/* Status toast */}

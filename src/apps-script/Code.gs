@@ -868,9 +868,10 @@ function validateSession_(token) {
       if (now > expiresAt) {
         return null;
       }
-      try {
-        sheet.getRange(i + 1, 7).setValue(now.toISOString());
-      } catch (e) {}
+      // Autosave must not rewrite Sessions on every keystroke pause.
+      if (!data[i][6] || now.getTime() - new Date(data[i][6]).getTime() >= 300000) {
+        try { sheet.getRange(i + 1, 7).setValue(now.toISOString()); } catch (e) {}
+      }
       return {
         email: String(data[i][1]),
         name: String(data[i][2]),
@@ -1193,6 +1194,23 @@ function emptyRecordTemplate_() {
 }
 
 function saveJob_(user, jobData) {
+  return withWriteLock_(function () { return saveJobUnlocked_(user, jobData); });
+}
+
+/** Serialize writes across devices and flush before releasing the lock. */
+function withWriteLock_(operation) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) throw appError_('busy', 'The database is busy. Your changes will retry automatically.');
+  try {
+    var result = operation();
+    SpreadsheetApp.flush();
+    return result;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function saveJobUnlocked_(user, jobData) {
   if (user.role === 'viewer') {
     throw appError_('forbidden', 'Viewer role does not have permission to save or update jobs.');
   }
@@ -1233,14 +1251,14 @@ function saveJob_(user, jobData) {
 
   var rowValues = [
     recordId,
-    jobData.jobNumber || jobData.JobNumber || '',
-    jobData.jobName || jobData.JobName || '',
-    jobData.customerName || jobData.CustomerName || '',
-    jobData.email || jobData.Email || '',
-    jobData.mobilePhone || jobData.MobilePhone || '',
-    jobData.lossAddress || jobData.LossAddress || '',
-    jobData.carrier || jobData.Carrier || '',
-    jobData.claimNumber || jobData.ClaimNumber || '',
+    (jobData.customer || {}).jobNumber || jobData.jobNumber || jobData.JobNumber || '',
+    (jobData.customer || {}).jobName || jobData.jobName || jobData.JobName || '',
+    (jobData.customer || {}).customerName || jobData.customerName || jobData.CustomerName || '',
+    (jobData.customer || {}).email || jobData.email || jobData.Email || '',
+    (jobData.customer || {}).mobilePhone || jobData.mobilePhone || jobData.MobilePhone || '',
+    (jobData.customer || {}).lossAddress || jobData.lossAddress || jobData.LossAddress || '',
+    (jobData.insurance || {}).carrier || jobData.carrier || jobData.Carrier || '',
+    (jobData.insurance || {}).claimNumber || jobData.claimNumber || jobData.ClaimNumber || '',
     jobData.status || jobData.Status || 'Draft',
     targetRow !== -1 ? existingCreatedAt : todayStr,
     nowIso,
@@ -1325,6 +1343,10 @@ function listJobs_(user, options) {
 }
 
 function deleteJob_(user, recordId) {
+  return withWriteLock_(function () { return deleteJobUnlocked_(user, recordId); });
+}
+
+function deleteJobUnlocked_(user, recordId) {
   if (user.role === 'viewer') {
     throw appError_('forbidden', 'Viewer role cannot delete jobs.');
   }
@@ -1359,6 +1381,10 @@ function deleteJob_(user, recordId) {
  * machine or under a different account.
  */
 function saveDraft_(user, draft) {
+  return withWriteLock_(function () { return saveDraftUnlocked_(user, draft); });
+}
+
+function saveDraftUnlocked_(user, draft) {
   if (user.role === 'viewer') {
     throw appError_('forbidden', 'Viewer role does not have permission to save the workspace draft.');
   }

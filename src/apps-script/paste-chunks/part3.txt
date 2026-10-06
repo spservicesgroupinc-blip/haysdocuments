@@ -1,4 +1,8 @@
 
+function registrationEnabled_() {
+  return registrationMode_() !== 'off';
+}
+
 function registrationRequiresCode_() {
   return registrationMode_() === 'invite';
 }
@@ -259,6 +263,23 @@ function emptyRecordTemplate_() {
 }
 
 function saveJob_(user, jobData) {
+  return withWriteLock_(function () { return saveJobUnlocked_(user, jobData); });
+}
+
+/** Serialize writes across devices and flush before releasing the lock. */
+function withWriteLock_(operation) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) throw appError_('busy', 'The database is busy. Your changes will retry automatically.');
+  try {
+    var result = operation();
+    SpreadsheetApp.flush();
+    return result;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function saveJobUnlocked_(user, jobData) {
   if (user.role === 'viewer') {
     throw appError_('forbidden', 'Viewer role does not have permission to save or update jobs.');
   }
@@ -299,14 +320,14 @@ function saveJob_(user, jobData) {
 
   var rowValues = [
     recordId,
-    jobData.jobNumber || jobData.JobNumber || '',
-    jobData.jobName || jobData.JobName || '',
-    jobData.customerName || jobData.CustomerName || '',
-    jobData.email || jobData.Email || '',
-    jobData.mobilePhone || jobData.MobilePhone || '',
-    jobData.lossAddress || jobData.LossAddress || '',
-    jobData.carrier || jobData.Carrier || '',
-    jobData.claimNumber || jobData.ClaimNumber || '',
+    (jobData.customer || {}).jobNumber || jobData.jobNumber || jobData.JobNumber || '',
+    (jobData.customer || {}).jobName || jobData.jobName || jobData.JobName || '',
+    (jobData.customer || {}).customerName || jobData.customerName || jobData.CustomerName || '',
+    (jobData.customer || {}).email || jobData.email || jobData.Email || '',
+    (jobData.customer || {}).mobilePhone || jobData.mobilePhone || jobData.MobilePhone || '',
+    (jobData.customer || {}).lossAddress || jobData.lossAddress || jobData.LossAddress || '',
+    (jobData.insurance || {}).carrier || jobData.carrier || jobData.Carrier || '',
+    (jobData.insurance || {}).claimNumber || jobData.claimNumber || jobData.ClaimNumber || '',
     jobData.status || jobData.Status || 'Draft',
     targetRow !== -1 ? existingCreatedAt : todayStr,
     nowIso,
@@ -391,6 +412,10 @@ function listJobs_(user, options) {
 }
 
 function deleteJob_(user, recordId) {
+  return withWriteLock_(function () { return deleteJobUnlocked_(user, recordId); });
+}
+
+function deleteJobUnlocked_(user, recordId) {
   if (user.role === 'viewer') {
     throw appError_('forbidden', 'Viewer role cannot delete jobs.');
   }
@@ -409,4 +434,21 @@ function deleteJob_(user, recordId) {
     }
   }
   throw appError_('not_found', 'Job record not found.');
+}
+
+/* ---------------------------------------------------------------------------
+ * 7B. SHARED WORKSPACE DRAFT
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Stores the record currently open in the workspace.
+ *
+ * The draft is deliberately shared by the whole team: a single row keyed on
+ * 'current'. It exists so that in-progress work is never stranded on one device
+ * (the previous behaviour kept it in the browser only). Whoever autosaves last
+ * wins, and whoever opens the app next picks it up - including on a brand new
+ * machine or under a different account.
+ */
+function saveDraft_(user, draft) {
+  return withWriteLock_(function () { return saveDraftUnlocked_(user, draft); });
 }

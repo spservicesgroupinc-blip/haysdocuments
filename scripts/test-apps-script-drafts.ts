@@ -128,6 +128,7 @@ function createSandbox() {
       }),
     },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: () => ({ setMimeType: () => ({}) }) },
+    LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
   };
   vm.createContext(sandbox);
   vm.runInContext(source, sandbox, { filename: 'Code.gs' });
@@ -154,7 +155,7 @@ const makeSpreadsheet = () => ({
   deleteSheet: () => {},
 });
 
-sandbox.SpreadsheetApp = { openById: () => makeSpreadsheet(), create: () => makeSpreadsheet() };
+sandbox.SpreadsheetApp = { openById: () => makeSpreadsheet(), create: () => makeSpreadsheet(), flush: () => {} };
 sandbox.Utilities = { getUuid: () => 'deadbeef-0000-4000-8000-000000000001' };
 
 let failures = 0;
@@ -244,6 +245,58 @@ const unknownActionSource = source.includes("throw appError_('unknown_action'");
 check('unknown actions still rejected', unknownActionSource);
 check('saveDraft routed in handleAction_', source.includes("if (action === 'saveDraft')"));
 check('getDraft routed in handleAction_', source.includes("if (action === 'getDraft')"));
+
+console.log('\n7. Write locks serialize jobs, deletes and drafts');
+const lockEvents: string[] = [];
+let busy = false;
+sandbox.LockService = { getScriptLock: () => ({
+  tryLock: () => { lockEvents.push('lock'); return !busy; },
+  releaseLock: () => { lockEvents.push('release'); },
+}) };
+sandbox.SpreadsheetApp.flush = () => { lockEvents.push('flush'); };
+sheets.set('Jobs', new FakeSheet('Jobs', sandbox.JOB_HEADERS));
+const savedJob = { ...job, insurance: { carrier: 'Carrier', claimNumber: 'CLAIM-1' } };
+call('saveJob_', editor, savedJob);
+check('job save locks, flushes and releases in order', lockEvents.join(',') === 'lock,flush,release', lockEvents.join(','));
+const jobs = call<any[]>('listJobs_', editor, {});
+check('job list contains nested customer and claim fields', jobs[0]?.customerName === 'Ada Lovelace' && jobs[0]?.jobNumber === 'FW-2041' && jobs[0]?.carrier === 'Carrier' && jobs[0]?.claimNumber === 'CLAIM-1', JSON.stringify(jobs));
+lockEvents.length = 0;
+call('saveJob_', editor, { ...savedJob, productionNotes: { notes: 'Updated' } });
+check('upsert reuses one row', sheets.get('Jobs')!.rows.length === 2);
+lockEvents.length = 0;
+call('saveDraft_', editor, { job });
+check('draft save holds the same write lock', lockEvents.join(',') === 'lock,flush,release');
+lockEvents.length = 0;
+call('deleteJob_', editor, job.recordId);
+check('delete holds the same write lock', lockEvents.join(',') === 'lock,flush,release');
+check('deleted job is hidden', call<any[]>('listJobs_', editor, {}).length === 0);
+lockEvents.length = 0;
+let rejected = '';
+try { call('saveJob_', viewer, savedJob); } catch (err: any) { rejected = err.code; }
+check('permission failures release the lock', rejected === 'forbidden' && lockEvents.join(',') === 'lock,release');
+busy = true;
+lockEvents.length = 0;
+let busyError = '';
+try { call('saveDraft_', editor, { job }); } catch (err: any) { busyError = err.code; }
+check('lock contention returns retryable busy and does not unlock someone else', busyError === 'busy' && lockEvents.join(',') === 'lock');
+busy = false;
+
+console.log('\n8. Session activity writes are throttled');
+const now = new Date();
+const sessionSheet = new FakeSheet('Sessions', sandbox.SESSION_HEADERS);
+sessionSheet.rows.push(['token', editor.email, 'Editor', 'editor', now.toISOString(), new Date(now.getTime() + 3600000).toISOString(), now.toISOString()]);
+sheets.set('Sessions', sessionSheet);
+let heartbeatWrites = 0;
+const originalGetRange = sessionSheet.getRange.bind(sessionSheet);
+sessionSheet.getRange = (...args: Parameters<typeof originalGetRange>) => {
+  heartbeatWrites++;
+  return originalGetRange(...args);
+};
+call('validateSession_', 'token');
+check('recent session does not trigger a sheet write', heartbeatWrites === 0);
+sessionSheet.rows[1][6] = new Date(now.getTime() - 360000).toISOString();
+call('validateSession_', 'token');
+check('stale heartbeat is updated once', heartbeatWrites === 1);
 
 console.log(failures === 0 ? '\n>>> DRAFT BACKEND TESTS: PASS <<<' : `\n>>> DRAFT BACKEND TESTS: ${failures} FAILURE(S) <<<`);
 process.exit(failures === 0 ? 0 : 1);

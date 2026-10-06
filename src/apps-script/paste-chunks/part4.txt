@@ -1,18 +1,5 @@
 
-/* ---------------------------------------------------------------------------
- * 7B. SHARED WORKSPACE DRAFT
- * ------------------------------------------------------------------------ */
-
-/**
- * Stores the record currently open in the workspace.
- *
- * The draft is deliberately shared by the whole team: a single row keyed on
- * 'current'. It exists so that in-progress work is never stranded on one device
- * (the previous behaviour kept it in the browser only). Whoever autosaves last
- * wins, and whoever opens the app next picks it up - including on a brand new
- * machine or under a different account.
- */
-function saveDraft_(user, draft) {
+function saveDraftUnlocked_(user, draft) {
   if (user.role === 'viewer') {
     throw appError_('forbidden', 'Viewer role does not have permission to save the workspace draft.');
   }

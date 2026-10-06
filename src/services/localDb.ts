@@ -54,7 +54,7 @@ export interface OutboxOp {
 }
 
 export interface WorkspaceDraft {
-  id: 'current';
+  id: string;
   job: RestorationJobData;
   recordId?: string;
   savedAt: number;
@@ -62,6 +62,7 @@ export interface WorkspaceDraft {
   serverUpdatedAt?: string;
   /** Who last wrote the draft server-side, when known. */
   updatedBy?: string;
+  owner?: string;
 }
 
 const DB_NAME = 'hays.docsuite';
@@ -75,7 +76,7 @@ let dbPromise: Promise<IDBDatabase> | null = null;
 
 function openDb(): Promise<IDBDatabase> {
   if (!dbPromise) {
-    dbPromise = new Promise((resolve, reject) => {
+    dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
       request.onupgradeneeded = () => {
         const db = request.result;
@@ -85,9 +86,13 @@ function openDb(): Promise<IDBDatabase> {
         }
         if (!db.objectStoreNames.contains(DRAFTS)) db.createObjectStore(DRAFTS, { keyPath: 'id' });
       };
-      request.onsuccess = () => resolve(request.result);
+      request.onsuccess = () => {
+        const db = request.result;
+        db.onversionchange = () => { db.close(); dbPromise = null; };
+        resolve(db);
+      };
       request.onerror = () => reject(request.error);
-    });
+    }).catch((err) => { dbPromise = null; throw err; });
   }
   return dbPromise;
 }
@@ -102,7 +107,9 @@ function runRequest<T>(
       new Promise<T>((resolve, reject) => {
         const tx = db.transaction(storeName, mode);
         const request = operation(tx.objectStore(storeName));
-        request.onsuccess = () => resolve(request.result as T);
+        // A successful request can still be rolled back by a failed commit.
+        tx.oncomplete = () => resolve(request.result as T);
+        tx.onabort = () => reject(tx.error ?? new Error('Device storage could not commit the save.'));
         request.onerror = () => reject(request.error);
       })
   );
@@ -126,6 +133,38 @@ export function deleteMirrorJob(recordId: string): Promise<void> {
   return runRequest<void>(JOBS, 'readwrite', (store) => store.delete(recordId));
 }
 
+/** A delayed server read must never replace edits made since that read began. */
+export async function cacheServerMirrorJob(server: MirrorJob, readStartedAt = Date.now()): Promise<MirrorJob> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(JOBS, 'readwrite');
+    const store = tx.objectStore(JOBS);
+    let result = server;
+    const request = store.get(server.recordId);
+    request.onsuccess = () => {
+      const current = request.result as MirrorJob | undefined;
+      if (current && (current.syncState !== 'synced' || Date.parse(current.locallyUpdatedAt) > readStartedAt)) result = current;
+      else { result = { ...server, record: server.record ?? current?.record ?? null }; store.put(result); }
+    };
+    tx.oncomplete = () => resolve(result);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+export async function deleteSyncedMirrorJob(recordId: string, readStartedAt = Date.now()): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(JOBS, 'readwrite');
+    const store = tx.objectStore(JOBS);
+    const request = store.get(recordId);
+    request.onsuccess = () => {
+      if (request.result?.syncState === 'synced' && Date.parse(request.result.locallyUpdatedAt) <= readStartedAt) store.delete(recordId);
+    };
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
 // ---- outbox ---------------------------------------------------------------
 
 export function enqueueOutbox(op: Omit<OutboxOp, 'id'>): Promise<number> {
@@ -138,7 +177,17 @@ export async function getOutboxOps(): Promise<OutboxOp[]> {
 }
 
 export function updateOutboxOp(op: OutboxOp): Promise<void> {
-  return runRequest<void>(OUTBOX, 'readwrite', (store) => store.put(op));
+  return openDb().then((db) => new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(OUTBOX, 'readwrite');
+    const store = tx.objectStore(OUTBOX);
+    const request = store.get(op.id!);
+    request.onsuccess = () => {
+      // A newer draft may have replaced this operation while it was in flight.
+      if (request.result) store.put(op);
+    };
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error);
+  }));
 }
 
 export function deleteOutboxOp(id: number): Promise<void> {
@@ -191,14 +240,75 @@ export async function summarizeOutbox(owner: string | null): Promise<OutboxSumma
  * a long editing session cannot fill the outbox with superseded drafts.
  */
 export async function queueDraftOutbox(op: Omit<OutboxOp, 'id'>): Promise<void> {
-  const ops = await getOutboxOps();
-  const existing = ops.find((candidate) => candidate.type === 'draft');
+  await persistDraftAndOutbox(op.draft!, op.owner);
+}
 
-  if (existing && existing.id !== undefined) {
-    await updateOutboxOp({ ...op, id: existing.id });
-    return;
-  }
-  await enqueueOutbox(op);
+/** Commit the mirror and its replayable write together, never half a save. */
+export async function persistJobAndOutbox(mirror: MirrorJob, op: Omit<OutboxOp, 'id'>): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([JOBS, OUTBOX], 'readwrite');
+    tx.objectStore(JOBS).put(mirror);
+    tx.objectStore(OUTBOX).add(op);
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error ?? new Error('Could not save on this device.'));
+  });
+}
+
+function draftKey(owner?: string | null): string {
+  return owner ? `current:${owner}` : 'current';
+}
+
+/** Persist each idle edit and its cloud backup in the same durable transaction. */
+export async function persistDraftAndOutbox(draft: WorkspaceDraft, owner?: string): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([DRAFTS, OUTBOX], 'readwrite');
+    const stored = { ...draft, id: draftKey(owner), owner };
+    tx.objectStore(DRAFTS).put(stored);
+    const outbox = tx.objectStore(OUTBOX);
+    const request = outbox.getAll();
+    request.onsuccess = () => {
+      for (const op of request.result as OutboxOp[]) {
+        if (op.type === 'draft' && op.owner === owner) outbox.delete(op.id!);
+      }
+      // Allocate a new ID: an older response cannot remove the newer payload.
+      outbox.add({ type: 'draft', recordId: draft.recordId ?? draft.job.recordId ?? '',
+        draft: stored, createdAt: draft.savedAt, attempts: 0, owner });
+    };
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error ?? new Error('Could not autosave on this device.'));
+  });
+}
+
+/** Acknowledge only the operation sent, preserving any edits queued during it. */
+export async function completeOutboxOp(op: OutboxOp, mirror?: MirrorJob, draft?: WorkspaceDraft): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([OUTBOX, JOBS, DRAFTS], 'readwrite');
+    const outbox = tx.objectStore(OUTBOX);
+    const request = outbox.getAll();
+    request.onsuccess = () => {
+      const ops = request.result as OutboxOp[];
+      outbox.delete(op.id!);
+      if (op.type !== 'draft') {
+        const newer = ops.some((item) => item.type !== 'draft' && item.recordId === op.recordId && item.id! > op.id!);
+        if (!newer) {
+          if (mirror) tx.objectStore(JOBS).put(mirror);
+          else if (op.type === 'delete') tx.objectStore(JOBS).delete(op.recordId);
+        }
+      } else if (draft) {
+        const store = tx.objectStore(DRAFTS);
+        const latest = store.get(draftKey(op.owner));
+        latest.onsuccess = () => {
+          const local = latest.result as WorkspaceDraft | undefined;
+          if (local?.savedAt === op.draft?.savedAt) store.put({ ...draft, id: draftKey(op.owner), owner: op.owner });
+        };
+      }
+    };
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error);
+  });
 }
 
 // ---- workspace draft ------------------------------------------------------
@@ -207,8 +317,10 @@ export function putDraft(draft: WorkspaceDraft): Promise<void> {
   return runRequest<void>(DRAFTS, 'readwrite', (store) => store.put(draft));
 }
 
-export function getDraft(): Promise<WorkspaceDraft | undefined> {
-  return runRequest<WorkspaceDraft | undefined>(DRAFTS, 'readonly', (store) =>
-    store.get('current')
-  );
+export async function getDraft(owner?: string | null): Promise<WorkspaceDraft | undefined> {
+  const draft = await runRequest<WorkspaceDraft | undefined>(DRAFTS, 'readonly', (store) => store.get(draftKey(owner)));
+  if (draft || !owner) return draft;
+  // Existing installations have an unowned draft under the original key.
+  const legacy = await runRequest<WorkspaceDraft | undefined>(DRAFTS, 'readonly', (store) => store.get('current'));
+  return legacy?.owner ? undefined : legacy;
 }

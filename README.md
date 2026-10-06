@@ -30,6 +30,23 @@ instructions; failed writes stay queued on the device. After correcting the URL,
 the app, reload it (apply any pending app update), and select **Sync now**.
 Run `npm run database:test` to verify the save transport and response handling.
 
+Saving commits the job and its pending cloud write in one IndexedDB transaction. The
+Save button finishes after that device commit; cloud sync runs in the background.
+The status badge distinguishes a draft being saved, a device copy awaiting sync, and
+a completed draft sync. Temporary connection and database-busy errors retry with
+increasing delays; session and deployment errors stay queued until corrected.
+
+Drafts persist after 350 ms of idle time, together with a coalesced backup operation
+owned by the signed-in account. Cloud autosave waits for 2 seconds of idle time, with
+an 8-second maximum wait while typing. Startup recovery happens before autosave can
+write the empty form. Responses from earlier saves and reads cannot replace newer
+device edits. Hiding the window, signing out, and applying an update flush device
+autosave; closing with an incomplete device save prompts you to keep the window open.
+
+After updating the backend, deploy `src/apps-script/Code.gs` as a **new version of the
+existing deployment**, keeping its `/exec` URL. `npm run apps:paste` and
+`npm run apps:chunks` regenerate the editor paste files from this source.
+
 ## Commands
 
 | Command | What it does |
@@ -38,6 +55,9 @@ Run `npm run database:test` to verify the save transport and response handling.
 | `npm run build` | Production build into `dist/` (web app + service worker + manifest) |
 | `npm run preview` | Serve the production build locally (use this to test PWA/offline behaviour) |
 | `npm run lint` | Type-check (`tsc --noEmit`) |
+| `npm run database:test` | Save/sync/transport regressions, including real IndexedDB transactions |
+| `npm run apps:test:drafts` | Current backend draft/job write locks, round trips and session heartbeat checks |
+| `npm run save:ui:test` | Chromium tests for recovery, saving while editing and connection failures (run `npx playwright install chromium` once) |
 | `npm run verify` | Full gate: lint + backend tests + parser tests + build |
 | `npm run icons` | Regenerate all app icons from `public/logo.svg` |
 | `npm run deploy:web` | Build + deploy the PWA to Vercel (linked project) |
@@ -97,7 +117,11 @@ connection returns (last write wins; a notice appears when the server copy moved
 - `npm run apps:test` (and therefore `npm run verify`) still fails: the test harness
   `scripts/test-apps-script.ts` targets the **superseded** backend API. It calls helpers such as
   `normalizeRecord_` and `oneOf_`, which the live backend does not define. The live backend is the
-  single file `src/apps-script/Code.gs` (1,324 lines), which implements the HTTP actions the
+  single file `src/apps-script/Code.gs`, which implements the HTTP actions the
   front-end uses and needs no porting of its own — the harness does.
+- `npm run apps:register` also targets the superseded API (`api_registrationInfo_`
+  is missing from the current backend). These legacy harness failures prevent the
+  aggregate `npm run verify` command from completing. The save-specific checks above
+  exercise the current backend and client directly.
 - `npm run clean` references a `server.js` that has never existed (template leftover).
 

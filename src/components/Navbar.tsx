@@ -40,6 +40,8 @@ interface NavbarProps {
   pendingSyncCount?: number;
   /** True while the device has no connectivity. */
   isOffline?: boolean;
+  draftStatus?: 'idle' | 'saving' | 'saved' | 'error';
+  isSyncing?: boolean;
 }
 
 const BTN_BASE =
@@ -64,6 +66,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSignOut,
   pendingSyncCount = 0,
   isOffline = false,
+  draftStatus = 'idle',
+  isSyncing = false,
 }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const desktopBuild = isDesktop();
@@ -112,17 +116,19 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* Actions */}
           <div className="flex items-center gap-2 shrink-0">
-            {(isOffline || pendingSyncCount > 0) && (
+            {(isOffline || pendingSyncCount > 0 || draftStatus !== 'idle') && (
               <span
                 title={
                   isOffline
                     ? 'Offline — changes are saved on this device and sync automatically'
                     : `${pendingSyncCount} change${pendingSyncCount === 1 ? '' : 's'} waiting to sync`
                 }
-                className="hidden sm:inline-flex items-center gap-1.5 h-9 px-2.5 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-[11px] font-semibold"
+                role="status"
+                aria-live="polite"
+                className={`hidden sm:inline-flex items-center gap-1.5 h-9 px-2.5 rounded-lg border text-[11px] font-semibold ${draftStatus === 'error' ? 'border-red-200 bg-red-50 text-red-700' : isOffline || pendingSyncCount > 0 ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-slate-200 bg-slate-50 text-slate-600'}`}
               >
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" aria-hidden />
-                {isOffline ? 'Offline' : `${pendingSyncCount} to sync`}
+                {isSyncing || draftStatus === 'saving' ? <Loader2 className="w-3 h-3 animate-spin" aria-hidden /> : <Check className="w-3 h-3" aria-hidden />}
+                {draftStatus === 'error' ? 'Autosave needs attention' : draftStatus === 'saving' ? 'Saving draft…' : isOffline ? 'Saved on device' : isSyncing ? 'Syncing…' : pendingSyncCount > 0 ? 'Saved on device' : 'Draft synced'}
               </span>
             )}
             <button
