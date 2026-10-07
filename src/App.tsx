@@ -4,7 +4,6 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { User } from 'firebase/auth';
 import {
   RestorationJobData,
   CustomerData,
@@ -17,9 +16,6 @@ import {
   ensureRecordDefaults,
 } from './types/jobData';
 import {
-  initAuth,
-  googleSignIn,
-  logoutGoogle,
   uploadPdfToGoogleDrive,
   syncJobToGoogleSheets,
 } from './services/googleWorkspaceService';
@@ -31,7 +27,6 @@ import {
 } from './services/pdfService';
 import { getPdfFieldSchema } from './services/pdfFieldSchema';
 import type { JobDocument } from './services/documentCatalog';
-import { isDesktop } from './services/desktopBridge';
 import {
   isDatabaseConfigured,
   isDeveloperBypassEnabled,
@@ -87,9 +82,7 @@ export default function App() {
   const [intakeSession, setIntakeSession] = useState(0);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('home');
 
-  // Google Workspace Authentication & state
-  const [user, setUser] = useState<User | null>(null);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  // Shared document storage and database actions use the Apps Script account session.
   const [isDriveLoading, setIsDriveLoading] = useState(false);
   const [isSheetsLoading, setIsSheetsLoading] = useState(false);
   const [driveSuccessLink, setDriveSuccessLink] = useState<string | undefined>();
@@ -450,41 +443,6 @@ export default function App() {
     });
   };
 
-  // Initialize auth
-  useEffect(() => {
-    const unsubscribe = initAuth(
-      (currentUser) => {
-        setUser(currentUser);
-      },
-      () => {
-        setUser(null);
-      }
-    );
-    return () => unsubscribe();
-  }, []);
-
-  const handleLogin = async () => {
-    setIsLoggingIn(true);
-    try {
-      const res = await googleSignIn();
-      if (res?.user) {
-        setUser(res.user);
-        showStatus('success', `Connected to Google as ${res.user.displayName || res.user.email}`);
-      }
-    } catch (err: any) {
-      console.error('Google Sign-in failed:', err);
-      showStatus('error', err.message || 'Failed to sign in with Google');
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    await logoutGoogle();
-    setUser(null);
-    showStatus('info', 'Disconnected from Google');
-  };
-
   const showStatus = (type: 'success' | 'error' | 'info', message: string) => {
     setStatusNotification({ type, message });
     if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
@@ -729,26 +687,26 @@ export default function App() {
   // Save the CURRENTLY previewed document to Google Drive (per-document upload).
   const handleSaveDocToDrive = () => {
     if (!previewDoc) return;
-    if (!user) {
-      handleLogin();
-      return;
-    }
     const doc = previewDoc;
-    const fileName = doc.buildFileName(jobDataRef.current);
+    const snapshot = jobDataRef.current;
+    const session = workspaceSessionRef.current;
+    const fileName = doc.buildFileName(snapshot);
 
     setConfirmDialog({
       isOpen: true,
       title: `Save ${doc.title} to Google Drive?`,
-      message: `This will generate the latest ${doc.title} for Job #${jobDataRef.current.customer.jobNumber} and upload it to your Google Drive in the "Hays & Sons Restoration" folder.`,
+      message: `This will generate ${doc.title} for Job #${snapshot.customer.jobNumber} and save it in the shared Google Drive folder managed by the app's Google Apps Script backend.`,
       confirmLabel: 'Upload to Drive',
       action: async () => {
         setIsDriveLoading(true);
         try {
-          const pdfBytes = await doc.generator(jobDataRef.current);
+          const pdfBytes = await doc.generator(snapshot);
           const result = await uploadPdfToGoogleDrive(pdfBytes, fileName);
+          if (session !== workspaceSessionRef.current) return;
           setDriveSuccessLink(result.webViewLink);
-          showStatus('success', `Saved "${fileName}" to your Google Drive!`);
+          showStatus('success', `Saved "${fileName}" to shared Google Drive storage.`);
         } catch (err: any) {
+          if (session !== workspaceSessionRef.current) return;
           console.error('Drive save error:', err);
           showStatus('error', err.message || 'Failed to save to Google Drive');
         } finally {
@@ -760,26 +718,25 @@ export default function App() {
 
   // Save to Google Drive with Mandatory User Confirmation
   const handleSaveToDrive = () => {
-    if (!user) {
-      handleLogin();
-      return;
-    }
-
-    const fileName = `${jobData.customer.jobNumber}_Complete_Packet_${jobData.customer.customerName}.pdf`;
+    const snapshot = jobDataRef.current;
+    const session = workspaceSessionRef.current;
+    const fileName = `${snapshot.customer.jobNumber}_Complete_Packet_${snapshot.customer.customerName}.pdf`;
 
     setConfirmDialog({
       isOpen: true,
       title: 'Save Packet to Google Drive?',
-      message: `This will generate the complete 9-page Hays + Sons restoration packet for Job #${jobData.customer.jobNumber} (${jobData.customer.customerName}) and upload it to your Google Drive in the "Hays & Sons Restoration" folder.`,
+      message: `This will generate the complete Hays + Sons restoration packet for Job #${snapshot.customer.jobNumber} (${snapshot.customer.customerName}) and save it in the shared Google Drive folder managed by the app's Google Apps Script backend.`,
       confirmLabel: 'Upload to Drive',
       action: async () => {
         setIsDriveLoading(true);
         try {
-          const pdfBytes = await generateCompletePacket(jobData);
+          const pdfBytes = await generateCompletePacket(snapshot);
           const result = await uploadPdfToGoogleDrive(pdfBytes, fileName);
+          if (session !== workspaceSessionRef.current) return;
           setDriveSuccessLink(result.webViewLink);
-          showStatus('success', `Saved "${fileName}" to your Google Drive!`);
+          showStatus('success', `Saved "${fileName}" to shared Google Drive storage.`);
         } catch (err: any) {
+          if (session !== workspaceSessionRef.current) return;
           console.error('Drive save error:', err);
           showStatus('error', err.message || 'Failed to save to Google Drive');
         } finally {
@@ -791,23 +748,22 @@ export default function App() {
 
   // Sync to Google Sheets with Mandatory User Confirmation
   const handleSyncToSheets = () => {
-    if (!user) {
-      handleLogin();
-      return;
-    }
-
+    const snapshot = jobDataRef.current;
+    const session = workspaceSessionRef.current;
     setConfirmDialog({
       isOpen: true,
       title: 'Sync Job to Google Sheets?',
-      message: `This will append a new row for Job #${jobData.customer.jobNumber} (${jobData.customer.customerName}) to your "Hays & Sons - Restoration Job Log" Google Spreadsheet, recording all financial figures and team assignments.`,
+      message: `This will save Job #${snapshot.customer.jobNumber} (${snapshot.customer.customerName}), including its financial figures and team assignments, to the app's shared Google Apps Script database. An existing job is updated in its current row.`,
       confirmLabel: 'Sync to Sheets',
       action: async () => {
         setIsSheetsLoading(true);
         try {
-          const result = await syncJobToGoogleSheets(jobData);
+          const result = await syncJobToGoogleSheets(snapshot);
+          if (session !== workspaceSessionRef.current) return;
           setSheetsSuccessLink(result.spreadsheetUrl);
-          showStatus('success', `Logged Job #${jobData.customer.jobNumber} to Google Sheets!`);
+          showStatus('success', `Saved Job #${snapshot.customer.jobNumber} to the shared Google Sheets database.`);
         } catch (err: any) {
+          if (session !== workspaceSessionRef.current) return;
           console.error('Sheets sync error:', err);
           showStatus('error', err.message || 'Failed to sync to Google Sheets');
         } finally {
@@ -897,10 +853,6 @@ export default function App() {
       <Navbar
         jobNumber={jobData.customer.jobNumber}
         customerName={jobData.customer.customerName}
-        user={user}
-        isLoggingIn={isLoggingIn}
-        onLogin={handleLogin}
-        onLogout={handleLogout}
         onReset={handleReset}
         isDirty={isDirty}
         isSavingJob={isSavingJob}
@@ -1138,7 +1090,7 @@ export default function App() {
         editableFields={previewDoc ? getPdfFieldSchema(previewDoc.id) : []}
         spans={previewSpans}
         onFieldChange={handlePdfFieldChange}
-        onSaveToDrive={!isDesktop() && previewDoc ? handleSaveDocToDrive : undefined}
+        onSaveToDrive={previewDoc ? handleSaveDocToDrive : undefined}
         isDriveLoading={isDriveLoading}
         driveSuccessLink={driveSuccessLink}
       />

@@ -28,7 +28,6 @@ import {
   downloadPdf,
   formatCurrency,
 } from '../services/pdfService';
-import { isDesktop } from '../services/desktopBridge';
 import { PdfPreviewRequest } from './SectionPdfActions';
 import { getMissingJobFields, type MissingJobField } from '../services/jobReadiness';
 
@@ -211,14 +210,10 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={onSaveToDrive}
-            disabled={isDriveLoading || isDesktop()}
+            disabled={isDriveLoading}
             type="button"
             className="inline-flex items-center px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-slate-900 border border-slate-200 transition shadow-sm disabled:opacity-50"
-            title={
-              isDesktop()
-                ? 'Google Drive upload is available in the browser version of the app'
-                : 'Upload Complete PDF packet directly to Google Drive'
-            }
+            title="Save the complete PDF packet to shared Drive storage through Google Apps Script"
           >
             {isDriveLoading ? (
               <Loader2 className="w-4 h-4 mr-2 animate-spin text-red-600" />
@@ -230,14 +225,10 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
 
           <button
             onClick={onSyncToSheets}
-            disabled={isSheetsLoading || isDesktop()}
+            disabled={isSheetsLoading}
             type="button"
             className="inline-flex items-center px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-slate-900 border border-slate-200 transition shadow-sm disabled:opacity-50"
-            title={
-              isDesktop()
-                ? 'Google Sheets sync is available in the browser version of the app'
-                : 'Log job row and claim financials to Google Sheets'
-            }
+            title="Update this job in the shared Google Sheets database through Google Apps Script"
           >
             {isSheetsLoading ? (
               <Loader2 className="w-4 h-4 mr-2 animate-spin text-emerald-600" />
@@ -306,7 +297,7 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
         <div className="mt-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs text-emerald-800">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span>Successfully updated Google Workspace:</span>
+            <span>Shared storage updated:</span>
           </div>
           <div className="flex items-center gap-3">
             {driveSuccessLink && (

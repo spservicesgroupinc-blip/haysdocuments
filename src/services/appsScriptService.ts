@@ -10,6 +10,7 @@
  */
 import { RestorationJobData } from '../types/jobData';
 import { DatabaseError, normalizeDatabaseUrl, requestDatabase } from './appsScriptTransport';
+import { APPS_SCRIPT_URL } from '../config/appsScript';
 export { DatabaseError } from './appsScriptTransport';
 
 /** Lightweight row used by the job library list (no full record). */
@@ -33,9 +34,9 @@ export interface JobSummary {
   record?: RestorationJobData;
 }
 
-/** The configured Apps Script Web App URL, or null when not set up yet. */
+/** The Apps Script deployment bundled into the app. */
 export function getDatabaseUrl(): string | null {
-  return normalizeDatabaseUrl(import.meta.env.VITE_APPS_SCRIPT_URL as string | undefined);
+  return normalizeDatabaseUrl(APPS_SCRIPT_URL);
 }
 
 export function isDatabaseConfigured(): boolean {
@@ -306,22 +307,27 @@ export function isMissingActionError(err: unknown): boolean {
  * Sends one request to the backend and unwraps the JSON envelope.
  * Throws {@link DatabaseError} on any application-level failure.
  */
-async function callApi<T>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
+async function callApi<T>(action: string, payload: Record<string, unknown> = {}, timeoutMs = 30000): Promise<T> {
   const url = getDatabaseUrl();
   if (!url) {
     throw new DatabaseError(
-      'The customer database is not configured. Set VITE_APPS_SCRIPT_URL to your Apps Script /exec URL.',
+      'The bundled Apps Script deployment URL is invalid. Update src/config/appsScript.ts and rebuild the app.',
       'not_configured'
     );
   }
 
   try {
-    return await requestDatabase<T>(url, action, payload);
+    return await requestDatabase<T>(url, action, payload, timeoutMs);
   } catch (err) {
     if (err instanceof DatabaseError && ['session_expired', 'unauthorized', 'unauthenticated'].includes(err.code)
       && payload.sessionToken && payload.sessionToken === currentSession?.token) writeStoredSession(null);
     throw err;
   }
+}
+
+/** All document and intake operations use the same Apps Script session as job saves. */
+export async function callAuthenticatedAppsScript<T>(action: string, payload: Record<string, unknown> = {}, timeoutMs = 30000): Promise<T> {
+  return callApi<T>(action, { ...payload, ...await acquireAuthContext() }, timeoutMs);
 }
 
 /** Unauthenticated liveness check. */

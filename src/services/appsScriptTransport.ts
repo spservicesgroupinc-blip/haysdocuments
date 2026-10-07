@@ -38,7 +38,7 @@ function unreadableResponse(response: Response, body: string): DatabaseError {
   if (response.status === 404 || response.status === 410
     || /unable to open the file|file you have requested does not exist|page not found/i.test(body)) {
     return new DatabaseError(
-      'The database deployment URL is no longer available. Set VITE_APPS_SCRIPT_URL to the active Apps Script /exec URL and rebuild the app.',
+      'The Apps Script deployment is no longer available. Update src/config/appsScript.ts to the active /exec URL and rebuild the app.',
       'bad_response'
     );
   }

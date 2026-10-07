@@ -1,5 +1,4 @@
 import React, { useRef, useState } from 'react';
-import { User } from 'firebase/auth';
 import {
   Database,
   Save,
@@ -12,16 +11,11 @@ import {
   Check,
   UserCircle,
 } from 'lucide-react';
-import { isDesktop } from '../services/desktopBridge';
 import { BrandLogo } from './BrandLogo';
 
 interface NavbarProps {
   jobNumber: string;
   customerName: string;
-  user: User | null;
-  isLoggingIn: boolean;
-  onLogin: () => void;
-  onLogout: () => void;
   onReset: () => void;
   /** Unsaved changes exist. */
   isDirty: boolean;
@@ -51,10 +45,6 @@ const BTN_BASE =
 export const Navbar: React.FC<NavbarProps> = ({
   jobNumber,
   customerName,
-  user,
-  isLoggingIn,
-  onLogin,
-  onLogout,
   onReset,
   isDirty,
   isSavingJob,
@@ -72,10 +62,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const accountButtonRef = useRef<HTMLButtonElement>(null);
-  const desktopBuild = isDesktop();
-
   const hasCustomer = Boolean(customerName.trim());
-  const accountLabel = user?.displayName || user?.email || 'Google account';
 
   const saveTitle = !isDatabaseConfigured
     ? 'Connect the job database to save this job'
@@ -225,7 +212,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                         )}
                         <div className="min-w-0">
                           <p className="text-[13px] font-semibold text-slate-900">
-                            {isDatabaseConfigured ? 'Job database connected' : 'Job database not connected'}
+                            {isDatabaseConfigured ? 'Google Apps Script connected' : 'Google Apps Script not connected'}
                           </p>
                           <p className="text-[11px] text-slate-500 truncate">
                             {isDeveloperBypass
@@ -236,42 +223,15 @@ export const Navbar: React.FC<NavbarProps> = ({
                       </div>
                     </div>
 
-                    {/* Google Drive / Sheets */}
+                    {/* Shared backend storage */}
                     <div className="px-3.5 py-3 border-b border-slate-100">
                       <div className="flex items-start gap-2.5">
                         <Cloud className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
                         <div className="min-w-0">
-                          <p className="text-[13px] font-semibold text-slate-900">Google Drive &amp; Sheets</p>
-                          <p className="text-[11px] text-slate-500 truncate">
-                            {desktopBuild
-                              ? 'Use the browser version to connect'
-                              : user
-                                ? accountLabel
-                                : 'Not connected'}
-                          </p>
+                          <p className="text-[13px] font-semibold text-slate-900">Shared Drive &amp; job database</p>
+                          <p className="mt-1 text-[11px] leading-relaxed text-slate-500">Documents and job records use this account through the app's Google Apps Script backend.</p>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsMenuOpen(false);
-                          user ? onLogout() : onLogin();
-                        }}
-                        disabled={isLoggingIn || desktopBuild}
-                        title={
-                          desktopBuild
-                            ? 'Google sign-in is available in the browser version of the app'
-                            : undefined
-                        }
-                        className={`${BTN_BASE} mt-2.5 w-full min-h-11 border border-slate-200 text-slate-700 hover:bg-slate-50`}
-                      >
-                        {isLoggingIn ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : user ? (
-                          <LogOut className="w-3.5 h-3.5" />
-                        ) : null}
-                        {isLoggingIn ? 'Connecting…' : user ? 'Disconnect' : 'Connect Google account'}
-                      </button>
                     </div>
 
                     {/* Application sign out */}
