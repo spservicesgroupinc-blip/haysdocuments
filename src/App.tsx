@@ -61,7 +61,7 @@ import {
 import type { SyncJobSummary } from './services/localDb';
 import { LoginScreen } from './components/LoginScreen';
 import { Navbar } from './components/Navbar';
-import { MobileSectionNav, Sidebar } from './components/Sidebar';
+import { MobileSectionNav, Sidebar, WORKSPACE_SECTIONS } from './components/Sidebar';
 import type { WorkspaceTab } from './components/Sidebar';
 import { SavedCustomersPage } from './components/SavedCustomersPage';
 import { FinancialSummaryCard } from './components/FinancialSummaryCard';
@@ -78,7 +78,8 @@ import { PdfPreviewModal } from './components/PdfPreviewModal';
 import { ConfirmModal } from './components/ConfirmModal';
 import { PwaStatus } from './components/PwaStatus';
 import { ProvenanceRecord } from './services/intakeParser';
-import { Loader2 } from 'lucide-react';
+import { getMissingJobFields, type MissingJobField } from './services/jobReadiness';
+import { ArrowLeft, ArrowRight, Loader2 } from 'lucide-react';
 
 export default function App() {
   const [jobData, setJobData] = useState<RestorationJobData>(() => createEmptyJob());
@@ -154,19 +155,49 @@ export default function App() {
   const lastDraftScheduledRef = React.useRef<string>('');
   const saveInProgressRef = React.useRef(false);
   const workspaceGenerationRef = React.useRef(0);
+  const workspaceSessionRef = React.useRef(0);
+  const jobLoadRequestRef = React.useRef(0);
+  const fieldToFocusRef = React.useRef<string | null>(null);
   const notificationTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setIsDirty(JSON.stringify(jobData) !== baselineRef.current);
   }, [jobData]);
 
+  useEffect(() => {
+    if (!fieldToFocusRef.current) return;
+    document.getElementById(fieldToFocusRef.current)?.focus();
+    fieldToFocusRef.current = null;
+  }, [activeTab]);
+
   /** Replaces the whole record and treats it as the new clean baseline. */
   const replaceJob = (next: RestorationJobData) => {
     workspaceGenerationRef.current++;
     const normalized = ensureRecordDefaults(next);
     baselineRef.current = JSON.stringify(normalized);
+    jobDataRef.current = normalized;
     setJobData(normalized);
     setIsDirty(false);
+  };
+
+  /** Discards intake and document state belonging to the previous workspace. */
+  const clearJobArtifacts = () => {
+    workspaceSessionRef.current++;
+    setProvenance({});
+    setIntakeSession((previous) => previous + 1);
+    setDriveSuccessLink(undefined);
+    setSheetsSuccessLink(undefined);
+    setIsPreviewOpen(false);
+    setPreviewTitle('');
+    setPreviewDoc(null);
+    setPreviewBytes(null);
+    setPreviewSpans([]);
+    setIsPreviewLoading(false);
+    setIsPreviewRegenerating(false);
+    if (previewRegenTimerRef.current !== null) {
+      window.clearTimeout(previewRegenTimerRef.current);
+      previewRegenTimerRef.current = null;
+    }
   };
 
   // Offline-first sync engine: connectivity listeners, outbox flush, status.
@@ -289,6 +320,11 @@ export default function App() {
     if (tab === 'home') void handleRefreshJobs();
   };
 
+  const handleReviewField = (field: MissingJobField) => {
+    fieldToFocusRef.current = field.inputId;
+    setActiveTab(field.section);
+  };
+
   const handleAppSignIn = async (email: string, password: string) => {
     const user = await loginToDatabase(email, password);
     setCurrentUser(user);
@@ -317,6 +353,7 @@ export default function App() {
     setSavedJobs([]);
     setRecordId(undefined);
     replaceJob(createEmptyJob());
+    clearJobArtifacts();
     draftRestoredRef.current = false;
     lastDraftScheduledRef.current = '';
     setWorkspaceReady(false);
@@ -362,11 +399,20 @@ export default function App() {
   };
 
   const handleLoadJob = async (id: string) => {
+    // Continue editing the open workspace without replacing its draft with a saved copy.
+    if (recordId === id) {
+      setActiveTab('customer');
+      return;
+    }
+    const request = ++jobLoadRequestRef.current;
+    const session = workspaceSessionRef.current;
     try {
       const { job, fromCache } = await loadJobOffline(id);
+      if (request !== jobLoadRequestRef.current || session !== workspaceSessionRef.current) return;
       replaceJob(job);
       setRecordId(job.recordId ?? id);
-      setProvenance({});
+      clearJobArtifacts();
+      setActiveTab('customer');
       const who = job.customer.customerName || 'record';
       const label = `(${job.customer.jobNumber || 'no job number'})`;
       showStatus(
@@ -374,6 +420,7 @@ export default function App() {
         fromCache ? `Opened ${who} ${label} from this device's saved copy.` : `Opened ${who} ${label}.`
       );
     } catch (err: any) {
+      if (request !== jobLoadRequestRef.current || session !== workspaceSessionRef.current) return;
       showStatus('error', err?.message || 'Could not open that saved job.');
     }
   };
@@ -783,22 +830,8 @@ export default function App() {
         const blankJob = createEmptyJob();
         replaceJob(blankJob);
         setRecordId(undefined);
-        setProvenance({});
-        // Remount the intake panel so every upload and analysis state starts fresh.
-        setIntakeSession((previous) => previous + 1);
-        setDriveSuccessLink(undefined);
-        setSheetsSuccessLink(undefined);
-        setIsPreviewOpen(false);
-        setPreviewTitle('');
-        setPreviewDoc(null);
-        setPreviewBytes(null);
-        setPreviewSpans([]);
-        setIsPreviewLoading(false);
-        setIsPreviewRegenerating(false);
-        if (previewRegenTimerRef.current !== null) {
-          window.clearTimeout(previewRegenTimerRef.current);
-          previewRegenTimerRef.current = null;
-        }
+        clearJobArtifacts();
+        setActiveTab('intake');
         // Persist the cleared workspace immediately instead of waiting for autosave.
         lastDraftScheduledRef.current = JSON.stringify({ jobData: blankJob, recordId: undefined });
         scheduleDraftSave(blankJob);
@@ -820,6 +853,15 @@ export default function App() {
     const who = newJob.customer.customerName || 'new intake';
     showStatus('success', `Master Job Record updated from intake (${who}) - all production documents refreshed.`);
   };
+
+  const missingFieldCounts: Partial<Record<WorkspaceTab, number>> = {};
+  for (const field of getMissingJobFields(jobData)) {
+    missingFieldCounts[field.section] = (missingFieldCounts[field.section] ?? 0) + 1;
+  }
+  const jobSections = WORKSPACE_SECTIONS.filter((section) => section.id !== 'home');
+  const sectionIndex = jobSections.findIndex((section) => section.id === activeTab);
+  const previousSection = sectionIndex > 0 ? jobSections[sectionIndex - 1] : undefined;
+  const nextSection = sectionIndex >= 0 ? jobSections[sectionIndex + 1] : undefined;
 
   // Auth gate — the workspace is only reachable once signed in (or in developer mode).
   if (!isAuthReady) {
@@ -897,11 +939,18 @@ export default function App() {
 
       {/* Main */}
       <main className="flex-1 w-full min-w-0 max-w-[1400px] mx-auto px-3 py-4 sm:px-5 sm:py-6">
+        {activeTab !== 'home' && (
+          <div className="mb-4 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm lg:hidden" aria-label="Current job">
+            <span className="font-semibold text-slate-900">{jobData.customer.customerName || 'New job'}</span>
+            <span className="text-slate-500">· {jobData.customer.jobNumber}</span>
+          </div>
+        )}
         {/* Compact section menu below the lg breakpoint */}
         <MobileSectionNav
           activeTab={activeTab}
           onNavigate={handleNavigate}
           savedJobsCount={savedJobs.length}
+          missingFieldCounts={missingFieldCounts}
         />
 
         <div className="flex items-start gap-6">
@@ -913,16 +962,19 @@ export default function App() {
             customerName={jobData.customer.customerName}
             jobNumber={jobData.customer.jobNumber}
             isDirty={isDirty}
+            missingFieldCounts={missingFieldCounts}
           />
 
           {/* Section workspace */}
           <div className="flex-1 min-w-0 space-y-4 sm:space-y-6">
-            {/* The intake parser always sits at the top — paste an intake to refresh every section. */}
+            {/* Keep intake mounted across sections so navigation preserves pending analysis. */}
             <IntakeParserCard
               key={intakeSession}
               onApplyIntake={handleApplyIntake}
               currentJob={jobData}
               currentProvenance={provenance}
+              isExpanded={activeTab === 'intake'}
+              onExpand={() => handleNavigate('intake')}
             />
 
             {activeTab === 'home' && (
@@ -939,6 +991,7 @@ export default function App() {
                 onRefresh={handleRefreshJobs}
                 onOpenJob={handleLoadJob}
                 onDeleteJob={handleDeleteJob}
+                onNewJob={handleReset}
               />
             )}
 
@@ -973,21 +1026,22 @@ export default function App() {
             )}
 
             {activeTab === 'team' && (
-              <>
-                <SectionTeam
-                  data={jobData.team}
-                  branch={jobData.branch}
-                  jobData={jobData}
-                  onPreview={handleOpenPreview}
-                  onChange={handleTeamChange}
-                />
-                <SectionMortgage
-                  data={jobData.mortgage}
-                  jobData={jobData}
-                  onPreview={handleOpenPreview}
-                  onChange={handleMortgageChange}
-                />
-              </>
+              <SectionTeam
+                data={jobData.team}
+                branch={jobData.branch}
+                jobData={jobData}
+                onPreview={handleOpenPreview}
+                onChange={handleTeamChange}
+              />
+            )}
+
+            {activeTab === 'mortgage' && (
+              <SectionMortgage
+                data={jobData.mortgage}
+                jobData={jobData}
+                onPreview={handleOpenPreview}
+                onChange={handleMortgageChange}
+              />
             )}
 
             {activeTab === 'changeOrder' && (
@@ -1028,7 +1082,25 @@ export default function App() {
                 isSheetsLoading={isSheetsLoading}
                 driveSuccessLink={driveSuccessLink}
                 sheetsSuccessLink={sheetsSuccessLink}
+                onReviewField={handleReviewField}
               />
+            )}
+
+            {activeTab !== 'home' && (
+              <nav className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4" aria-label="Job section actions">
+                {previousSection ? (
+                  <button type="button" onClick={() => handleNavigate(previousSection.id)} className="inline-flex min-h-10 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 hover:bg-white hover:text-slate-900">
+                    <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+                    {previousSection.label}
+                  </button>
+                ) : <span className="text-sm text-slate-500">Upload an intake or enter the job details manually.</span>}
+                {nextSection && (
+                  <button type="button" onClick={() => handleNavigate(nextSection.id)} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:border-slate-400 hover:bg-slate-50">
+                    Next: {nextSection.label}
+                    <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                )}
+              </nav>
             )}
           </div>
         </div>

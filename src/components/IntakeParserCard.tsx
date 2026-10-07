@@ -21,6 +21,7 @@ import {
 } from '../services/intakeParser';
 import { analyzeIntakeWithAi } from '../services/deepseekIntake';
 import { extractTextFromPdfBuffer } from '../services/pdfExtractor';
+import { getMissingJobFields } from '../services/jobReadiness';
 
 interface IntakeParserCardProps {
   onApplyIntake: (job: RestorationJobData, provenance: ProvenanceRecord) => void;
@@ -58,7 +59,7 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
   const [lastParseResult, setLastParseResult] = useState<{
     fieldsCount: number;
     updatedCount: number;
-    blockingFields: string[];
+    jobData: RestorationJobData;
     warnings: string[];
     sections: ExtractedSectionSummary[];
     source: ParseSource;
@@ -71,6 +72,8 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
   const pasteTimerRef = useRef<number | null>(null);
   const fileReaderRef = useRef<FileReader | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const currentJobRef = useRef(currentJob);
+  currentJobRef.current = currentJob;
   const intakeTextId = useId();
   const intakeHelpId = useId();
 
@@ -94,7 +97,7 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
     setLastParseResult({
       fieldsCount: result.extractionSummary.fieldsExtractedCount,
       updatedCount: result.extractionSummary.fieldsUpdatedCount,
-      blockingFields: result.blockingMissingFields,
+      jobData: result.jobData,
       warnings: result.extractionSummary.warnings,
       sections: result.extractionSummary.sections,
       source,
@@ -114,13 +117,13 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
     try {
       const payload = await analyzeIntakeWithAi(trimmed);
       if (!isActiveRef.current) return;
-      const result = applyAiExtractionToJob(payload, currentJob);
+      const result = applyAiExtractionToJob(payload, currentJobRef.current);
       commitResult(result, source, 'ai');
     } catch (error) {
       if (!isActiveRef.current) return;
       const message = error instanceof Error ? error.message : String(error);
       console.error('DeepSeek intake analysis failed:', error);
-      const result = parseRawIntakeText(trimmed, currentJob);
+      const result = parseRawIntakeText(trimmed, currentJobRef.current);
       result.extractionSummary.warnings.unshift(
         `AI analysis failed (${message}) - the built-in rules parser was used instead.`
       );
@@ -249,255 +252,225 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
     }
   };
 
-  return (
-    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 mb-6">
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 pb-4 border-b border-slate-100">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-slate-100 text-slate-500">
-            <Sparkles className="w-4 h-4" />
+  const isBusy = isExtractingPdf || isReadingFile || isAnalyzing;
+  const readinessJob = currentJob ?? lastParseResult?.jobData;
+  const missingJobFields = readinessJob ? getMissingJobFields(readinessJob) : [];
+  const hasUnanalyzedText = Boolean(intakeText.trim() && intakeText.trim() !== lastParsedTextRef.current);
+  const hasIntakeContent = Boolean(intakeText.trim() || uploadedFileInfo || lastParseResult || isBusy);
+  const intakeStatus = isExtractingPdf
+    ? 'Extracting PDF'
+    : isReadingFile
+    ? 'Reading file'
+    : isAnalyzing
+    ? 'Analyzing intake'
+    : fileError
+    ? 'Needs intake text'
+    : lastParseResult && !hasUnanalyzedText
+    ? 'Ready to review'
+    : intakeText.trim()
+    ? 'Ready to analyze'
+    : 'File uploaded';
+  const StatusIcon = isBusy ? Loader2 : fileError ? AlertTriangle : lastParseResult && !hasUnanalyzedText ? CheckCircle2 : FileText;
+
+  if (!isExpanded) {
+    if (!hasIntakeContent) return null;
+    return (
+      <div className="mb-5 flex flex-col gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="rounded-lg bg-slate-100 p-2 text-slate-600">
+            <StatusIcon className={`h-5 w-5 ${isBusy ? 'animate-spin' : ''}`} aria-hidden="true" />
           </div>
-          <div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="text-[15px] font-semibold text-slate-900">
-                Intake to Production
-              </h3>
-              <span className="text-[11px] font-bold bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full border border-slate-200">
-                DASH / Xactimate
-              </span>
-              <span className="text-[11px] font-bold bg-red-50 text-red-600 px-2 py-0.5 rounded-full border border-red-200">
-                DeepSeek AI
-              </span>
-            </div>
-            <p className="text-xs text-slate-500">
-              Paste DASH job logs, carrier emails, or estimate exports - DeepSeek AI reads the
-              document, understands each value, and routes it into the right section automatically
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-slate-900">{uploadedFileInfo?.name || 'Pasted intake'}</p>
+            <p className="text-xs text-slate-600" role="status" aria-live="polite">
+              {intakeStatus}
+              {lastParseResult && !isBusy && !hasUnanalyzedText && (
+                <> · {lastParseResult.fieldsCount} fields extracted</>
+              )}
             </p>
           </div>
         </div>
+        <button type="button" onClick={onExpand} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500">
+          Review intake <ArrowRight className="h-4 w-4" aria-hidden="true" />
+        </button>
+      </div>
+    );
+  }
 
-        <div className="flex items-center gap-2 w-full md:w-auto">
-          <label className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-800 transition cursor-pointer flex items-center gap-1.5 shadow-sm border border-slate-700">
-            {isExtractingPdf ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
-            ) : (
-              <Upload className="w-3.5 h-3.5 text-red-400" />
-            )}
-            {isExtractingPdf ? 'Extracting PDF Data...' : 'Upload PDF / Text Intake'}
-            <input
-              type="file"
-              accept=".pdf,application/pdf,.txt,.json,.csv,.log"
-              onChange={handleFileUpload}
-              disabled={isExtractingPdf}
-              className="hidden"
-            />
-          </label>
+  return (
+    <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 sm:p-6" aria-label="Job intake">
+      <div className="flex items-start gap-3 border-b border-slate-100 pb-5">
+        <div className="rounded-xl bg-red-50 p-2.5 text-red-600">
+          <Sparkles className="h-5 w-5" aria-hidden="true" />
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold text-slate-900">Bring in your job information</h3>
+          <p className="mt-1 max-w-2xl text-sm leading-relaxed text-slate-600">
+            Upload an intake file or paste DASH notes, carrier emails, and estimate details. AI intake analysis fills in the matching job fields for you.
+          </p>
         </div>
       </div>
 
-      {/* Uploaded File Chip */}
-      {uploadedFileInfo && (
-        <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 py-1.5 bg-slate-100 border border-slate-200 rounded-lg text-xs">
-          <div className="flex flex-wrap items-center gap-2 min-w-0">
-            <span className={`font-bold px-1.5 py-0.5 rounded text-[10px] ${uploadedFileInfo.isPdf ? 'bg-red-600 text-white' : 'bg-slate-700 text-white'}`}>
-              {uploadedFileInfo.isPdf ? 'PDF DOCUMENT' : 'TEXT FILE'}
-            </span>
-            <span className="font-semibold text-slate-800 break-all">{uploadedFileInfo.name}</span>
-            <span className="text-slate-500 text-[11px]">({uploadedFileInfo.sizeKb} KB)</span>
+      <div
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={`mt-5 rounded-xl border border-dashed p-4 transition sm:p-5 ${isDragging ? 'border-red-500 bg-red-50 ring-2 ring-red-500/20' : 'border-slate-300 bg-slate-50'}`}
+      >
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <Upload className="h-5 w-5 shrink-0 text-slate-500" aria-hidden="true" />
+            <div>
+              <p className="text-sm font-semibold text-slate-800">Upload or drop an intake file</p>
+              <p className="mt-0.5 text-xs leading-relaxed text-slate-500">PDF, text, JSON, CSV, or log files · Analyzed automatically</p>
+            </div>
           </div>
-          <span className="text-[11px] text-emerald-700 font-medium flex items-center gap-1">
-            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-            Extracted & routed into master record
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isBusy}
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-50"
+          >
+            <Upload className="h-4 w-4" aria-hidden="true" />
+            Upload intake file
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            aria-label="Upload intake file"
+            accept=".pdf,application/pdf,.txt,.json,.csv,.log"
+            onChange={handleFileUpload}
+            disabled={isBusy}
+            className="hidden"
+          />
+        </div>
+      </div>
+
+      {uploadedFileInfo && (
+        <div className="mt-3 flex flex-col gap-2 rounded-lg border border-slate-200 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-2 text-sm">
+            <FileText className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />
+            <span className="break-all font-medium text-slate-800">{uploadedFileInfo.name}</span>
+            <span className="shrink-0 text-xs text-slate-500">{uploadedFileInfo.sizeKb} KB</span>
+          </div>
+          <span className={`flex shrink-0 items-center gap-1.5 text-xs font-medium ${fileError ? 'text-amber-700' : isBusy || hasUnanalyzedText ? 'text-slate-600' : 'text-emerald-700'}`} role="status" aria-live="polite">
+            <StatusIcon className={`h-4 w-4 ${isBusy ? 'animate-spin' : ''}`} aria-hidden="true" />
+            {intakeStatus}
           </span>
         </div>
       )}
 
-      {/* Input Text Area with Drag & Drop */}
-      <div className="mt-4">
-        <div
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          className={`relative rounded-xl transition ${
-            isDragging
-              ? 'ring-2 ring-red-500 bg-red-50/50'
-              : ''
-          }`}
-        >
-          {isExtractingPdf && (
-            <div className="absolute inset-0 z-10 bg-white/80 backdrop-blur-sm rounded-xl flex flex-col items-center justify-center gap-2">
-              <Loader2 className="w-6 h-6 animate-spin text-red-600" />
-              <span className="text-xs font-bold text-slate-800">
-                Extracting text and form fields from PDF...
-              </span>
-            </div>
-          )}
-          <textarea
-            rows={4}
-            value={intakeText}
-            onChange={(e) => setIntakeText(e.target.value)}
-            onPaste={handlePaste}
-            placeholder="Paste DASH intake notes, carrier assignment email, Xactimate recap, or drop a PDF here..."
-            className="w-full p-3 text-xs font-mono bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition leading-relaxed text-slate-800 placeholder:text-slate-400"
-          />
-        </div>
+      {fileError && (
+        <p className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm leading-relaxed text-amber-900" role="alert">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          {fileError}
+        </p>
+      )}
 
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mt-2.5">
-          <span className="text-[11px] text-slate-400">
-            Pastes are analyzed by DeepSeek AI automatically - existing entries are only replaced
-            when the document provides a new value.
-          </span>
+      <div className="mt-5">
+        <label htmlFor={intakeTextId} className="block text-sm font-semibold text-slate-800">Or paste intake notes</label>
+        <p id={intakeHelpId} className="mt-1 mb-2 text-xs leading-relaxed text-slate-500">Pasted notes are analyzed automatically. You can also type or edit the notes, then select Analyze intake.</p>
+        <textarea
+          id={intakeTextId}
+          aria-describedby={intakeHelpId}
+          rows={7}
+          value={intakeText}
+          disabled={isBusy}
+          onChange={(e) => {
+            setIntakeText(e.target.value);
+            setFileError(null);
+          }}
+          onPaste={handlePaste}
+          placeholder="Paste DASH intake notes, a carrier assignment email, or an Xactimate recap here…"
+          className="w-full rounded-xl border border-slate-300 bg-white p-3 text-sm leading-relaxed text-slate-800 transition placeholder:text-slate-400 focus:border-red-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 disabled:bg-slate-50 disabled:text-slate-500"
+        />
+        <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="max-w-lg text-xs leading-relaxed text-slate-500">New information is merged into this job. Review the extracted values before creating your documents.</p>
           <button
             type="button"
             onClick={() => handleParse(intakeText)}
-            disabled={!intakeText.trim() || isExtractingPdf || isAnalyzing}
-            className="inline-flex items-center px-4 py-2 rounded-xl text-xs font-bold bg-red-600 hover:bg-red-700 text-white transition shadow-sm disabled:opacity-50"
+            disabled={!intakeText.trim() || isBusy || Boolean(fileError)}
+            className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-lg bg-red-600 px-4 text-sm font-semibold text-white transition hover:bg-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {isAnalyzing ? (
-              <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-            ) : (
-              <Sparkles className="w-3.5 h-3.5 mr-1.5" />
-            )}
-            {isAnalyzing ? 'DeepSeek AI Analyzing...' : 'AI Analyze & Populate Master Record'}
-            {!isAnalyzing && <ArrowRight className="w-3.5 h-3.5 ml-1.5" />}
+            {isAnalyzing ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Sparkles className="h-4 w-4" aria-hidden="true" />}
+            {isAnalyzing ? 'Analyzing intake…' : 'Analyze intake'}
+            {!isAnalyzing && <ArrowRight className="h-4 w-4" aria-hidden="true" />}
           </button>
         </div>
+        {isBusy && (
+          <p className="mt-3 flex items-center gap-2 text-sm text-slate-600" role="status" aria-live="polite"><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />{intakeStatus}… You can keep working in another section.</p>
+        )}
       </div>
 
-      {/* Extraction Results: where each pasted value landed */}
-      {lastParseResult && (
-        <div className="mt-4 pt-4 border-t border-slate-100 text-xs animate-in fade-in">
-          <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
-            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-              <span className="font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                Master Job Record Updated — {lastParseResult.fieldsCount} field
-                {lastParseResult.fieldsCount === 1 ? '' : 's'} extracted
-                {lastParseResult.updatedCount > 0 && (
-                  <span className="font-semibold text-emerald-700">
-                    · {lastParseResult.updatedCount} new value{lastParseResult.updatedCount === 1 ? '' : 's'} merged
-                  </span>
-                )}
-                <span
-                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
-                    lastParseResult.mode === 'ai'
-                      ? 'bg-red-50 text-red-600 border-red-200'
-                      : 'bg-slate-100 text-slate-500 border-slate-200'
-                  }`}
-                >
-                  {lastParseResult.mode === 'ai' ? 'AI · DeepSeek' : 'BUILT-IN PARSER'}
-                </span>
-              </span>
-              <span className="text-[10px] text-slate-400">
-                {lastParseResult.source === 'paste'
-                  ? 'Auto-analyzed from paste'
-                  : lastParseResult.source === 'file'
-                  ? 'Analyzed from uploaded file'
-                  : 'Routed into the master record'}
-              </span>
+      {lastParseResult && !isBusy && (
+        <div className="mt-6 border-t border-slate-200 pt-5">
+          <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+            <CheckCircle2 className="h-5 w-5 text-emerald-600" aria-hidden="true" />
+            {hasUnanalyzedText ? 'Last intake analysis' : 'Job information updated'}
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <span className="block text-xl font-semibold text-slate-900">{lastParseResult.fieldsCount}</span>
+              <span className="text-xs text-slate-600">Fields extracted</span>
             </div>
-
-            {/* AI analysis notes and failure notice */}
-            {lastParseResult.mode === 'ai' && lastParseResult.aiNotes && (
-              <div className="mt-2 p-2.5 bg-blue-50 border border-blue-200 rounded-lg text-blue-900 text-[11px] flex items-start gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-blue-500 shrink-0 mt-0.5" />
-                <span>
-                  <span className="font-semibold">AI analysis:</span> {lastParseResult.aiNotes}
-                </span>
-              </div>
-            )}
-            {lastParseResult.aiError && (
-              <div className="mt-2 p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-800 text-[11px] flex items-start gap-1.5">
-                <AlertTriangle className="w-3.5 h-3.5 text-rose-500 shrink-0 mt-0.5" />
-                <span>
-                  AI analysis failed: {lastParseResult.aiError} — values were extracted with the
-                  built-in rules parser instead.
-                </span>
-              </div>
-            )}
-
-            {/* Section-by-section breakdown of what was routed where */}
-            {lastParseResult.sections.length > 0 && (
-              <div className="space-y-2 mt-2">
-                {lastParseResult.sections.map((section) => (
-                  <div key={section.section} className="rounded-lg border border-slate-200 bg-white p-2.5">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-[10px] font-bold uppercase tracking-wide text-slate-600">
-                        {section.label}
-                      </span>
-                      <span className="text-[10px] text-slate-400">
-                        {section.fields.length} field{section.fields.length === 1 ? '' : 's'}
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {section.fields.map((field) => (
-                        <span
-                          key={field.key}
-                          title={`${field.label}: ${field.value}`}
-                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] max-w-full ${
-                            field.changed ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200'
-                          }`}
-                        >
-                          <span className="font-semibold text-slate-700 shrink-0">{field.label}:</span>
-                          <span className="text-slate-600 truncate max-w-[190px]">{field.value}</span>
-                          {provenanceBadge(field.source)}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Anything the parser could not map cleanly */}
-            {lastParseResult.warnings.length > 0 && (
-              <div className="mt-2.5 p-2.5 bg-orange-50 border border-orange-200 rounded-lg text-orange-900 space-y-1">
-                {lastParseResult.warnings.map((warning, index) => (
-                  <p key={index} className="text-[11px] flex items-start gap-1.5">
-                    <Info className="w-3.5 h-3.5 text-orange-500 shrink-0 mt-0.5" />
-                    {warning}
-                  </p>
-                ))}
-              </div>
-            )}
-
-            {/* If there are blocking missing fields, present ONE consolidated prompt */}
-            {lastParseResult.blockingFields.length > 0 ? (
-              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 mt-2.5">
-                <div className="font-bold flex items-center gap-1.5 mb-1 text-xs">
-                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                  Consolidated Missing Information (Required before production):
-                </div>
-                <p className="text-[11px] text-amber-800 mb-1.5">
-                  The following core fields could not be extracted from the intake text. Please confirm them in the sections below:
-                </p>
-                <div className="flex flex-wrap gap-1.5">
-                  {lastParseResult.blockingFields.map((f, i) => (
-                    <span
-                      key={i}
-                      className="bg-white px-2 py-0.5 rounded border border-amber-300 font-semibold text-[10px] text-amber-900"
-                    >
-                      • {f}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <p className="text-emerald-700 text-[11px] mt-2.5">
-                ✓ All blocking fields resolved! Production packet is ready for generation.
-              </p>
-            )}
-
-            {/* Provenance legend */}
-            <div className="mt-2.5 pt-2 border-t border-slate-200/80 flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
-              <span className="font-medium">Legend:</span>
-              <span className="flex items-center gap-1">{provenanceBadge('EXTRACTED')} found in the pasted text</span>
-              <span className="flex items-center gap-1">{provenanceBadge('CALCULATED')} computed from parsed numbers</span>
-              <span className="flex items-center gap-1">{provenanceBadge('FOUND')} branch default</span>
-              <span className="flex items-center gap-1">{provenanceBadge('DRAFTED')} written by the parser</span>
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+              <span className="block text-xl font-semibold text-emerald-800">{lastParseResult.updatedCount}</span>
+              <span className="text-xs text-emerald-700">Job values updated</span>
             </div>
           </div>
+
+          {lastParseResult.aiError && (
+            <p className="mt-3 flex items-start gap-2 text-sm leading-relaxed text-amber-800"><Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />AI analysis was unavailable. Built-in extraction was used; please review the job values.</p>
+          )}
+
+          {missingJobFields.length > 0 ? (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <p className="flex items-center gap-2 text-sm font-semibold text-amber-900"><AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />Required information to confirm</p>
+              <p className="mt-1 text-sm leading-relaxed text-amber-800">Add these details in Job Details before creating the production packet.</p>
+              <ul className="mt-3 flex flex-wrap gap-2">
+                {missingJobFields.map((field) => <li key={field.inputId} className="rounded-lg border border-amber-200 bg-white px-2.5 py-1 text-xs font-medium text-amber-900">{field.label}</li>)}
+              </ul>
+            </div>
+          ) : (
+            <p className="mt-4 text-sm text-emerald-700">Required intake fields are complete. Review the job details, then create your production packet.</p>
+          )}
+
+          <details className="group mt-4 rounded-xl border border-slate-200">
+            <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between gap-2 rounded-xl px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500">
+              View extracted fields and analysis
+              <ChevronDown className="h-4 w-4 shrink-0 transition group-open:rotate-180" aria-hidden="true" />
+            </summary>
+            <div className="space-y-3 border-t border-slate-200 p-4">
+              <p className="text-xs text-slate-500">{lastParseResult.mode === 'ai' ? 'AI intake analysis' : 'Built-in extraction'} · {lastParseResult.source === 'file' ? 'Uploaded file' : lastParseResult.source === 'paste' ? 'Pasted notes' : 'Intake notes'}</p>
+              {lastParseResult.mode === 'ai' && lastParseResult.aiNotes && (
+                <p className="rounded-lg bg-blue-50 p-3 text-sm leading-relaxed text-blue-900">{lastParseResult.aiNotes}</p>
+              )}
+              {lastParseResult.sections.map((section) => (
+                <div key={section.section} className="rounded-lg border border-slate-200 p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="text-sm font-semibold text-slate-800">{section.label}</span>
+                    <span className="text-xs text-slate-500">{section.fields.length} field{section.fields.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <dl className="space-y-2">
+                    {section.fields.map((field) => (
+                      <div key={field.key} className={`rounded-lg px-3 py-2 text-xs ${field.changed ? 'bg-emerald-50' : 'bg-slate-50'}`}>
+                        <dt className="flex flex-wrap items-center gap-2 font-semibold text-slate-700">{field.label}{provenanceBadge(field.source)}</dt>
+                        <dd className="mt-1 break-words leading-relaxed text-slate-600">{field.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+              ))}
+              {lastParseResult.warnings.length > 0 && (
+                <div className="space-y-2 rounded-lg bg-orange-50 p-3">
+                  {lastParseResult.warnings.map((warning, index) => <p key={index} className="flex items-start gap-2 text-xs leading-relaxed text-orange-900"><Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />{warning}</p>)}
+                </div>
+              )}
+              <p className="border-t border-slate-100 pt-3 text-xs leading-relaxed text-slate-500">Extracted: found in the intake. Calculated: computed from provided values. Found: a branch default. Drafted: suggested text to review.</p>
+            </div>
+          </details>
         </div>
       )}
-    </div>
+    </section>
   );
 };

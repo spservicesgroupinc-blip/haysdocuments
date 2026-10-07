@@ -117,7 +117,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
 
           {/* Actions */}
-          <div className="flex w-full lg:w-auto items-center justify-end gap-2 shrink-0">
+          <div className="flex w-full lg:w-auto items-center justify-end gap-1.5 sm:gap-2 shrink-0">
             {(isOffline || pendingSyncCount > 0 || draftStatus !== 'idle') && (
               <span
                 title={
@@ -138,7 +138,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               onClick={onOpenSavedCustomers}
               aria-label="Open saved jobs"
               title={databaseEmail ? `Saved jobs — signed in as ${databaseEmail}` : 'Open saved jobs'}
-              className={`${BTN_BASE} min-h-11 px-3 border border-slate-200 text-slate-700 hover:bg-slate-50 hover:text-slate-900`}
+              className={`${BTN_BASE} min-h-11 px-2 sm:px-3 border border-slate-200 text-slate-700 hover:bg-slate-50 hover:text-slate-900`}
             >
               <Database className="w-4 h-4 text-slate-400" aria-hidden />
               <span>Jobs</span>
@@ -153,7 +153,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               type="button"
               onClick={onReset}
               title="Start a new job"
-              className={`${BTN_BASE} min-h-11 px-3 border border-slate-300 text-slate-700 hover:bg-slate-50 hover:text-slate-900`}
+              className={`${BTN_BASE} min-h-11 px-2 sm:px-3 border border-slate-300 text-slate-700 hover:bg-slate-50 hover:text-slate-900`}
             >
               <Plus className="w-4 h-4" aria-hidden />
               <span>New job</span>
@@ -164,7 +164,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               onClick={onSaveJob}
               disabled={isSavingJob || !isDatabaseConfigured}
               title={saveTitle}
-              className={`${BTN_BASE} min-h-11 px-3.5 bg-red-600 text-white hover:bg-red-700 shadow-sm`}
+              className={`${BTN_BASE} min-h-11 px-2.5 sm:px-3.5 bg-red-600 text-white hover:bg-red-700 shadow-sm`}
             >
               {isSavingJob ? (
                 <Loader2 className="w-4 h-4 animate-spin" aria-hidden />

@@ -44,10 +44,10 @@ export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
   { id: 'insurance', label: 'Insurance & Claim', icon: ShieldAlert, group: 'Job details' },
   { id: 'financials', label: 'Financials', icon: Coins, group: 'Job details' },
   { id: 'mortgage', label: 'Mortgage', icon: Landmark, group: 'Job details' },
-  { id: 'team', label: 'Team', icon: Users2, group: 'Job details' },
-  { id: 'changeOrder', label: 'Change Order', icon: FileEdit, group: 'Production' },
-  { id: 'checklist', label: 'Checklist', icon: CheckCircle, group: 'Production' },
+  { id: 'team', label: 'Team', icon: Users2, group: 'Production' },
   { id: 'productionNotes', label: 'Production Notes', icon: StickyNote, group: 'Production' },
+  { id: 'checklist', label: 'Checklist', icon: CheckCircle, group: 'Production' },
+  { id: 'changeOrder', label: 'Change Order', icon: FileEdit, group: 'Production' },
   { id: 'documents', label: 'Documents', icon: FileCheck, group: 'Documents' },
 ];
 

@@ -8,14 +8,26 @@ const ok = (route: Route, data: unknown) => route.fulfill({
   body: JSON.stringify({ ok: true, data }),
 });
 
-async function start(page: Page, handler: (route: Route, body: any) => Promise<void>) {
+const sectionLabels = {
+  home: 'Jobs', intake: 'Intake', customer: 'Customer & Property', insurance: 'Insurance & Claim',
+  financials: 'Financials', mortgage: 'Mortgage', team: 'Team', productionNotes: 'Production Notes',
+  checklist: 'Checklist', changeOrder: 'Change Order', documents: 'Documents',
+};
+async function navigate(page: Page, section: keyof typeof sectionLabels) {
+  const width = page.viewportSize()?.width ?? 1440;
+  if (width < 640) await page.locator('#workspace-section').selectOption(section);
+  else await page.getByRole('navigation', { name: width >= 1024 ? 'Job workspace' : 'Workspace navigation', exact: true })
+    .getByRole('button', { name: new RegExp(`^${sectionLabels[section]}(?:\\s|$)`) }).click();
+}
+
+async function start(page: Page, handler: (route: Route, body: any) => Promise<void>, savedJobs: unknown[] = []) {
   await page.addInitScript((account) => {
     localStorage.setItem('hays.db.session', JSON.stringify({ token: 'ui-session', expiresAt: '2099-01-01T00:00:00Z', user: account }));
   }, user);
   await page.route('https://script.google.com/macros/s/TEST/exec', async (route) => {
     const body = route.request().postDataJSON();
     if (body.action === 'checkSession') await ok(route, { user });
-    else if (body.action === 'listJobs') await ok(route, []);
+    else if (body.action === 'listJobs') await ok(route, savedJobs);
     else await handler(route, body);
   });
   await page.goto('/');
@@ -27,7 +39,7 @@ test('startup recovers the shared draft before any autosave writes', async ({ pa
     if (body.action === 'getDraft') await ok(route, { draft: { job, recordId: job.recordId, updatedAt: '2026-10-06T12:00:00Z' } });
     else if (body.action === 'saveDraft') { sent.push(body.draft.job); await ok(route, { job: body.draft.job, updatedAt: new Date().toISOString() }); }
   });
-  await page.getByRole('button', { name: 'Customer & Loss', exact: true }).last().click();
+  await navigate(page, 'customer');
   await expect(page.locator('#customer-customerName')).toHaveValue('Recovered customer');
   await page.waitForTimeout(2300);
   expect(sent).toHaveLength(0);
@@ -48,9 +60,9 @@ test('manual save stays responsive and edits survive a delayed cloud response', 
     else if (body.action === 'saveJob') { saveStarted = true; await held; await ok(route, body.job); }
     else if (body.action === 'saveDraft') await ok(route, { job: body.draft.job, updatedAt: new Date().toISOString() });
   });
-  await page.getByRole('button', { name: 'Customer & Loss', exact: true }).last().click();
+  await navigate(page, 'customer');
   await page.locator('#customer-customerName').fill('Saved snapshot');
-  const save = page.getByRole('button', { name: 'Save', exact: true });
+  const save = page.getByRole('button', { name: 'Save job', exact: true });
   await save.click();
   await expect(save).toBeEnabled();
   await expect.poll(() => saveStarted).toBe(true);
@@ -59,7 +71,7 @@ test('manual save stays responsive and edits survive a delayed cloud response', 
   await expect(page.locator('#customer-customerName')).toHaveValue('Typed while syncing');
   await expect(page.getByText('Draft synced', { exact: true })).toBeVisible();
   await page.reload();
-  await page.getByRole('button', { name: 'Customer & Loss', exact: true }).last().click();
+  await navigate(page, 'customer');
   await expect(page.locator('#customer-customerName')).toHaveValue('Typed while syncing');
   expect(errors).toEqual([]);
 });
@@ -71,8 +83,8 @@ test('a failed cloud request keeps the saved job without an uncaught UI error', 
     if (body.action === 'getDraft') await ok(route, { draft: { job, recordId: job.recordId, updatedAt: '2026-10-06T12:00:00Z' } });
     else await route.fulfill({ status: 503, body: 'Temporarily unavailable', headers: { 'Access-Control-Allow-Origin': '*' } });
   });
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Save job', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Save job', exact: true })).toBeEnabled();
   await expect(page.getByText('Retrying the connection automatically.', { exact: false })).toBeVisible();
   await expect(page.getByText('Recovered customer', { exact: true }).first()).toBeVisible();
   expect(errors).toEqual([]);
@@ -88,11 +100,10 @@ const aiResponse = (route: Route) => route.fulfill({
   contentType: 'application/json',
   body: JSON.stringify({ choices: [{ message: { content: JSON.stringify(intakePayload) } }] }),
 });
-const intakeInput = (page: Page) => page.getByPlaceholder('Paste DASH intake notes, carrier assignment email, Xactimate recap, or drop a PDF here...');
+const intakeInput = (page: Page) => page.getByRole('textbox', { name: 'Or paste intake notes', exact: true });
 
 async function openNewJob(page: Page) {
-  await page.getByRole('button', { name: 'Account and job actions', exact: true }).click();
-  await page.getByRole('button', { name: 'Start a new job', exact: false }).click();
+  await page.getByRole('banner').getByRole('button', { name: 'New job', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Start New Restoration Job?' })).toBeVisible();
 }
 
@@ -101,8 +112,10 @@ async function clearJob(page: Page) {
   await page.getByRole('button', { name: 'Clear All Fields', exact: true }).click();
   await expect(page.getByText('New blank job created — not yet saved to the database.', { exact: true })).toBeVisible();
   await expect(intakeInput(page)).toHaveValue('');
-  await expect(page.getByText(/^Master Job Record Updated —/)).toHaveCount(0);
+  await expect(page.getByText('Job information updated', { exact: true })).toHaveCount(0);
+  await navigate(page, 'customer');
   await expect(page.locator('#customer-customerName')).toHaveValue('');
+  await navigate(page, 'intake');
 }
 
 for (const fileType of ['text', 'PDF'] as const) {
@@ -122,7 +135,7 @@ for (const fileType of ['text', 'PDF'] as const) {
         await ok(route, serverDraft);
       }
     });
-    await page.getByRole('button', { name: 'Customer & Loss', exact: true }).last().click();
+    await navigate(page, 'intake');
     let buffer = Buffer.from(intakeText);
     if (fileType === 'PDF') {
       const pdf = await PDFDocument.create();
@@ -132,23 +145,29 @@ for (const fileType of ['text', 'PDF'] as const) {
     }
     const file = { name: fileType === 'PDF' ? 'old-intake.pdf' : 'old-intake.txt', mimeType: fileType === 'PDF' ? 'application/pdf' : 'text/plain', buffer };
     await page.locator('input[type=file]').setInputFiles(file);
-    await expect(page.locator('#customer-customerName')).toHaveValue('Uploaded customer');
     await expect(page.getByText(file.name, { exact: true })).toBeVisible();
-    await expect(page.getByText(/^Master Job Record Updated —/)).toBeVisible();
+    await expect(page.getByText('Job information updated', { exact: true })).toBeVisible();
+    await expect(intakeInput(page)).toHaveValue(/Uploaded customer/);
+
+    await navigate(page, 'customer');
+    await expect(page.locator('#customer-customerName')).toHaveValue('Uploaded customer');
+    await expect(page.getByRole('button', { name: 'Review intake', exact: true })).toBeVisible();
+    await expect(intakeInput(page)).toHaveCount(0);
+    await page.getByRole('button', { name: 'Review intake', exact: true }).click();
     await expect(intakeInput(page)).toHaveValue(/Uploaded customer/);
 
     await openNewJob(page);
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(page.getByText(file.name, { exact: true })).toBeVisible();
-    await expect(page.locator('#customer-customerName')).toHaveValue('Uploaded customer');
-    await expect(page.getByText(/^Master Job Record Updated —/)).toBeVisible();
+    await expect(page.getByText('Job information updated', { exact: true })).toBeVisible();
 
     await clearJob(page);
     await expect(page.getByText(file.name, { exact: true })).toHaveCount(0);
     // Reload as soon as clearing completes, before the normal cloud autosave delay.
     await page.reload();
-    await page.getByRole('button', { name: 'Customer & Loss', exact: true }).last().click();
+    await navigate(page, 'customer');
     await expect(page.locator('#customer-customerName')).toHaveValue('');
+    await navigate(page, 'intake');
     await expect(intakeInput(page)).toHaveValue('');
     await expect(page.getByText(file.name, { exact: true })).toHaveCount(0);
     await expect.poll(() => serverDraft.job.customer.customerName).toBe('');
@@ -158,11 +177,126 @@ for (const fileType of ['text', 'PDF'] as const) {
 
     // The same file can be uploaded again after clearing, with a fresh analysis.
     await page.locator('input[type=file]').setInputFiles(file);
+    await navigate(page, 'customer');
     await expect(page.locator('#customer-customerName')).toHaveValue('Uploaded customer');
     expect(analyses).toBe(2);
     expect(errors).toEqual([]);
   });
 }
+
+for (const outcome of ['success', 'failure'] as const) {
+  test(`edits made in another section survive a delayed intake ${outcome}`, async ({ page }) => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    await page.route('https://api.deepseek.com/chat/completions', async (route) => {
+      await held;
+      if (outcome === 'success') await aiResponse(route);
+      else await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { message: 'Test failure' } }) });
+    });
+    await start(page, async (route, body) => {
+      if (body.action === 'getDraft') await ok(route, { draft: { job, recordId: job.recordId, updatedAt: '2026-10-06T12:00:00Z' } });
+      else if (body.action === 'saveDraft') await ok(route, { job: body.draft.job, updatedAt: new Date().toISOString() });
+    });
+    await navigate(page, 'intake');
+    await page.locator('input[type=file]').setInputFiles({ name: 'held-intake.txt', mimeType: 'text/plain', buffer: Buffer.from(intakeText) });
+    await expect(page.getByRole('button', { name: 'Analyzing intake…', exact: true })).toBeVisible();
+    await navigate(page, 'customer');
+    await page.locator('#customer-mainPhone').fill('260-555-0188');
+    release();
+    await expect(page.locator('#customer-customerName')).toHaveValue('Uploaded customer');
+    await expect(page.locator('#customer-mainPhone')).toHaveValue('260-555-0188');
+    await page.getByRole('button', { name: 'Review intake', exact: true }).click();
+    await expect(page.getByText('Job information updated', { exact: true })).toBeVisible();
+    await expect(intakeInput(page)).toHaveValue(/Uploaded customer/);
+  });
+}
+
+test('missing document fields lead directly to inputs and readiness updates across screens', async ({ page }) => {
+  await page.route('https://api.deepseek.com/chat/completions', aiResponse);
+  await start(page, async (route, body) => {
+    if (body.action === 'getDraft') await ok(route, { draft: { job, recordId: job.recordId, updatedAt: '2026-10-06T12:00:00Z' } });
+    else if (body.action === 'saveDraft') await ok(route, { job: body.draft.job, updatedAt: new Date().toISOString() });
+  });
+  await navigate(page, 'intake');
+  await page.locator('input[type=file]').setInputFiles({ name: 'review-intake.txt', mimeType: 'text/plain', buffer: Buffer.from(intakeText) });
+  await expect(page.getByText('Job information updated', { exact: true })).toBeVisible();
+  await navigate(page, 'documents');
+  await expect(page.getByText('3 required fields to review', { exact: true })).toBeVisible();
+  for (const field of [
+    { label: 'Loss property address', id: 'customer-lossAddress', value: '123 Review Street' },
+    { label: 'Insurance carrier', id: 'insurance-carrier', value: 'Review Carrier' },
+    { label: 'Deductible', id: 'deductible-input', value: '500' },
+  ]) {
+    await page.getByRole('button', { name: field.label, exact: true }).click();
+    await expect(page.locator(`#${field.id}`)).toBeFocused();
+    await page.locator(`#${field.id}`).fill(field.value);
+    await navigate(page, 'documents');
+  }
+  await expect(page.getByText('Required fields complete', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Missing required fields', { exact: true })).toHaveCount(0);
+  await navigate(page, 'intake');
+  await expect(page.getByText('Required information to confirm', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Required intake fields are complete.', { exact: false })).toBeVisible();
+});
+
+const libraryJobs = [
+  { recordId: 'saved-1', customerName: 'Zulu customer', jobNumber: 'JOB-2', lossAddress: '2 Main Street', updatedAt: '2026-10-07T12:00:00Z' },
+  { recordId: 'saved-2', customerName: 'Alpha customer', jobNumber: 'JOB-10', lossAddress: '10 Main Street', updatedAt: '2026-10-06T12:00:00Z' },
+];
+
+test('jobs can be searched and sorted, and Continue editing keeps current draft edits', async ({ page }) => {
+  let loads = 0;
+  await start(page, async (route, body) => {
+    if (body.action === 'getDraft') await ok(route, { draft: { job, recordId: job.recordId, updatedAt: '2026-10-06T12:00:00Z' } });
+    else if (body.action === 'getJob') { loads++; await ok(route, job); }
+    else if (body.action === 'saveDraft') await ok(route, { job: body.draft.job, updatedAt: new Date().toISOString() });
+  }, libraryJobs);
+  const library = page.getByRole('region', { name: 'Jobs', exact: true });
+  await expect(library.getByRole('listitem').first()).toContainText('Zulu customer');
+  await library.getByLabel('Sort by', { exact: true }).selectOption('customer');
+  await expect(library.getByRole('listitem').first()).toContainText('Alpha customer');
+  await library.getByLabel('Sort by', { exact: true }).selectOption('number');
+  await expect(library.getByRole('listitem').first()).toContainText('Zulu customer');
+  await library.getByRole('searchbox', { name: 'Search jobs', exact: true }).fill('10 Main Street');
+  await expect(library.getByRole('listitem')).toHaveCount(1);
+  await expect(library.getByRole('listitem')).toContainText('Alpha customer');
+  await library.getByRole('searchbox', { name: 'Search jobs', exact: true }).fill('no-match');
+  await library.getByRole('button', { name: 'Clear search', exact: true }).click();
+  await expect(library.getByRole('listitem')).toHaveCount(2);
+  await navigate(page, 'customer');
+  await page.locator('#customer-mainPhone').fill('260-555-0199');
+  await page.getByRole('button', { name: 'Open saved jobs', exact: true }).click();
+  await library.getByRole('button', { name: /^Continue editing/ }).click();
+  await expect(page.locator('#customer-mainPhone')).toHaveValue('260-555-0199');
+  expect(loads).toBe(0);
+});
+
+test('phone and tablet navigation, form actions, and account menu fit the screen', async ({ page }) => {
+  await start(page, async (route, body) => {
+    if (body.action === 'getDraft') await ok(route, { draft: { job, recordId: job.recordId, updatedAt: '2026-10-06T12:00:00Z' } });
+    else if (body.action === 'saveDraft') await ok(route, { job: body.draft.job, updatedAt: new Date().toISOString() });
+  }, libraryJobs);
+  for (const width of [320, 375, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await navigate(page, 'intake');
+    await expect(page.getByRole('heading', { name: 'Bring in your job information' })).toBeVisible();
+    await expect(page.getByRole('banner').getByRole('button', { name: 'New job', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Save job', exact: true })).toBeVisible();
+    await navigate(page, 'mortgage');
+    await expect(page.getByRole('heading', { name: 'Mortgage & Lienholder', exact: true })).toBeVisible();
+    await navigate(page, 'team');
+    await expect(page.getByRole('heading', { name: 'Mortgage & Lienholder', exact: true })).toHaveCount(0);
+    await navigate(page, 'home');
+    await expect(page.getByRole('region', { name: 'Jobs', exact: true })).toBeVisible();
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    const account = page.getByRole('button', { name: 'Account and connections', exact: true });
+    await account.click();
+    await expect(page.locator('#account-panel')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#account-panel')).toHaveCount(0);
+    await expect(account).toBeFocused();
+  }
+});
 
 for (const outcome of ['success', 'failure'] as const) {
   test(`a delayed AI ${outcome} cannot restore an intake after clearing`, async ({ page }) => {
@@ -181,19 +315,23 @@ for (const outcome of ['success', 'failure'] as const) {
       if (body.action === 'getDraft') await ok(route, { draft: { job, recordId: job.recordId, updatedAt: '2026-10-06T12:00:00Z' } });
       else if (body.action === 'saveDraft') await ok(route, { job: body.draft.job, updatedAt: new Date().toISOString() });
     });
-    await page.getByRole('button', { name: 'Customer & Loss', exact: true }).last().click();
+    await navigate(page, 'intake');
     await page.locator('input[type=file]').setInputFiles({ name: 'pending-intake.txt', mimeType: 'text/plain', buffer: Buffer.from(intakeText) });
-    await expect(page.getByRole('button', { name: 'DeepSeek AI Analyzing...', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Analyzing intake…', exact: true })).toBeVisible();
+    // Moving through job sections must not discard an analysis in progress.
+    await navigate(page, 'customer');
+    await expect(page.getByText('Analyzing intake', { exact: false }).last()).toBeVisible();
     await clearJob(page);
     release();
     await expect.poll(() => analysisFinished).toBe(true);
     // Allow response parsing and the fallback path to finish before checking the form.
     await page.waitForTimeout(200);
-    await expect(page.locator('#customer-customerName')).toHaveValue('');
     await expect(intakeInput(page)).toHaveValue('');
-    await expect(page.getByText(/^Master Job Record Updated —/)).toHaveCount(0);
+    await expect(page.getByText('Job information updated', { exact: true })).toHaveCount(0);
     await expect(page.getByText('pending-intake.txt', { exact: true })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'AI Analyze & Populate Master Record', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Analyze intake', exact: true })).toBeDisabled();
+    await navigate(page, 'customer');
+    await expect(page.locator('#customer-customerName')).toHaveValue('');
     expect(errors).toEqual([]);
   });
 }

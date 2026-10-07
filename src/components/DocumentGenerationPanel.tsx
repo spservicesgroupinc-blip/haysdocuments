@@ -496,7 +496,7 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
             </p>
           ) : (
             <p className="mt-2 text-emerald-400 text-[11px]">
-              ✓ All required core fields reconciled with 100% data consistency across all pages.
+              Required fields were filled in when generated. Review the documents before sharing.
             </p>
           )}
         </div>
