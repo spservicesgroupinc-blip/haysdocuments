@@ -83,6 +83,7 @@ import { Loader2 } from 'lucide-react';
 export default function App() {
   const [jobData, setJobData] = useState<RestorationJobData>(() => createEmptyJob());
   const [provenance, setProvenance] = useState<ProvenanceRecord>({});
+  const [intakeSession, setIntakeSession] = useState(0);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('home');
 
   // Google Workspace Authentication & state
@@ -775,12 +776,38 @@ export default function App() {
       isOpen: true,
       title: 'Start New Restoration Job?',
       message:
-        'This will clear all current customer, insurance, and claim fields back to default empty values. Make sure you have downloaded or saved any needed PDF documents first.',
+        'This will remove the uploaded intake file, pasted text, and analysis results, and reset all job fields to their defaults. Make sure you have downloaded or saved any needed PDF documents first.',
       confirmLabel: 'Clear All Fields',
       isDanger: true,
       action: async () => {
-        replaceJob(createEmptyJob());
+        const blankJob = createEmptyJob();
+        replaceJob(blankJob);
         setRecordId(undefined);
+        setProvenance({});
+        // Remount the intake panel so every upload and analysis state starts fresh.
+        setIntakeSession((previous) => previous + 1);
+        setDriveSuccessLink(undefined);
+        setSheetsSuccessLink(undefined);
+        setIsPreviewOpen(false);
+        setPreviewTitle('');
+        setPreviewDoc(null);
+        setPreviewBytes(null);
+        setPreviewSpans([]);
+        setIsPreviewLoading(false);
+        setIsPreviewRegenerating(false);
+        if (previewRegenTimerRef.current !== null) {
+          window.clearTimeout(previewRegenTimerRef.current);
+          previewRegenTimerRef.current = null;
+        }
+        // Persist the cleared workspace immediately instead of waiting for autosave.
+        lastDraftScheduledRef.current = JSON.stringify({ jobData: blankJob, recordId: undefined });
+        scheduleDraftSave(blankJob);
+        try {
+          await flushDraftSave();
+        } catch (err: any) {
+          showStatus('error', err?.message || 'Could not save the cleared workspace on this device.');
+          return;
+        }
         showStatus('info', 'New blank job created — not yet saved to the database.');
       },
     });
@@ -892,6 +919,7 @@ export default function App() {
           <div className="flex-1 min-w-0 space-y-4 sm:space-y-6">
             {/* The intake parser always sits at the top — paste an intake to refresh every section. */}
             <IntakeParserCard
+              key={intakeSession}
               onApplyIntake={handleApplyIntake}
               currentJob={jobData}
               currentProvenance={provenance}

@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Sparkles,
   ArrowRight,
@@ -58,6 +58,19 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
     aiError?: string;
   } | null>(null);
   const lastParsedTextRef = useRef('');
+  const isActiveRef = useRef(true);
+  const pasteTimerRef = useRef<number | null>(null);
+  const fileReaderRef = useRef<FileReader | null>(null);
+
+  useEffect(() => {
+    isActiveRef.current = true;
+    return () => {
+      // A reset must discard work that finishes after this intake panel is removed.
+      isActiveRef.current = false;
+      if (pasteTimerRef.current !== null) window.clearTimeout(pasteTimerRef.current);
+      if (fileReaderRef.current?.readyState === FileReader.LOADING) fileReaderRef.current.abort();
+    };
+  }, []);
 
   const commitResult = (
     result: IntakeParseResult,
@@ -82,15 +95,17 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
   /** AI-first: DeepSeek reads and understands the document; rules parser is the fallback. */
   const handleParse = async (textToParse: string, source: ParseSource = 'manual') => {
     const trimmed = textToParse.trim();
-    if (!trimmed || isAnalyzing) return;
+    if (!trimmed || isAnalyzing || !isActiveRef.current) return;
     lastParsedTextRef.current = trimmed;
 
     setIsAnalyzing(true);
     try {
       const payload = await analyzeIntakeWithAi(trimmed);
+      if (!isActiveRef.current) return;
       const result = applyAiExtractionToJob(payload, currentJob);
       commitResult(result, source, 'ai');
     } catch (error) {
+      if (!isActiveRef.current) return;
       const message = error instanceof Error ? error.message : String(error);
       console.error('DeepSeek intake analysis failed:', error);
       const result = parseRawIntakeText(trimmed, currentJob);
@@ -99,7 +114,7 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
       );
       commitResult(result, source, 'rules', message);
     } finally {
-      setIsAnalyzing(false);
+      if (isActiveRef.current) setIsAnalyzing(false);
     }
   };
 
@@ -108,7 +123,10 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
     const pasted = e.clipboardData?.getData('text') ?? '';
     if (pasted.trim().length < AUTO_PARSE_MIN_CHARS) return;
     const target = e.currentTarget;
-    window.setTimeout(() => {
+    if (pasteTimerRef.current !== null) window.clearTimeout(pasteTimerRef.current);
+    pasteTimerRef.current = window.setTimeout(() => {
+      pasteTimerRef.current = null;
+      if (!isActiveRef.current) return;
       const value = target.value;
       if (value.trim() && value.trim() !== lastParsedTextRef.current) {
         void handleParse(value, 'paste');
@@ -128,7 +146,9 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
       try {
         setIsExtractingPdf(true);
         const arrayBuffer = await file.arrayBuffer();
+        if (!isActiveRef.current) return;
         const extracted = await extractTextFromPdfBuffer(arrayBuffer);
+        if (!isActiveRef.current) return;
         if (extracted && extracted.trim()) {
           setIntakeText(extracted);
           handleParse(extracted, 'file');
@@ -138,15 +158,18 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
           setIntakeText(fallbackNote);
         }
       } catch (err) {
+        if (!isActiveRef.current) return;
         console.error('Failed to extract text from PDF:', err);
         const errorNote = `[Error Reading PDF: ${file.name}]\nFailed to extract text. You can still paste the raw DASH notes directly below.`;
         setIntakeText(errorNote);
       } finally {
-        setIsExtractingPdf(false);
+        if (isActiveRef.current) setIsExtractingPdf(false);
       }
     } else {
       const reader = new FileReader();
+      fileReaderRef.current = reader;
       reader.onload = (event) => {
+        if (!isActiveRef.current) return;
         const content = event.target?.result as string;
         if (content) {
           setIntakeText(content);
