@@ -30,6 +30,7 @@ import {
 } from '../services/pdfService';
 import { isDesktop } from '../services/desktopBridge';
 import { PdfPreviewRequest } from './SectionPdfActions';
+import { getMissingJobFields, type MissingJobField } from '../services/jobReadiness';
 
 interface DocumentGenerationPanelProps {
   jobData: RestorationJobData;
@@ -40,6 +41,7 @@ interface DocumentGenerationPanelProps {
   isSheetsLoading: boolean;
   driveSuccessLink?: string;
   sheetsSuccessLink?: string;
+  onReviewField?: (field: MissingJobField) => void;
 }
 
 export const DocumentGenerationPanel: React.FC<DocumentGenerationPanelProps> = ({
@@ -51,6 +53,7 @@ export const DocumentGenerationPanel: React.FC<DocumentGenerationPanelProps> = (
   isSheetsLoading,
   driveSuccessLink,
   sheetsSuccessLink,
+  onReviewField,
 }) => {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [isZipping, setIsZipping] = useState(false);
@@ -70,14 +73,8 @@ export const DocumentGenerationPanel: React.FC<DocumentGenerationPanelProps> = (
   // so the per-section quick actions always match this panel.
   const docList: JobDocument[] = JOB_DOCUMENTS;
 
-  // Quality Gate Verification check
-  const unresolvedList: string[] = [];
-  if (!jobData.customer.customerName) unresolvedList.push('Customer Name');
-  if (!jobData.customer.lossAddress) unresolvedList.push('Loss Property Address');
-  if (!jobData.insurance.carrier) unresolvedList.push('Insurance Carrier');
-  if (!jobData.insurance.claimNumber) unresolvedList.push('Claim Number');
-  if (jobData.financials.totalApprovedRcv === '') unresolvedList.push('Total Approved RCV');
-  if (jobData.financials.deductible === '') unresolvedList.push('Deductible');
+  const missingFields = getMissingJobFields(jobData);
+  const unresolvedList = missingFields.map((field) => field.label);
 
   const isQualityGatePassed = unresolvedList.length === 0;
 
@@ -191,7 +188,7 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
   };
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 mt-8 mb-10">
+    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5">
       {/* Header */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-100">
         <div>
@@ -201,10 +198,10 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
             </span>
             <div>
               <h2 className="text-[15px] font-semibold text-slate-900 tracking-tight">
-                Documents &amp; Output
+                Documents
               </h2>
               <p className="text-[12px] text-slate-500 mt-0.5">
-                Standard Hays + Sons package following production naming conventions
+                Review, preview, and download the production packet or individual forms
               </p>
             </div>
           </div>
@@ -267,13 +264,13 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
           <div>
             <span className="font-bold text-slate-800">
               {isQualityGatePassed
-                ? 'Production Quality Gate: Verified Ready'
-                : 'Quality Gate Notice: Incomplete Fields'}
+                ? 'Required fields complete'
+                : `${missingFields.length} required field${missingFields.length === 1 ? '' : 's'} to review`}
             </span>
             <span className="text-slate-500 block text-[11px]">
               {isQualityGatePassed
-                ? 'All mandatory customer identity, claim numbers, and financial reconciliations agree.'
-                : `Missing: ${unresolvedList.join(', ')} (documents can still be generated with blank placeholders).`}
+                ? 'Customer, claim, and financial fields are filled in. Review the packet before sharing.'
+                : 'Choose a missing field below to fill it in. Downloads remain available with blank placeholders.'}
             </span>
           </div>
         </div>
@@ -287,6 +284,22 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
           </span>
         </div>
       </div>
+
+      {missingFields.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2" aria-label="Missing required fields">
+          {missingFields.map((field) => onReviewField ? (
+            <button
+              key={field.inputId}
+              type="button"
+              onClick={() => onReviewField(field)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900 hover:bg-amber-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700"
+            >
+              <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
+              {field.label}
+            </button>
+          ) : <span key={field.inputId} className="text-xs text-amber-900">{field.label}</span>)}
+        </div>
+      )}
 
       {/* Cloud Links Notifications if saved */}
       {(driveSuccessLink || sheetsSuccessLink) && (
@@ -396,9 +409,9 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
       <div className="mt-8">
         <div className="flex items-center justify-between mb-3">
           <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-            Separate Logical Deliverables (01 through 08)
+            Individual documents
           </h4>
-          <span className="text-[11px] text-slate-400">Standardized Hays production naming</span>
+          <span className="text-xs text-slate-500">Preview or download a single form</span>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import {
   Sparkles,
   ArrowRight,
@@ -7,6 +7,8 @@ import {
   AlertTriangle,
   Info,
   Loader2,
+  FileText,
+  ChevronDown,
 } from 'lucide-react';
 import { RestorationJobData } from '../types/jobData';
 import {
@@ -25,6 +27,9 @@ interface IntakeParserCardProps {
   /** The record currently in the workspace - pastes merge into it instead of replacing it. */
   currentJob?: RestorationJobData;
   currentProvenance?: ProvenanceRecord;
+  /** Keep the intake mounted while showing a compact summary in other workspace tabs. */
+  isExpanded?: boolean;
+  onExpand?: () => void;
 }
 
 /** Minimum size of a paste before it is parsed automatically. */
@@ -36,9 +41,13 @@ type ParseMode = 'ai' | 'rules';
 export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
   onApplyIntake,
   currentJob,
+  isExpanded = true,
+  onExpand,
 }) => {
   const [intakeText, setIntakeText] = useState('');
   const [isExtractingPdf, setIsExtractingPdf] = useState(false);
+  const [isReadingFile, setIsReadingFile] = useState(false);
+  const [fileError, setFileError] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [uploadedFileInfo, setUploadedFileInfo] = useState<{
     name: string;
@@ -61,6 +70,9 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
   const isActiveRef = useRef(true);
   const pasteTimerRef = useRef<number | null>(null);
   const fileReaderRef = useRef<FileReader | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const intakeTextId = useId();
+  const intakeHelpId = useId();
 
   useEffect(() => {
     isActiveRef.current = true;
@@ -135,7 +147,11 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
   };
 
   const processFile = async (file: File) => {
+    if (isExtractingPdf || isReadingFile || isAnalyzing || !isActiveRef.current) return;
     const isPdf = file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf';
+    setFileError(null);
+    setLastParseResult(null);
+    setIntakeText('');
     setUploadedFileInfo({
       name: file.name,
       sizeKb: Math.round(file.size / 1024),
@@ -156,25 +172,36 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
           // If no direct text, put note and attempt metadata
           const fallbackNote = `[PDF Document: ${file.name} (${Math.round(file.size / 1024)} KB)]\nNote: This PDF did not yield standard selectable text (it may be a flattened image scan). Please verify the job fields below or paste the intake text directly.`;
           setIntakeText(fallbackNote);
+          setFileError('This PDF has no selectable text. Paste the intake notes below or upload a text-based PDF.');
         }
       } catch (err) {
         if (!isActiveRef.current) return;
         console.error('Failed to extract text from PDF:', err);
         const errorNote = `[Error Reading PDF: ${file.name}]\nFailed to extract text. You can still paste the raw DASH notes directly below.`;
         setIntakeText(errorNote);
+        setFileError('The PDF could not be read. Try another file or paste the intake notes below.');
       } finally {
         if (isActiveRef.current) setIsExtractingPdf(false);
       }
     } else {
       const reader = new FileReader();
+      setIsReadingFile(true);
       fileReaderRef.current = reader;
       reader.onload = (event) => {
         if (!isActiveRef.current) return;
+        setIsReadingFile(false);
         const content = event.target?.result as string;
         if (content) {
           setIntakeText(content);
           handleParse(content, 'file');
+        } else {
+          setFileError('This file is empty. Try another file or paste the intake notes below.');
         }
+      };
+      reader.onerror = () => {
+        if (!isActiveRef.current) return;
+        setIsReadingFile(false);
+        setFileError('The file could not be read. Try another file or paste the intake notes below.');
       };
       reader.readAsText(file);
     }
@@ -189,6 +216,7 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
+    if (isExtractingPdf || isReadingFile || isAnalyzing) return;
     setIsDragging(true);
   };
 

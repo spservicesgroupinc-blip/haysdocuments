@@ -34,10 +34,11 @@ export const SectionInsurance: React.FC<SectionInsuranceProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Insurance Carrier */}
         <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">
+          <label htmlFor="insurance-carrier" className="block text-xs font-semibold text-slate-700 mb-1">
             Insurance Carrier *
           </label>
           <input
+            id="insurance-carrier"
             type="text"
             value={data.carrier}
             onChange={(e) => onChange('carrier', e.target.value)}
@@ -48,10 +49,11 @@ export const SectionInsurance: React.FC<SectionInsuranceProps> = ({
 
         {/* Claim Number */}
         <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">
+          <label htmlFor="insurance-claimNumber" className="block text-xs font-semibold text-slate-700 mb-1">
             Claim Number *
           </label>
           <input
+            id="insurance-claimNumber"
             type="text"
             value={data.claimNumber}
             onChange={(e) => onChange('claimNumber', e.target.value)}
