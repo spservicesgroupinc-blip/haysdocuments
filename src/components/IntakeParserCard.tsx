@@ -12,7 +12,6 @@ import {
 } from 'lucide-react';
 import { RestorationJobData } from '../types/jobData';
 import {
-  parseRawIntakeText,
   applyAiExtractionToJob,
   IntakeParseResult,
   ProvenanceRecord,
@@ -22,8 +21,7 @@ import {
 import { analyzeIntakeWithAi } from '../services/deepseekIntake';
 import { extractTextFromPdfBuffer } from '../services/pdfExtractor';
 import { getMissingJobFields } from '../services/jobReadiness';
-import { getCustomerReference } from '../services/customerReferenceService';
-import { enrichIntakeWithReference, findCustomerReferences, type CustomerReference } from '../services/customerReference';
+import { attachKnowledgeBaseAnalysis } from '../services/knowledgeBaseReview';
 
 interface IntakeParserCardProps {
   onApplyIntake: (job: RestorationJobData, provenance: ProvenanceRecord) => void;
@@ -52,6 +50,7 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
   const [isReadingFile, setIsReadingFile] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [uploadedFileInfo, setUploadedFileInfo] = useState<{
     name: string;
     sizeKb: number;
@@ -109,43 +108,26 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
     });
   };
 
-  /** AI-first: DeepSeek reads and understands the document; rules parser is the fallback. */
+  /** The backend supplies the current knowledge base to DeepSeek on every run. */
   const handleParse = async (textToParse: string, source: ParseSource = 'manual') => {
     const trimmed = textToParse.trim();
     if (!trimmed || isAnalyzing || !isActiveRef.current) return;
     lastParsedTextRef.current = trimmed;
 
     setIsAnalyzing(true);
-    let customers: CustomerReference[] = [];
-    let referenceWarning: string | undefined;
-    // Fetch on every intake; never silently reuse a previous CSV snapshot.
+    setAnalysisError(null);
     try {
-      customers = (await getCustomerReference()).customers;
-    } catch (error) {
-      referenceWarning = `Customer reference unavailable: ${error instanceof Error ? error.message : String(error)} Intake continues without CSV context.`;
-    }
-    if (!isActiveRef.current) return;
-    try {
-      const identity = parseRawIntakeText(trimmed);
-      const matches = findCustomerReferences(trimmed, customers, {
-        customerName: identity.jobData.customer.customerName,
-        jobNumber: identity.provenance.jobNumber?.source === 'EXTRACTED' ? identity.jobData.customer.jobNumber : '',
-      });
-      const payload = await analyzeIntakeWithAi(trimmed, matches.length === 1 ? matches : []);
+      const payload = await analyzeIntakeWithAi(trimmed);
       if (!isActiveRef.current) return;
-      const result = enrichIntakeWithReference(applyAiExtractionToJob(payload, currentJobRef.current), trimmed, customers);
-      if (referenceWarning) result.extractionSummary.warnings.unshift(referenceWarning);
+      if (!payload.knowledgeBase) throw new Error('The backend did not return knowledge-base analysis metadata. Deploy the latest Apps Script version.');
+      const result = applyAiExtractionToJob(payload, currentJobRef.current);
+      result.jobData = attachKnowledgeBaseAnalysis(result.jobData, payload.knowledgeBase);
       commitResult(result, source, 'ai');
     } catch (error) {
       if (!isActiveRef.current) return;
       const message = error instanceof Error ? error.message : String(error);
-      console.error('DeepSeek intake analysis failed:', error);
-      const result = enrichIntakeWithReference(parseRawIntakeText(trimmed, currentJobRef.current), trimmed, customers);
-      if (referenceWarning) result.extractionSummary.warnings.unshift(referenceWarning);
-      result.extractionSummary.warnings.unshift(
-        `AI analysis failed (${message}) - the built-in rules parser was used instead.`
-      );
-      commitResult(result, source, 'rules', message);
+      lastParsedTextRef.current = '';
+      setAnalysisError(`Knowledge-base analysis failed: ${message} Your job fields were not changed. Retry the analysis when the connection is ready.`);
     } finally {
       if (isActiveRef.current) setIsAnalyzing(false);
     }
@@ -281,6 +263,8 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
     ? 'Reading file'
     : isAnalyzing
     ? 'Analyzing intake'
+    : analysisError
+    ? 'Analysis failed - retry intake'
     : fileError
     ? 'Needs intake text'
     : lastParseResult && !hasUnanalyzedText
@@ -288,7 +272,7 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
     : intakeText.trim()
     ? 'Ready to analyze'
     : 'File uploaded';
-  const StatusIcon = isBusy ? Loader2 : fileError ? AlertTriangle : lastParseResult && !hasUnanalyzedText ? CheckCircle2 : FileText;
+  const StatusIcon = isBusy ? Loader2 : fileError || analysisError ? AlertTriangle : lastParseResult && !hasUnanalyzedText ? CheckCircle2 : FileText;
 
   if (!isExpanded) {
     if (!hasIntakeContent) return null;
@@ -420,7 +404,16 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
         )}
       </div>
 
-      {lastParseResult && !isBusy && (
+      {analysisError && <p role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{analysisError}</p>}
+      {currentJob?.knowledgeBase && (
+        <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+          <p className="font-semibold">{currentJob.knowledgeBase.customerCount ? `Analyzed with customer knowledge base (${currentJob.knowledgeBase.customerCount} customers)` : 'Analyzed without customer context: no CSV imported yet'}</p>
+          <p>{currentJob.knowledgeBase.matchedCustomer ? `Matched ${currentJob.knowledgeBase.matchedCustomer.customerName} · ${currentJob.knowledgeBase.matchedCustomer.jobNumber}` : currentJob.knowledgeBase.matchStatus === 'ambiguous' ? 'Customer match is ambiguous. Confirm the DASH job manually.' : 'No customer match found.'}</p>
+          <p>{currentJob.knowledgeBase.explanation}</p>
+          {currentJob.knowledgeBase.fileName && <p className="mt-1 text-xs">Source: {currentJob.knowledgeBase.fileName} · Version {currentJob.knowledgeBase.version}</p>}
+        </div>
+      )}
+      {lastParseResult && !isBusy && !analysisError && (
         <div className="mt-6 border-t border-slate-200 pt-5">
           <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
             <CheckCircle2 className="h-5 w-5 text-emerald-600" aria-hidden="true" />

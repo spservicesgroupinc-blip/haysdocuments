@@ -10,7 +10,7 @@ const ok = (route: Route, data: unknown) => route.fulfill({
 });
 
 const sectionLabels = {
-  home: 'Jobs', customerImport: 'Current customers', intake: 'Intake', customer: 'Customer & Property', insurance: 'Insurance & Claim',
+  home: 'Jobs', customerImport: 'Customer Knowledge Base', intake: 'Intake', customer: 'Customer & Property', insurance: 'Insurance & Claim',
   financials: 'Financials', mortgage: 'Mortgage', team: 'Team', productionNotes: 'Production Notes',
   checklist: 'Checklist', changeOrder: 'Change Order', documents: 'Documents',
 };
@@ -28,6 +28,7 @@ async function start(page: Page, handler: (route: Route, body: any) => Promise<v
   await page.route(/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/, async (route) => {
     const body = route.request().postDataJSON();
     if (body.action === 'checkSession') await ok(route, { user });
+    else if (body.action === 'analyzeIntake' && !customReference) await route.fallback();
     else if (body.action === 'listJobs') await ok(route, savedJobs);
     else if (body.action === 'getCustomerReference' && !customReference) await ok(route, { customers: [], fileName: '', updatedAt: '', updatedBy: '' });
     else await handler(route, body);
@@ -146,10 +147,8 @@ const intakePayload = {
   insurance: { claimNumber: 'OLD-CLAIM' },
   financials: { totalApprovedRcv: 12000 },
 };
-const aiResponse = (route: Route) => route.fulfill({
-  contentType: 'application/json',
-  body: JSON.stringify({ choices: [{ message: { content: JSON.stringify(intakePayload) } }] }),
-});
+const emptyContext = { version: '', fileName: '', customerCount: 0, matchStatus: 'none', matchedCustomer: null, explanation: 'No customer CSV uploaded.', estimateTotal: 12000, priceReview: null };
+const aiResponse = (route: Route) => ok(route, { ...intakePayload, knowledgeBase: emptyContext });
 const intakeInput = (page: Page) => page.getByRole('textbox', { name: 'Or paste intake notes', exact: true });
 
 async function openNewJob(page: Page) {
@@ -174,7 +173,7 @@ for (const fileType of ['text', 'PDF'] as const) {
     let analyses = 0;
     const errors: string[] = [];
     page.on('pageerror', (err) => errors.push(err.message));
-    await page.route('https://api.deepseek.com/chat/completions', async (route) => {
+    await page.route(/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/, async (route) => {
       analyses++;
       await aiResponse(route);
     });
@@ -238,7 +237,7 @@ for (const outcome of ['success', 'failure'] as const) {
   test(`edits made in another section survive a delayed intake ${outcome}`, async ({ page }) => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
-    await page.route('https://api.deepseek.com/chat/completions', async (route) => {
+    await page.route(/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/, async (route) => {
       await held;
       if (outcome === 'success') await aiResponse(route);
       else await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { message: 'Test failure' } }) });
@@ -253,16 +252,17 @@ for (const outcome of ['success', 'failure'] as const) {
     await navigate(page, 'customer');
     await page.locator('#customer-mainPhone').fill('260-555-0188');
     release();
-    await expect(page.locator('#customer-customerName')).toHaveValue('Uploaded customer');
+    await expect(page.locator('#customer-customerName')).toHaveValue(outcome === 'success' ? 'Uploaded customer' : 'Recovered customer');
     await expect(page.locator('#customer-mainPhone')).toHaveValue('260-555-0188');
     await page.getByRole('button', { name: 'Review intake', exact: true }).click();
-    await expect(page.getByText('Job information updated', { exact: true })).toBeVisible();
+    if (outcome === 'success') await expect(page.getByText('Job information updated', { exact: true })).toBeVisible();
+    else await expect(page.getByRole('alert')).toContainText('Knowledge-base analysis failed');
     await expect(intakeInput(page)).toHaveValue(/Uploaded customer/);
   });
 }
 
 test('missing document fields lead directly to inputs and readiness updates across screens', async ({ page }) => {
-  await page.route('https://api.deepseek.com/chat/completions', aiResponse);
+  await page.route(/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/, aiResponse);
   await start(page, async (route, body) => {
     if (body.action === 'getDraft') await ok(route, { draft: { job, recordId: job.recordId, updatedAt: '2026-10-06T12:00:00Z' } });
     else if (body.action === 'saveDraft') await ok(route, { job: body.draft.job, updatedAt: new Date().toISOString() });
@@ -355,7 +355,7 @@ for (const outcome of ['success', 'failure'] as const) {
     let analysisFinished = false;
     const errors: string[] = [];
     page.on('pageerror', (err) => errors.push(err.message));
-    await page.route('https://api.deepseek.com/chat/completions', async (route) => {
+    await page.route(/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/, async (route) => {
       await held;
       if (outcome === 'success') await aiResponse(route);
       else await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { message: 'Test failure' } }) });

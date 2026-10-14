@@ -41,7 +41,7 @@ export interface WorkspaceSection {
 /** Order mirrors the intake-to-production workflow. */
 export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
   { id: 'home', label: 'Jobs', icon: Home, group: 'Workspace' },
-  { id: 'customerImport', label: 'Current customers', icon: Upload, group: 'Workspace' },
+  { id: 'customerImport', label: 'Customer Knowledge Base', icon: Upload, group: 'Workspace' },
   { id: 'intake', label: 'Intake', icon: FileInput, group: 'Workspace' },
   { id: 'customer', label: 'Customer & Property', icon: UserCircle, group: 'Job details' },
   { id: 'insurance', label: 'Insurance & Claim', icon: ShieldAlert, group: 'Job details' },

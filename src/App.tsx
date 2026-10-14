@@ -75,6 +75,7 @@ import { ConfirmModal } from './components/ConfirmModal';
 import { PwaStatus } from './components/PwaStatus';
 import { ProvenanceRecord } from './services/intakeParser';
 import { getMissingJobFields, type MissingJobField } from './services/jobReadiness';
+import { hasUnresolvedPriceReview, PRICE_DEPENDENT_DOCUMENT_IDS, resolveKnowledgeBasePrice } from './services/knowledgeBaseReview';
 import { ArrowLeft, ArrowRight, Loader2 } from 'lucide-react';
 
 export default function App() {
@@ -546,6 +547,11 @@ export default function App() {
 
   // Preview Document Handler
   const handleOpenPreview = async (doc: JobDocument) => {
+    if (PRICE_DEPENDENT_DOCUMENT_IDS.has(doc.id) && hasUnresolvedPriceReview(jobDataRef.current)) {
+      showStatus('error', 'Choose the contract price in Financials before generating this document.');
+      handleNavigate('financials');
+      return;
+    }
     setPreviewTitle(doc.title);
     setPreviewDoc(doc);
     setPreviewBytes(null);
@@ -719,6 +725,11 @@ export default function App() {
 
   // Save to Google Drive with Mandatory User Confirmation
   const handleSaveToDrive = () => {
+    if (hasUnresolvedPriceReview(jobDataRef.current)) {
+      showStatus('error', 'Choose the contract price in Financials before saving the packet.');
+      handleNavigate('financials');
+      return;
+    }
     const snapshot = jobDataRef.current;
     const session = workspaceSessionRef.current;
     const fileName = `${snapshot.customer.jobNumber}_Complete_Packet_${snapshot.customer.customerName}.pdf`;
@@ -981,6 +992,7 @@ export default function App() {
                 jobData={jobData}
                 onPreview={handleOpenPreview}
                 onRcvChange={(val) => updateFinancials(val, jobData.financials.deductible)}
+                onResolvePrice={(source) => setJobData(current => resolveKnowledgeBasePrice(current, source))}
                 onDeductibleChange={(val) =>
                   updateFinancials(jobData.financials.totalApprovedRcv, val)
                 }
