@@ -764,6 +764,12 @@ function handleAction_(payload) {
   if (action === 'getDraft') {
     return successResponse_({ draft: getDraft_(user) });
   }
+  if (action === 'getCustomerReference') {
+    return successResponse_(getCustomerReference_());
+  }
+  if (action === 'replaceCustomerReference') {
+    return successResponse_(replaceCustomerReference_(user, payload));
+  }
   if (action === 'listUsers') {
     if (user.role !== 'admin') throw appError_('forbidden', 'Administrator rights required.');
     return successResponse_(listUsers());
@@ -788,6 +794,76 @@ function appError_(code, message) {
   var err = new Error(message || code);
   err.code = code;
   return err;
+}
+
+/* Shared CSV reference: one JSON record per cell prevents spreadsheet formulas.
+ * Metadata is JSON too. Each replacement overwrites all prior rows, including
+ * blank padding when the new list is shorter, in ONE locked setValues call.
+ * No raw CSV or previous customer snapshot is retained.
+ */
+function customerReferenceSheet_() {
+  var ss = getSpreadsheet_();
+  return ss.getSheetByName('CustomerReference') || ss.insertSheet('CustomerReference');
+}
+
+function getCustomerReference_() {
+  return withWriteLock_(function () {
+    var rows = customerReferenceSheet_().getDataRange().getValues();
+    var metadata = rows.length > 1 && rows[1][1] ? JSON.parse(String(rows[1][1])) : {};
+    var customers = [];
+    for (var i = 1; i < rows.length; i++) {
+      if (rows[i][0]) customers.push(JSON.parse(String(rows[i][0])));
+    }
+    return {
+      customers: customers,
+      fileName: metadata.fileName || '',
+      updatedAt: metadata.updatedAt || '',
+      updatedBy: metadata.updatedBy || ''
+    };
+  });
+}
+
+function replaceCustomerReference_(user, payload) {
+  if (user.role !== 'admin' && user.role !== 'editor') {
+    throw appError_('forbidden', 'Your role does not have permission to replace the customer reference.');
+  }
+  var input = payload.customers;
+  if (!Array.isArray(input) || input.length < 1 || input.length > 5000) {
+    throw appError_('bad_request', 'Upload between 1 and 5000 customer records.');
+  }
+  if (typeof payload.fileName !== 'string' || !payload.fileName.trim() || payload.fileName.length > 300) {
+    throw appError_('bad_request', 'A valid CSV filename is required.');
+  }
+  var seen = Object.create(null);
+  var customers = input.map(function (item) {
+    if (!item || typeof item.customerName !== 'string' || typeof item.jobNumber !== 'string') {
+      throw appError_('bad_request', 'Customer name and job number are required.');
+    }
+    var name = item.customerName.trim(), number = item.jobNumber.trim(), price = item.contractPrice;
+    if (!name || name.length > 300 || !number || number.length > 100) {
+      throw appError_('bad_request', 'Invalid customer name or job number.');
+    }
+    if (price !== null && (typeof price !== 'number' || !isFinite(price) || price < 0 || price > 1e12 || Math.abs(price * 100 - Math.round(price * 100)) > 0.01)) {
+      throw appError_('bad_request', 'Invalid contract price.');
+    }
+    var key = number.toUpperCase();
+    if (seen[key]) throw appError_('bad_request', 'Duplicate job number: ' + number);
+    seen[key] = true;
+    return { customerName: name, jobNumber: number, contractPrice: price };
+  });
+  return withWriteLock_(function () {
+    var sheet = customerReferenceSheet_();
+    var metadata = { fileName: payload.fileName.trim(), updatedAt: new Date().toISOString(), updatedBy: user.email };
+    var rows = [['CustomerJson', 'ImportJson']];
+    customers.forEach(function (customer, index) {
+      rows.push([JSON.stringify(customer), index === 0 ? JSON.stringify(metadata) : '']);
+    });
+    var rowCount = Math.max(rows.length, sheet.getLastRow());
+    while (rows.length < rowCount) rows.push(['', '']);
+    if (rowCount > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), rowCount - sheet.getMaxRows());
+    sheet.getRange(1, 1, rows.length, 2).setValues(rows);
+    return { customers: customers, fileName: metadata.fileName, updatedAt: metadata.updatedAt, updatedBy: metadata.updatedBy };
+  });
 }
 
 /* ---------------------------------------------------------------------------

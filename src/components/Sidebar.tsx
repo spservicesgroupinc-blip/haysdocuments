@@ -12,12 +12,14 @@ import {
   FileInput,
   Landmark,
   AlertCircle,
+  Upload,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 /** Every page reachable from the workspace side menu. */
 export type WorkspaceTab =
   | 'home'
+  | 'customerImport'
   | 'intake'
   | 'customer'
   | 'insurance'
@@ -39,6 +41,7 @@ export interface WorkspaceSection {
 /** Order mirrors the intake-to-production workflow. */
 export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
   { id: 'home', label: 'Jobs', icon: Home, group: 'Workspace' },
+  { id: 'customerImport', label: 'Current customers', icon: Upload, group: 'Workspace' },
   { id: 'intake', label: 'Intake', icon: FileInput, group: 'Workspace' },
   { id: 'customer', label: 'Customer & Property', icon: UserCircle, group: 'Job details' },
   { id: 'insurance', label: 'Insurance & Claim', icon: ShieldAlert, group: 'Job details' },

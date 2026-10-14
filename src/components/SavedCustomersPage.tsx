@@ -10,6 +10,7 @@ import {
   CloudOff,
   Plus,
   X,
+  Upload,
 } from 'lucide-react';
 import type { SyncJobSummary } from '../services/localDb';
 
@@ -29,6 +30,7 @@ interface SavedCustomersPageProps {
   onOpenJob: (recordId: string) => void;
   onDeleteJob: (job: SyncJobSummary) => void;
   onNewJob?: () => void;
+  onImportCustomers?: () => void;
 }
 
 type JobSort = 'recent' | 'customer' | 'number';
@@ -75,6 +77,7 @@ export const SavedCustomersPage: React.FC<SavedCustomersPageProps> = ({
   onOpenJob,
   onDeleteJob,
   onNewJob,
+  onImportCustomers,
 }) => {
   const [sort, setSort] = useState<JobSort>('recent');
   const query = search.trim().toLowerCase();
@@ -137,6 +140,11 @@ export const SavedCustomersPage: React.FC<SavedCustomersPageProps> = ({
             >
               <Plus className="h-4 w-4" aria-hidden="true" />
               New job
+            </button>
+          )}
+          {onImportCustomers && (
+            <button type="button" onClick={onImportCustomers} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600">
+              <Upload className="h-4 w-4" aria-hidden /> Upload customer CSV
             </button>
           )}
         </div>

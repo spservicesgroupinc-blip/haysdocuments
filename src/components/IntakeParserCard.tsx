@@ -22,6 +22,8 @@ import {
 import { analyzeIntakeWithAi } from '../services/deepseekIntake';
 import { extractTextFromPdfBuffer } from '../services/pdfExtractor';
 import { getMissingJobFields } from '../services/jobReadiness';
+import { getCustomerReference } from '../services/customerReferenceService';
+import { enrichIntakeWithReference, findCustomerReferences, type CustomerReference } from '../services/customerReference';
 
 interface IntakeParserCardProps {
   onApplyIntake: (job: RestorationJobData, provenance: ProvenanceRecord) => void;
@@ -114,16 +116,32 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
     lastParsedTextRef.current = trimmed;
 
     setIsAnalyzing(true);
+    let customers: CustomerReference[] = [];
+    let referenceWarning: string | undefined;
+    // Fetch on every intake; never silently reuse a previous CSV snapshot.
     try {
-      const payload = await analyzeIntakeWithAi(trimmed);
+      customers = (await getCustomerReference()).customers;
+    } catch (error) {
+      referenceWarning = `Customer reference unavailable: ${error instanceof Error ? error.message : String(error)} Intake continues without CSV context.`;
+    }
+    if (!isActiveRef.current) return;
+    try {
+      const identity = parseRawIntakeText(trimmed);
+      const matches = findCustomerReferences(trimmed, customers, {
+        customerName: identity.jobData.customer.customerName,
+        jobNumber: identity.provenance.jobNumber?.source === 'EXTRACTED' ? identity.jobData.customer.jobNumber : '',
+      });
+      const payload = await analyzeIntakeWithAi(trimmed, matches.length === 1 ? matches : []);
       if (!isActiveRef.current) return;
-      const result = applyAiExtractionToJob(payload, currentJobRef.current);
+      const result = enrichIntakeWithReference(applyAiExtractionToJob(payload, currentJobRef.current), trimmed, customers);
+      if (referenceWarning) result.extractionSummary.warnings.unshift(referenceWarning);
       commitResult(result, source, 'ai');
     } catch (error) {
       if (!isActiveRef.current) return;
       const message = error instanceof Error ? error.message : String(error);
       console.error('DeepSeek intake analysis failed:', error);
-      const result = parseRawIntakeText(trimmed, currentJobRef.current);
+      const result = enrichIntakeWithReference(parseRawIntakeText(trimmed, currentJobRef.current), trimmed, customers);
+      if (referenceWarning) result.extractionSummary.warnings.unshift(referenceWarning);
       result.extractionSummary.warnings.unshift(
         `AI analysis failed (${message}) - the built-in rules parser was used instead.`
       );
