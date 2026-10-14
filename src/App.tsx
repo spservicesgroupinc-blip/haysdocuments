@@ -59,6 +59,7 @@ import { Navbar } from './components/Navbar';
 import { MobileSectionNav, Sidebar, WORKSPACE_SECTIONS } from './components/Sidebar';
 import type { WorkspaceTab } from './components/Sidebar';
 import { SavedCustomersPage } from './components/SavedCustomersPage';
+import { CustomerImportPage } from './components/CustomerImportPage';
 import { FinancialSummaryCard } from './components/FinancialSummaryCard';
 import { SectionCustomer } from './components/SectionCustomer';
 import { SectionInsurance } from './components/SectionInsurance';
@@ -814,7 +815,7 @@ export default function App() {
   for (const field of getMissingJobFields(jobData)) {
     missingFieldCounts[field.section] = (missingFieldCounts[field.section] ?? 0) + 1;
   }
-  const jobSections = WORKSPACE_SECTIONS.filter((section) => section.id !== 'home');
+  const jobSections = WORKSPACE_SECTIONS.filter((section) => section.id !== 'home' && section.id !== 'customerImport');
   const sectionIndex = jobSections.findIndex((section) => section.id === activeTab);
   const previousSection = sectionIndex > 0 ? jobSections[sectionIndex - 1] : undefined;
   const nextSection = sectionIndex >= 0 ? jobSections[sectionIndex + 1] : undefined;
@@ -944,6 +945,15 @@ export default function App() {
                 onOpenJob={handleLoadJob}
                 onDeleteJob={handleDeleteJob}
                 onNewJob={handleReset}
+                onImportCustomers={() => handleNavigate('customerImport')}
+              />
+            )}
+
+            {activeTab === 'customerImport' && (
+              <CustomerImportPage
+                key={currentUser?.email || 'developer'}
+                canImport={isDeveloperBypassEnabled() || currentUser?.role === 'admin' || currentUser?.role === 'editor'}
+                onOpenIntake={() => handleNavigate('intake')}
               />
             )}
 
@@ -1038,7 +1048,7 @@ export default function App() {
               />
             )}
 
-            {activeTab !== 'home' && (
+            {activeTab !== 'home' && activeTab !== 'customerImport' && (
               <nav className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4" aria-label="Job section actions">
                 {previousSection ? (
                   <button type="button" onClick={() => handleNavigate(previousSection.id)} className="inline-flex min-h-10 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 hover:bg-white hover:text-slate-900">

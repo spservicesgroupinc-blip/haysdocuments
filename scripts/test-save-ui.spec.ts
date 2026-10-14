@@ -9,7 +9,7 @@ const ok = (route: Route, data: unknown) => route.fulfill({
 });
 
 const sectionLabels = {
-  home: 'Jobs', intake: 'Intake', customer: 'Customer & Property', insurance: 'Insurance & Claim',
+  home: 'Jobs', customerImport: 'Current customers', intake: 'Intake', customer: 'Customer & Property', insurance: 'Insurance & Claim',
   financials: 'Financials', mortgage: 'Mortgage', team: 'Team', productionNotes: 'Production Notes',
   checklist: 'Checklist', changeOrder: 'Change Order', documents: 'Documents',
 };
@@ -20,14 +20,15 @@ async function navigate(page: Page, section: keyof typeof sectionLabels) {
     .getByRole('button', { name: new RegExp(`^${sectionLabels[section]}(?:\\s|$)`) }).click();
 }
 
-async function start(page: Page, handler: (route: Route, body: any) => Promise<void>, savedJobs: unknown[] = []) {
+async function start(page: Page, handler: (route: Route, body: any) => Promise<void>, savedJobs: unknown[] = [], customReference = false) {
   await page.addInitScript((account) => {
     localStorage.setItem('hays.db.session', JSON.stringify({ token: 'ui-session', expiresAt: '2099-01-01T00:00:00Z', user: account }));
   }, user);
-  await page.route('https://script.google.com/macros/s/TEST/exec', async (route) => {
+  await page.route(/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/, async (route) => {
     const body = route.request().postDataJSON();
     if (body.action === 'checkSession') await ok(route, { user });
     else if (body.action === 'listJobs') await ok(route, savedJobs);
+    else if (body.action === 'getCustomerReference' && !customReference) await ok(route, { customers: [], fileName: '', updatedAt: '', updatedBy: '' });
     else await handler(route, body);
   });
   await page.goto('/');
