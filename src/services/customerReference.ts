@@ -1,9 +1,11 @@
-import { applyAiExtractionToJob, type IntakeParseResult, type AiIntakePayload } from './intakeParser';
-
 export interface CustomerReference {
   customerName: string;
   jobNumber: string;
   contractPrice: number | null;
+  jobAddress: string;
+  city: string;
+  state: string;
+  zip: string;
 }
 
 export interface CustomerReferenceSnapshot {
@@ -11,10 +13,33 @@ export interface CustomerReferenceSnapshot {
   fileName: string;
   updatedAt: string;
   updatedBy: string;
+  version: string;
+}
+
+export interface PriceReview {
+  estimateAmount: number;
+  csvAmount: number;
+  status: 'pending' | 'resolved';
+  selectedSource?: 'estimate' | 'knowledgeBase';
+  resolvedAmount?: number;
+  resolvedAt?: string;
+}
+
+export interface KnowledgeBaseAnalysis {
+  version: string;
+  fileName: string;
+  customerCount: number;
+  matchStatus: 'matched' | 'ambiguous' | 'none';
+  matchedCustomer: CustomerReference | null;
+  explanation: string;
+  estimateTotal: number | null;
+  priceReview: PriceReview | null;
 }
 
 export const MAX_CUSTOMERS = 5000;
 export const MAX_CUSTOMER_CSV_BYTES = 10 * 1024 * 1024;
+// UTF-8 bytes conservatively bound token use, including non-Latin customer names.
+export const MAX_KNOWLEDGE_CONTEXT_BYTES = 100000;
 
 /** RFC 4180 fields: quoted commas/newlines/escaped quotes must stay in their column. */
 function csvRows(text: string): string[][] {
@@ -54,6 +79,10 @@ export function parseCustomerCsv(text: string): { customers: CustomerReference[]
   const name = column(['customername', 'customer']);
   const job = column(['jobnumber', 'jobno', 'job']);
   const price = column(['contractprice', 'contractamount', 'contractsum', 'estimateamount']);
+  const address = column(['jobaddress', 'lossaddress', 'propertyaddress', 'address']);
+  const city = column(['losscity', 'city']);
+  const state = column(['lossstate', 'state']);
+  const zip = column(['losszip', 'zipcode', 'zip', 'postalcode']);
   if ([name, job, price].some(index => index < 0)) throw new Error('CSV needs Customer (or Customer Name), Job Number, and Contract Price (or Estimate Amount) columns.');
   if (!rows.length) throw new Error('CSV contains no customers. The shared list has not been changed.');
   if (rows.length > MAX_CUSTOMERS) throw new Error(`CSV may contain at most ${MAX_CUSTOMERS.toLocaleString()} customers.`);
@@ -71,72 +100,11 @@ export function parseCustomerCsv(text: string): { customers: CustomerReference[]
     if (money && !/^\$?\s*(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d{1,2})?$/.test(money)) throw new Error(`Row ${rowNumber}: invalid contract price.`);
     const amount = money ? Number(money.replace(/[$,\s]/g, '')) : null;
     if (amount !== null && (!Number.isFinite(amount) || amount > 1e12)) throw new Error(`Row ${rowNumber}: invalid contract price.`);
-    return { customerName, jobNumber, contractPrice: amount };
+    const location = { jobAddress: cells[address] ?? '', city: cells[city] ?? '', state: cells[state] ?? '', zip: cells[zip] ?? '' };
+    if (location.jobAddress.length > 500 || location.city.length > 100 || location.state.length > 100 || location.zip.length > 20) throw new Error(`Row ${rowNumber}: address field is too long.`);
+    return { customerName, jobNumber, contractPrice: amount, ...location };
   });
+  if (new TextEncoder().encode(JSON.stringify(customers)).length > MAX_KNOWLEDGE_CONTEXT_BYTES) throw new Error('Customer knowledge base exceeds the supported AI context size (100 KB). Upload a smaller current-customer list.');
   return { customers, priceColumn: headers[price] };
 }
 
-const words = (value: string) => value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
-const nameKey = (value: string) => words(value).split(' ').sort().join(' ');
-const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-export function findCustomerReferences(rawText: string, customers: CustomerReference[], identity?: { jobNumber?: string; customerName?: string }): CustomerReference[] {
-  const jobMatches = customers.filter(customer => new RegExp(`(^|[^a-z0-9-])${escapeRegex(customer.jobNumber)}(?=$|[^a-z0-9-])`, 'i').test(rawText));
-  if (jobMatches.length) return jobMatches;
-  if (identity?.jobNumber?.trim()) return customers.filter(customer => customer.jobNumber.toUpperCase() === identity.jobNumber!.trim().toUpperCase());
-  const source = ` ${words(rawText)} `;
-  return customers.filter(customer =>
-    (identity?.customerName && nameKey(identity.customerName) === nameKey(customer.customerName))
-    || source.includes(` ${words(customer.customerName)} `)
-    || (words(customer.customerName).split(' ').length === 2 && source.includes(` ${words(customer.customerName).split(' ').reverse().join(' ')} `)));
-}
-
-/** Reference values only fill gaps; document/manual values keep precedence. */
-export function enrichIntakeWithReference(result: IntakeParseResult, rawText: string, customers: CustomerReference[]): IntakeParseResult {
-  const identity = { ...result.jobData.customer };
-  // A new workspace has an automatically generated number, not an extracted identity.
-  if (result.provenance.jobNumber?.source !== 'EXTRACTED') identity.jobNumber = '';
-  const matches = findCustomerReferences(rawText, customers, identity);
-  if (matches.length > 1) {
-    result.extractionSummary.warnings.push('Customer reference matches multiple jobs. Add the exact job number before using a contract price.');
-    return result;
-  }
-  if (!matches.length) return result;
-  const match = matches[0];
-  const job = result.jobData;
-  const keepJobNumber = Boolean(job.customer.jobNumber) && !/^FW-\d{4}-\d{4}$/.test(job.customer.jobNumber);
-  const price = job.financials.totalApprovedRcv;
-  if (typeof price === 'number' && match.contractPrice !== null && price !== match.contractPrice) {
-    result.extractionSummary.warnings.push(`Contract price differs from the current customer CSV for ${match.jobNumber}. Kept the document/workspace amount; review Financials.`);
-  }
-  if (job.customer.customerName && nameKey(job.customer.customerName) !== nameKey(match.customerName)) {
-    result.extractionSummary.warnings.push(`Customer name differs from the current customer CSV for ${match.jobNumber}. Review Customer & Property.`);
-  }
-  const payload: AiIntakePayload = {
-    customer: { customerName: job.customer.customerName ? '' : match.customerName, jobNumber: keepJobNumber ? '' : match.jobNumber },
-    financials: { totalApprovedRcv: price === '' ? match.contractPrice : null },
-    insurance: {}, team: {}, mortgage: {}, changeOrder: {}, productionNotes: {}, checklist: {},
-  };
-  const supplement = applyAiExtractionToJob(payload, job);
-  for (const key of ['customerName', 'jobNumber', 'totalApprovedRcv']) {
-    if (supplement.provenance[key]?.source === 'EXTRACTED') {
-      supplement.provenance[key] = { source: 'FOUND', detail: `Current customer CSV: ${match.jobNumber}` };
-      for (const section of supplement.extractionSummary.sections) for (const field of section.fields) if (field.key === key) field.source = 'FOUND';
-    }
-  }
-  return {
-    ...result, jobData: supplement.jobData, blockingMissingFields: supplement.blockingMissingFields,
-    provenance: { ...result.provenance, ...supplement.provenance },
-    extractionSummary: {
-      ...result.extractionSummary,
-      fieldsExtractedCount: result.extractionSummary.fieldsExtractedCount + supplement.extractionSummary.fieldsExtractedCount,
-      fieldsUpdatedCount: result.extractionSummary.fieldsUpdatedCount + supplement.extractionSummary.fieldsUpdatedCount,
-      sections: [...new Set([...result.extractionSummary.sections, ...supplement.extractionSummary.sections].map(section => section.section))].map(key => ({
-        section: key,
-        label: (result.extractionSummary.sections.find(section => section.section === key) ?? supplement.extractionSummary.sections.find(section => section.section === key)!).label,
-        fields: [...(result.extractionSummary.sections.find(section => section.section === key)?.fields ?? []), ...(supplement.extractionSummary.sections.find(section => section.section === key)?.fields ?? [])],
-      })),
-      warnings: [...result.extractionSummary.warnings, `Customer reference matched ${match.jobNumber}. Missing customer and contract fields filled from the current CSV.`],
-    },
-  };
-}

@@ -1,4 +1,5 @@
 import type { RestorationJobData } from '../types/jobData';
+import { hasUnresolvedPriceReview } from './knowledgeBaseReview';
 
 export interface MissingJobField {
   label: string;
@@ -9,6 +10,7 @@ export interface MissingJobField {
 /** The same required fields drive navigation badges and document review. */
 export function getMissingJobFields(job: RestorationJobData): MissingJobField[] {
   const missing: MissingJobField[] = [];
+  if (hasUnresolvedPriceReview(job)) missing.push({ label: 'Contract price discrepancy', section: 'financials', inputId: 'price-review' });
   if (!job.customer.customerName.trim()) missing.push({ label: 'Customer name', section: 'customer', inputId: 'customer-customerName' });
   if (!job.customer.lossAddress.trim()) missing.push({ label: 'Loss property address', section: 'customer', inputId: 'customer-lossAddress' });
   if (!job.insurance.carrier.trim()) missing.push({ label: 'Insurance carrier', section: 'insurance', inputId: 'insurance-carrier' });
