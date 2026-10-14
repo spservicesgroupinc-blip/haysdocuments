@@ -92,6 +92,46 @@ Two things stay on the device on purpose, and neither is customer data:
 `saveDraft` / `getDraft` are the two actions behind the shared draft, and the `Drafts` sheet is
 created on first use, so an already-provisioned spreadsheet does not need a repair run.
 
+### Customer knowledge base and DeepSeek estimate analysis
+
+The Customer Knowledge Base page imports Customer, Job Number, Estimate Amount
+(or Contract Price), Job Address, Loss City, Loss State, and Loss ZIP. Other CSV
+columns, including notes and contact details, are discarded. A successful import
+replaces the complete shared `CustomerReference` sheet snapshot in one locked
+write, including clearing old trailing rows. The source CSV is not retained.
+Editors/admins can replace it; signed-in users can read it.
+
+Set `DEEPSEEK_API_KEY` in **Project Settings > Script Properties**. No API key is
+embedded in the frontend. `DEEPSEEK_MODEL` optionally overrides the default
+`deepseek-flash` model. The existing external-request OAuth scope is sufficient.
+See [DeepSeek chat completions](https://api-docs.deepseek.com/api/create-chat-completion/).
+
+The authenticated `analyzeIntake` action accepts `{ rawText }`. Apps Script reads
+the latest complete customer snapshot and sends it with the extracted estimate
+text to DeepSeek. It returns the existing extraction fields plus `knowledgeBase`:
+snapshot version, source filename, customer count, match status, matched record,
+explanation, document estimate total, and any pending price review. It validates
+the selected DASH record and supporting document quotes before returning results.
+The model never receives a client-supplied customer list or system prompt.
+
+Imports allow 5,000 records, a 10 MB CSV, and at most 100,000 UTF-8 bytes of
+normalized customer context. Estimate text is limited separately to 100,000
+UTF-8 bytes. Oversized input is rejected in full, never silently truncated.
+Each snapshot has a server-generated version. Old three-field snapshots remain
+readable; reimport the CSV to add addresses.
+
+Price discrepancies remain in saved job/draft JSON until the user selects the
+estimate or knowledge-base amount in Financials. Price-dependent PDFs, packets,
+ZIPs, and Drive packet saves are blocked while the choice is unresolved. A later
+manual edit of the chosen amount requires review again. Failed analysis leaves
+the workspace untouched and offers a retry.
+
+**Rollout:** run `npm run apps:paste` and `npm run apps:chunks`, deploy the updated
+`Code.gs` as a new version of the existing web app, set the Script Property, then
+deploy the frontend. Verify an import and estimate analysis from two signed-in
+sessions. Do not rerun database setup or recreate the database to install this
+feature; the reference sheet is created on first use.
+
 ### Accounts
 
 Login is handled by the app's own sign-in page. Credentials are checked against the `Users` sheet, and

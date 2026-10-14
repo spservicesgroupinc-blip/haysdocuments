@@ -1,3 +1,4 @@
+import { assertPriceReviewed } from './knowledgeBaseReview';
 import { PDFDocument, rgb, StandardFonts, PDFPage, PDFFont } from 'pdf-lib';
 import { RestorationJobData } from '../types/jobData';
 
@@ -1266,6 +1267,7 @@ export async function generateMortgageAuth(data: RestorationJobData): Promise<Ui
 // 4. STRUCTURAL REPAIR AGREEMENT (INDIANA) - 2 PAGES
 // -------------------------------------------------------------
 export async function generateContract(data: RestorationJobData): Promise<Uint8Array> {
+  assertPriceReviewed(data);
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
@@ -1779,6 +1781,7 @@ export async function generateCancellationNotice(data: RestorationJobData): Prom
 // 6. CHANGE ORDER / ADDENDUM GENERATOR
 // -------------------------------------------------------------
 export async function generateChangeOrder(data: RestorationJobData): Promise<Uint8Array> {
+  assertPriceReviewed(data);
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([612, 792]);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -1941,6 +1944,7 @@ export async function generateChangeOrder(data: RestorationJobData): Promise<Uin
 // 7. PRODUCTION CHECKLIST GENERATOR
 // -------------------------------------------------------------
 export async function generateProductionChecklist(data: RestorationJobData): Promise<Uint8Array> {
+  assertPriceReviewed(data);
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([612, 792]);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -2173,6 +2177,7 @@ export async function generateProductionChecklist(data: RestorationJobData): Pro
 // 8. PRODUCTION NOTES GENERATOR
 // -------------------------------------------------------------
 export async function generateProductionNotes(data: RestorationJobData): Promise<Uint8Array> {
+  assertPriceReviewed(data);
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([612, 792]);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -2336,6 +2341,7 @@ export async function generateProductionNotes(data: RestorationJobData): Promise
 // 9. UNIFIED COMPLETE 9-PAGE PACKET GENERATOR
 // -------------------------------------------------------------
 export async function generateCompletePacket(data: RestorationJobData): Promise<Uint8Array> {
+  assertPriceReviewed(data);
   const mergedPdf = await PDFDocument.create();
 
   // Generate each document in sequential order
@@ -2402,6 +2408,7 @@ export async function fillPdfFormTemplate(
   templatePdfBytes: Uint8Array,
   data: RestorationJobData
 ): Promise<Uint8Array> {
+  assertPriceReviewed(data);
   const pdfDoc = await PDFDocument.load(templatePdfBytes);
   const form = pdfDoc.getForm();
 

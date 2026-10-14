@@ -95,6 +95,34 @@ test('oversized context is rejected before replacing the previous knowledge base
   assert.throws(() => env.sandbox.replaceCustomerReference_({ email: 'editor', role: 'editor' }, { customers: huge, fileName: 'huge.csv' }), /context/);
   assert.equal(JSON.stringify([...env.sheets.values()].map(sheet => sheet.rows)), original);
 });
+
+test('ambiguous and unknown customers cannot inherit a stored price or invented DASH number', () => {
+  const env = backend();
+  const snapshot = { customers: first, version: 'v1', fileName: 'customers.csv' };
+  for (const status of ['ambiguous', 'none']) {
+    const analyzed = env.sandbox.validateKnowledgeAnalysis_({ customer: { jobNumber: 'F-2' }, financials: { totalApprovedRcv: 99999 }, estimateTotal: null, knowledgeMatch: { status, explanation: 'Cannot identify a unique customer.' } }, snapshot, 'Estimate for an unidentified customer');
+    assert.equal(analyzed.customer.jobNumber, '');
+    assert.equal(analyzed.financials.totalApprovedRcv, null);
+    assert.equal(analyzed.knowledgeBase.matchedCustomer, null);
+    assert.equal(analyzed.knowledgeBase.priceReview, null);
+  }
+});
+
+test('missing configuration, failed storage, bad model output and API errors fail explicitly', () => {
+  const env = backend();
+  env.sandbox.PropertiesService = { getScriptProperties: () => ({ getProperty: () => null }) };
+  assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Estimate' }), /DEEPSEEK_API_KEY/);
+  env.sandbox.PropertiesService = { getScriptProperties: () => ({ getProperty: () => 'test-key' }) };
+  const originalRead = env.sandbox.getCustomerReference_;
+  env.sandbox.getCustomerReference_ = () => { throw new Error('Storage unavailable'); };
+  assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Estimate' }), /Storage unavailable/);
+  env.sandbox.getCustomerReference_ = originalRead;
+  for (const [status, body] of [[503, 'unavailable'], [200, '{}'], [200, JSON.stringify({ choices: [{ finish_reason: 'length' }] })]] as const) {
+    env.sandbox.UrlFetchApp = { fetch: () => ({ getResponseCode: () => status, getContentText: () => body }) };
+    assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Estimate' }), /DeepSeek/);
+  }
+  assert.throws(() => env.sandbox.validateKnowledgeAnalysis_({ estimateTotal: 20, customer: { customerName: first[1].customerName, jobNumber: 'F-2' }, knowledgeMatch: { status: 'matched', jobNumber: 'F-2', explanation: 'Made up quote', evidence: ['not in document'] } }, { customers: first }, 'Real estimate'), /evidence/);
+});
 test('viewer, duplicate, empty and invalid uploads cannot alter the shared snapshot', () => {
   const env = backend();
   env.sandbox.replaceCustomerReference_({ email: 'editor', role: 'editor' }, { customers: first, fileName: 'good.csv' });

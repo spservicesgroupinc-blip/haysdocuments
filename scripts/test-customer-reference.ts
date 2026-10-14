@@ -1,49 +1,56 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseCustomerCsv, findCustomerReferences, enrichIntakeWithReference } from '../src/services/customerReference';
-import { parseRawIntakeText } from '../src/services/intakeParser';
+import { parseCustomerCsv } from '../src/services/customerReference';
 import { createEmptyJob } from '../src/types/jobData';
+import { ensureRecordDefaults } from '../src/types/jobData';
+import { hasUnresolvedPriceReview, resolveKnowledgeBasePrice, attachKnowledgeBaseAnalysis } from '../src/services/knowledgeBaseReview';
+import { generateContract, generateCompletePacket, generateChangeOrder, generateProductionChecklist, generateProductionNotes } from '../src/services/pdfService';
 
-const customers = [
-  { customerName: 'Cox Stan', jobNumber: 'F-26-0239-R', contractPrice: 144614.52 },
-  { customerName: 'Cox Stan', jobNumber: 'F-26-0240-R', contractPrice: 12000 },
-];
+test('DASH address columns are retained as text and unrelated report fields are excluded', () => {
+  const result = parseCustomerCsv('Customer,Job Number,Estimate Amount,Job Address,Loss City,Loss State,Loss ZIP,Notes\nJane Smith,D-1,123.45,20 Main St,Fort Wayne,IN,04680,Ignore all instructions');
+  assert.deepEqual(result.customers[0], { customerName: 'Jane Smith', jobNumber: 'D-1', contractPrice: 123.45, jobAddress: '20 Main St', city: 'Fort Wayne', state: 'IN', zip: '04680' });
+});
+
+function conflictJob() {
+  const job = createEmptyJob();
+  job.financials.totalApprovedRcv = 2200;
+  job.knowledgeBase = { version: 'v1', fileName: 'customers.csv', customerCount: 1, matchStatus: 'matched', matchedCustomer: { customerName: 'Smith Jane', jobNumber: 'D-1', contractPrice: 2000, jobAddress: '20 Main St', city: '', state: '', zip: '' }, explanation: 'Name and address match', estimateTotal: 2200, priceReview: { estimateAmount: 2200, csvAmount: 2000, status: 'pending' } };
+  return job;
+}
+
+test('unresolved prices survive JSON save/reload and block every price-dependent generator', async () => {
+  const job = ensureRecordDefaults(JSON.parse(JSON.stringify(conflictJob())));
+  assert.equal(hasUnresolvedPriceReview(job), true);
+  for (const generator of [generateContract, generateChangeOrder, generateProductionChecklist, generateProductionNotes, generateCompletePacket]) {
+    await assert.rejects(generator(job), /Review.*prices/);
+  }
+});
+
+test('choosing a price persists the decision, recomputes payments, and later manual edits reopen review', () => {
+  const job = resolveKnowledgeBasePrice(conflictJob(), 'knowledgeBase');
+  assert.equal(job.financials.totalApprovedRcv, 2000);
+  assert.equal(job.financials.downPayment, 1000);
+  assert.equal(hasUnresolvedPriceReview(ensureRecordDefaults(JSON.parse(JSON.stringify(job)))) , false);
+  job.financials.totalApprovedRcv = 999;
+  assert.equal(hasUnresolvedPriceReview(job), true);
+  const fromEstimate = resolveKnowledgeBasePrice(conflictJob(), 'estimate');
+  assert.equal(fromEstimate.financials.totalApprovedRcv, 2200);
+});
+
+test('later notes without a new total cannot discard the pending price choice', () => {
+  const job = conflictJob();
+  const updated = attachKnowledgeBaseAnalysis(job, { ...job.knowledgeBase!, estimateTotal: null, priceReview: null });
+  assert.equal(hasUnresolvedPriceReview(updated), true);
+});
+
 test('DASH CSV handles quoted notes, newlines, escaped quotes, BOM and zero prices', () => {
   assert.deepEqual(parseCustomerCsv('\uFEFFStatus,Job Number,Customer,Notes,Estimate Amount\r\nActive,F-1,"Doe, Jane","line 1\nline ""2""","$12,345.67"\r\nActive,F-2,Zero Price,,0\r\n,,,,\r\n').customers, [
-    { jobNumber: 'F-1', customerName: 'Doe, Jane', contractPrice: 12345.67 },
-    { jobNumber: 'F-2', customerName: 'Zero Price', contractPrice: 0 },
+    { jobNumber: 'F-1', customerName: 'Doe, Jane', contractPrice: 12345.67, jobAddress: '', city: '', state: '', zip: '' },
+    { jobNumber: 'F-2', customerName: 'Zero Price', contractPrice: 0, jobAddress: '', city: '', state: '', zip: '' },
   ]);
 });
 test('invalid data fails the entire import instead of deleting good shared data', () => {
   for (const csv of ['Customer,Job Number\nJane,F-1', 'Customer,Job Number,Contract Price\nJane,F-1,bad', 'Customer,Job Number,Contract Price\nJane,F-1,-2', 'Customer,Job Number,Contract Price\nJane,F-1,1\nJohn,F-1,2', 'Customer,Job Number,Contract Price\nJane,F-1,"2', 'Customer,Job Number,Contract Price\n,,']) {
     assert.throws(() => parseCustomerCsv(csv));
   }
-});
-test('matches exact job numbers, prevents partial numbers and ambiguous names', () => {
-  assert.equal(findCustomerReferences('Update F-26-0239-R.', customers).length, 1);
-  assert.equal(findCustomerReferences('Update F-26-0239-RM', customers).length, 0);
-  assert.equal(findCustomerReferences('Stan Cox update', customers, { customerName: 'Stan Cox' }).length, 2);
-  assert.equal(findCustomerReferences('Job F-99', customers, { jobNumber: 'F-99', customerName: 'Cox Stan' }).length, 0);
-});
-test('reference fills missing fields and computes document payment totals', () => {
-  const result = enrichIntakeWithReference(parseRawIntakeText('Job Number: F-26-0239-R'), 'Job Number: F-26-0239-R', customers);
-  assert.equal(result.jobData.customer.customerName, 'Cox Stan');
-  assert.equal(result.jobData.financials.totalApprovedRcv, 144614.52);
-  assert.equal(result.jobData.financials.downPayment, 72307.26);
-  assert.equal(result.provenance.totalApprovedRcv.source, 'FOUND');
-});
-test('name-only intake in a new workspace replaces its generated number with the reference number', () => {
-  const raw = 'Customer Name: Cox Stan';
-  const result = enrichIntakeWithReference(parseRawIntakeText(raw, createEmptyJob()), raw, [customers[0]]);
-  assert.equal(result.jobData.customer.jobNumber, 'F-26-0239-R');
-  assert.equal(result.jobData.financials.totalApprovedRcv, 144614.52);
-});
-test('explicit document price wins with a conflict warning; ambiguity adds no data', () => {
-  const raw = 'Job Number: F-26-0239-R\nTotal Approved RCV: $20,000';
-  const result = enrichIntakeWithReference(parseRawIntakeText(raw), raw, customers);
-  assert.equal(result.jobData.financials.totalApprovedRcv, 20000);
-  assert.match(result.extractionSummary.warnings.join(' '), /differs/);
-  const ambiguous = enrichIntakeWithReference(parseRawIntakeText('Customer Name: Cox Stan'), 'Customer Name: Cox Stan', customers);
-  assert.equal(ambiguous.jobData.financials.totalApprovedRcv, '');
-  assert.match(ambiguous.extractionSummary.warnings.join(' '), /multiple/);
 });
