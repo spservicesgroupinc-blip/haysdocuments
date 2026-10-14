@@ -1,3 +1,5 @@
+import type { KnowledgeBaseAnalysis } from '../services/customerReference';
+
 export interface CustomerData {
   jobNumber: string;
   jobName: string;
@@ -108,6 +110,8 @@ export interface BranchData {
 }
 
 export interface RestorationJobData {
+  /** Server-validated context and price decisions persist in saved jobs and drafts. */
+  knowledgeBase?: KnowledgeBaseAnalysis;
   /**
    * Immutable database key. Assigned by the customer database on first save and
    * never regenerated. Undefined on a brand-new record that has never been saved.
