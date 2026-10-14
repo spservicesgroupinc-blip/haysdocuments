@@ -57,7 +57,7 @@ test('Google sign-in HTML identifies the access settings instead of reporting su
 test('an unavailable deployment identifies the URL configuration', async () => {
   replies('<html>Page not found</html>', 404);
   await assert.rejects(requestDatabase(url, 'saveJob'), (err: unknown) =>
-    errorCode('bad_response')(err) && /active Apps Script \/exec URL/.test((err as Error).message));
+    errorCode('bad_response')(err) && /src\/config\/appsScript\.ts.*active \/exec URL/.test((err as Error).message));
 });
 
 test('HTML, empty bodies and unrelated JSON cannot acknowledge queued writes', async () => {

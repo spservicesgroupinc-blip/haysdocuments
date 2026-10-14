@@ -43,251 +43,48 @@ export function isDatabaseConfigured(): boolean {
   return getDatabaseUrl() !== null;
 }
 
-/**
- * DEVELOPER BYPASS — returns the shared secret when one is configured.
- *
- * When this is set, authentication is DISABLED: anyone who obtains the web-app
- * URL can read and write the database. It exists only to unblock local work
- * when the OAuth origin cannot be registered. Never set it in production, and
- * never ship a build containing it.
- */
-export function getDevSharedSecret(): string | null {
-  const secret = (import.meta.env.VITE_DEV_SHARED_SECRET as string | undefined)?.trim();
-  // Guard against accidentally setting a trivially guessable value.
-  return secret && secret.length >= 16 ? secret : null;
-}
-
-/** True when requests are being sent with the developer shared secret. */
-export function isDeveloperBypassEnabled(): boolean {
-  return getDevSharedSecret() !== null;
-}
-
-/** Credentials attached to an authenticated request. */
+/** Request context retained for the database transport API; no credentials required. */
 export type AuthContext = Record<string, unknown>;
 
-/** Application account as returned by the backend. */
 export interface AppUser {
   email: string;
   name: string;
   role: string;
 }
 
-interface StoredSession {
-  token: string;
-  expiresAt: string;
-  user: AppUser;
+/** Stable ownership and audit identity for the shared internal workspace. */
+const INTERNAL_USER: AppUser = {
+  email: 'internal@system.local',
+  name: 'Internal Workspace',
+  role: 'editor',
+};
+
+export function getCurrentUser(): AppUser {
+  return { ...INTERNAL_USER };
 }
 
-const SESSION_STORAGE_KEY = 'hays.db.session';
-
-let currentSession: StoredSession | null = null;
-const sessionListeners = new Set<(user: AppUser | null) => void>();
-
-export function subscribeSession(listener: (user: AppUser | null) => void): () => void {
-  sessionListeners.add(listener);
-  return () => { sessionListeners.delete(listener); };
-}
-
-function readStoredSession(): StoredSession | null {
+// Preserve the device's previous draft/outbox namespace while discarding login
+// credentials. This identifier is local metadata and is never sent as auth.
+const workspaceOwner = (() => {
   try {
-    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as StoredSession;
-    if (!parsed || !parsed.token || !parsed.user?.email || !Number.isFinite(Date.parse(parsed.expiresAt))) return null;
-    if (new Date(parsed.expiresAt).getTime() <= Date.now()) {
-      localStorage.removeItem(SESSION_STORAGE_KEY);
-      return null;
-    }
-    return parsed;
+    const storedOwner = localStorage.getItem('hays.workspace.owner');
+    const legacy = JSON.parse(localStorage.getItem('hays.db.session') || 'null');
+    const owner = storedOwner || (typeof legacy?.user?.email === 'string' && legacy.user.email.trim()
+      ? legacy.user.email.toLowerCase() : INTERNAL_USER.email);
+    localStorage.setItem('hays.workspace.owner', owner);
+    localStorage.removeItem('hays.db.session');
+    return owner;
   } catch {
-    return null;
+    return INTERNAL_USER.email;
   }
+})();
+
+export function getWorkspaceOwner(): string {
+  return workspaceOwner;
 }
 
-function writeStoredSession(session: StoredSession | null) {
-  currentSession = session;
-  try {
-    if (session) localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-    else localStorage.removeItem(SESSION_STORAGE_KEY);
-  } catch {
-    /* storage unavailable (private mode) — memory only */
-  }
-  for (const listener of sessionListeners) listener(session?.user ?? null);
-}
-
-// Restore eagerly so a page reload keeps the user signed in.
-if (typeof window !== 'undefined') {
-  currentSession = readStoredSession();
-}
-
-/** The signed-in application user, or null. */
-export function getCurrentUser(): AppUser | null {
-  if (currentSession && new Date(currentSession.expiresAt).getTime() <= Date.now()) {
-    writeStoredSession(null);
-  }
-  return currentSession ? currentSession.user : null;
-}
-
-/** True when a (locally unexpired) session exists. */
-export function hasSession(): boolean {
-  return getCurrentUser() !== null;
-}
-
-/** Signs in with an application account. Throws {@link DatabaseError} on failure. */
-export async function login(email: string, password: string): Promise<AppUser> {
-  const result = await callApi<{ token?: string; sessionToken?: string; expiresAt: string; user: AppUser }>(
-    'login',
-    { email, password }
-  );
-  const token = result.token || result.sessionToken;
-  if (!token) {
-    throw new DatabaseError(
-      'The database did not return a session token. Redeploy the Apps Script web app and try again.',
-      'bad_response'
-    );
-  }
-  writeStoredSession({ token, expiresAt: result.expiresAt, user: result.user });
-  return result.user;
-}
-
-/** What the login page needs to know before offering "Create account". */
-export interface RegistrationInfo {
-  /** False when no invite code is configured, i.e. sign-up is switched off. */
-  enabled: boolean;
-  requiresInviteCode: boolean;
-  allowedDomains: string[];
-  defaultRole: string;
-  minPasswordLength: number;
-  sessionHours: number;
-}
-
-export interface RegisterInput {
-  name: string;
-  email: string;
-  password: string;
-  inviteCode: string;
-}
-
-/**
- * Asks the backend whether self-service sign-up is available.
- *
- * Never throws: an older deployment without the `registrationInfo` action
- * simply answers `unknown_action`, in which case sign-up is assumed open
- * rather than hiding the affordance.
- */
-export async function fetchRegistrationInfo(): Promise<RegistrationInfo> {
-  try {
-    const info = await callApi<Partial<RegistrationInfo>>('registrationInfo');
-    return {
-      enabled: info?.enabled !== false,
-      requiresInviteCode: info?.requiresInviteCode === true,
-      allowedDomains: info?.allowedDomains ?? [],
-      defaultRole: info?.defaultRole ?? 'editor',
-      minPasswordLength: info?.minPasswordLength ?? 8,
-      sessionHours: info?.sessionHours ?? 12,
-    };
-  } catch {
-    // A probe failure must never hide sign-up — treat it as "open".
-    return {
-      enabled: true,
-      requiresInviteCode: false,
-      allowedDomains: [],
-      defaultRole: 'editor',
-      minPasswordLength: 8,
-      sessionHours: 12,
-    };
-  }
-}
-
-/**
- * Creates an account and signs in as that user. Throws {@link DatabaseError}
- * when sign-up is disabled, the invite code is wrong, or the email is taken.
- *
- * The backend assigns the role; it can never be `admin` here.
- */
-export async function registerAccount(input: RegisterInput): Promise<AppUser> {
-  const result = await callApi<{ token?: string; sessionToken?: string; expiresAt: string; user: AppUser }>(
-    'register',
-    {
-      name: input.name,
-      email: input.email,
-      password: input.password,
-      inviteCode: input.inviteCode,
-    }
-  );
-  const token = result.token || result.sessionToken;
-  if (!token) {
-    throw new DatabaseError(
-      'The database did not return a session token. Redeploy the Apps Script web app and try again.',
-      'bad_response'
-    );
-  }
-  writeStoredSession({ token, expiresAt: result.expiresAt, user: result.user });
-  return result.user;
-}
-
-/** Clears the local session and revokes it server-side (best effort). */
-export async function logout(): Promise<void> {
-  const token = currentSession ? currentSession.token : null;
-  writeStoredSession(null);
-  if (!token) return;
-  try {
-    await callApi('logout', { sessionToken: token });
-  } catch {
-    /* The local session is already gone; a stale server row expires on its own. */
-  }
-}
-
-/** Confirms the stored session is still valid server-side. */
-export async function verifySession(): Promise<AppUser | null> {
-  const session = currentSession;
-  if (!session) return null;
-
-  const isDead = (err: unknown) =>
-    err instanceof DatabaseError &&
-    (err.code === 'session_expired' || err.code === 'unauthenticated' || err.code === 'unauthorized');
-
-  const adopt = (user: AppUser) => {
-    writeStoredSession({ token: session.token, expiresAt: session.expiresAt, user });
-    return user;
-  };
-
-  try {
-    const result = await callApi<{ user: AppUser }>('checkSession', { sessionToken: session.token });
-    return adopt(result.user);
-  } catch (err) {
-    if (err instanceof DatabaseError && err.code === 'unknown_action') {
-      // Older deployments may expose `session` instead.
-      try {
-        const result = await callApi<{ user: AppUser }>('session', {
-          sessionToken: session.token,
-        });
-        return adopt(result.user);
-      } catch (inner) {
-        if (isDead(inner)) {
-          writeStoredSession(null);
-          return null;
-        }
-        throw inner;
-      }
-    }
-    if (isDead(err)) {
-      writeStoredSession(null);
-      return null;
-    }
-    throw err;
-  }
-}
-
-/**
- * Resolves the credentials for a database call: the developer bypass when it is
- * configured, otherwise the signed-in session token.
- */
 export async function acquireAuthContext(): Promise<AuthContext> {
-  const secret = getDevSharedSecret();
-  if (secret) return { sharedSecret: secret };
-  if (getCurrentUser() && currentSession) return { sessionToken: currentSession.token };
-  throw new DatabaseError('You are signed out. Please sign in again.', 'no_session');
+  return {};
 }
 
 /** True when the failure means "the backend isn't set up", not "the call failed". */
@@ -316,16 +113,10 @@ async function callApi<T>(action: string, payload: Record<string, unknown> = {},
     );
   }
 
-  try {
-    return await requestDatabase<T>(url, action, payload, timeoutMs);
-  } catch (err) {
-    if (err instanceof DatabaseError && ['session_expired', 'unauthorized', 'unauthenticated'].includes(err.code)
-      && payload.sessionToken && payload.sessionToken === currentSession?.token) writeStoredSession(null);
-    throw err;
-  }
+  return requestDatabase<T>(url, action, payload, timeoutMs);
 }
 
-/** All document and intake operations use the same Apps Script session as job saves. */
+/** All document and intake operations use the shared internal Apps Script backend. */
 export async function callAuthenticatedAppsScript<T>(action: string, payload: Record<string, unknown> = {}, timeoutMs = 30000): Promise<T> {
   return callApi<T>(action, { ...payload, ...await acquireAuthContext() }, timeoutMs);
 }

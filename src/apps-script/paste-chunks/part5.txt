@@ -1,64 +1,114 @@
 
-/* ---------------------------------------------------------------------------
- * 9. SELF TEST & DIAGNOSTICS
- * ------------------------------------------------------------------------ */
+function saveDraftUnlocked_(user, draft) {
+  if (user.role === 'viewer') {
+    throw appError_('forbidden', 'Viewer role does not have permission to save the workspace draft.');
+  }
+  if (!draft || typeof draft !== 'object' || !draft.job || typeof draft.job !== 'object') {
+    throw appError_('bad_request', 'Draft payload is missing or invalid.');
+  }
 
-function selfTest() {
-  Logger.log('Starting Self-Test verification...');
-  ensureDatabaseReady_();
+  // Guard against the 50,000-character Google Sheets cell limit, same as saveJob_.
+  var payloadJson = JSON.stringify(draft.job);
+  if (payloadJson.length > 49000) {
+    throw appError_(
+      'record_too_large',
+      'The draft is ' + payloadJson.length + ' characters, over the 50,000-character storage limit. Shorten the Production Notes or other long text fields.'
+    );
+  }
 
-  var testEmail = 'selftest.' + new Date().getTime() + '@example.com';
-  var testPass = 'SelfTestPass123!';
+  var job = draft.job;
+  var nowIso = new Date().toISOString();
+  var recordId = String(draft.recordId || job.recordId || '');
+  var customer = job.customer && typeof job.customer === 'object' ? job.customer : {};
+  var rowValues = [
+    DRAFT_ROW_ID,
+    nowIso,
+    user.email,
+    recordId,
+    String(job.jobNumber || customer.jobNumber || ''),
+    String(job.customerName || customer.customerName || ''),
+    currentSchemaVersion_(),
+    payloadJson
+  ];
 
-  // 1. Create User
-  var user = createUser(testEmail, 'Self-Test Operator', testPass, 'editor');
-  if (!user || user.email !== testEmail) throw new Error('SelfTest: Failed to create user.');
-
-  // 2. Login
-  var loginResult = loginUser_(testEmail, testPass);
-  if (!loginResult.sessionToken) throw new Error('SelfTest: Login did not return sessionToken.');
-
-  // 3. Save Job
-  var template = emptyRecordTemplate_();
-  template.jobNumber = 'TEST-001';
-  template.jobName = 'Self-Test Drying Phase';
-  template.customerName = 'Test Property';
-  template.status = 'Draft';
-
-  var saved = saveJob_(loginResult.user, template);
-  if (!saved.recordId) throw new Error('SelfTest: Job save failed to produce recordId.');
-
-  // 4. Retrieve Job
-  var fetched = getJob_(loginResult.user, saved.recordId);
-  if (fetched.jobName !== 'Self-Test Drying Phase') throw new Error('SelfTest: Fetched job mismatch.');
-
-  // 5. Delete Job
-  var deleted = deleteJob_(loginResult.user, saved.recordId);
-  if (!deleted.deleted) throw new Error('SelfTest: Job deletion failed.');
-
-  // 6. Shared workspace draft round trip
-  saveDraft_(loginResult.user, { job: template, recordId: saved.recordId });
-  var draft = getDraft_(loginResult.user);
-  if (!draft || !draft.job) throw new Error('SelfTest: Draft save failed.');
-  if (draft.updatedBy !== testEmail) throw new Error('SelfTest: Draft updatedBy mismatch.');
-  if (draft.job.jobName !== 'Self-Test Drying Phase') throw new Error('SelfTest: Draft payload mismatch.');
-  if (!draftsSheet_()) throw new Error('SelfTest: Drafts sheet is missing.');
-
-  // 7. Cleanup. Remove the self-test draft row, but never a real one: the
-  //    draft only goes if this test wrote it.
-  var draftCleanupSheet = draftsSheet_();
-  var draftRows = draftCleanupSheet.getDataRange().getValues();
-  for (var dr = draftRows.length - 1; dr >= 1; dr--) {
-    if (String(draftRows[dr][0]) === DRAFT_ROW_ID && String(draftRows[dr][2]) === testEmail) {
-      draftCleanupSheet.deleteRow(dr + 1);
+  var sheet = draftsSheet_();
+  var data = sheet.getDataRange().getValues();
+  var targetRow = -1;
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === DRAFT_ROW_ID) {
+      targetRow = i + 1;
+      break;
     }
   }
 
-  removeUser_(testEmail);
-  cleanupSessions();
+  if (targetRow !== -1) {
+    sheet.getRange(targetRow, 1, 1, rowValues.length).setValues([rowValues]);
+  } else {
+    sheet.appendRow(rowValues);
+  }
 
-  Logger.log('=============================');
-  Logger.log('>>> SELF TEST RESULT: PASS <<<');
-  Logger.log('=============================');
-  return 'PASS';
+  return {
+    draftId: DRAFT_ROW_ID,
+    updatedAt: nowIso,
+    updatedBy: user.email,
+    recordId: recordId,
+    job: job
+  };
+}
+
+/** Returns the shared workspace draft, or null when the workspace is empty. */
+function getDraft_(user) {
+  var sheet = draftsSheet_();
+  var data = sheet.getDataRange().getValues();
+
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) !== DRAFT_ROW_ID) continue;
+
+    var payloadJson = data[i][7];
+    if (!payloadJson) return null;
+
+    var job = null;
+    try {
+      job = JSON.parse(payloadJson);
+    } catch (err) {
+      throw appError_('data_corrupt', 'The stored draft could not be parsed: ' + err);
+    }
+    if (!job) return null;
+
+    return {
+      draftId: DRAFT_ROW_ID,
+      updatedAt: data[i][1] ? String(data[i][1]) : '',
+      updatedBy: data[i][2] ? String(data[i][2]) : '',
+      recordId: data[i][3] ? String(data[i][3]) : '',
+      job: job
+    };
+  }
+
+  return null;
+}
+
+/* ---------------------------------------------------------------------------
+ * 8. AUDIT LOGGING & UTILITIES
+ * ------------------------------------------------------------------------ */
+
+function appendLog_(userEmail, action, recordId, jobNumber, detail) {
+  try {
+    var sheet = logSheet_();
+    if (!sheet) return;
+    sheet.appendRow([
+      new Date().toISOString(),
+      userEmail || 'ANONYMOUS',
+      action || '',
+      recordId || '',
+      jobNumber || '',
+      detail || ''
+    ]);
+  } catch (err) {
+    Logger.log('Audit log failure: ' + err);
+  }
+}
+
+function currentSchemaVersion_() {
+  var props = PropertiesService.getScriptProperties();
+  return Number(props.getProperty(PROP.SCHEMA_VERSION)) || DEFAULTS.SCHEMA_VERSION;
 }

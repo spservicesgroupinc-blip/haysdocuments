@@ -17,60 +17,30 @@
  *         setupDatabase()
  *       That provisions the spreadsheet, every sheet, all headers, formatting
  *       and the README tab. It is idempotent, so running it again is safe.
- *       Add an admin in the same call with three arguments, run from a
- *       temporary wrapper because the editor cannot pass arguments:
- *         function bootstrap() {
- *           setupDatabase('you@example.com', 'Your Name', 'a-strong-password');
- *         }
  *    4. Run selfTest()  ->  should report PASS
  *    5. Deploy -> New deployment -> Web app
  *         Execute as:      Me
  *         Who has access:  Anyone
  *       Copy the /exec URL into the front-end as VITE_APPS_SCRIPT_URL
- *    6. SIGN-UP IS OPEN by default - anyone with the web app URL can create an
- *       account from the login page. To lock it down, run either of these from
- *       the function dropdown (no arguments, so they run directly, and both take
- *       effect immediately with no redeploy):
- *         disableRegistration()   -> no sign-up at all
- *         useInviteCode()         -> an invite code is required
  *
- *  If step 3 is skipped, the very first web request provisions the database
- *  automatically, so a fresh deployment is never left half-built.
- *
- *  SECURITY MODEL
- *    The app has its own login page. Credentials are checked against the "Users"
- *    sheet and a short-lived bearer token is issued, recorded in the "Sessions"
- *    sheet and sent with every subsequent request.
- *
- *    Passwords are never stored in plain text: each account carries a random
- *    salt and an iterated HMAC-SHA256 derivation. Accounts lock after repeated
- *    failures and sessions expire automatically.
- *
- *    The Google ID-token path (ALLOWED_CLIENT_ID / ALLOWED_EMAILS) remains
- *    available but optional. SHARED_SECRET is a deliberate developer bypass and
- *    must stay unset in production.
- *
- *    Self-service sign-up is OPEN by default: anyone who has the web app URL can
- *    create an account from the login page. It can be restricted to an invite
- *    code, or switched off entirely, and it can never create an administrator.
- *    The policy lives in the REGISTRATION_MODE Script Property:
- *      open (default) | invite | off
+ *  INTERNAL ACCESS
+ *    Workspace requests do not require login, bearer tokens or shared secrets.
+ *    All edits use internal@system.local with editor permissions. Restrict access
+ *    through internal hosting/network controls. Legacy account helpers remain
+ *    for existing spreadsheet compatibility; account routes are not exposed.
  *
  *  API
  *    POST /exec   Content-Type: text/plain;charset=utf-8
- *                 body: {"action":"login","email":"...","password":"..."}
- *                       {"action":"register","email":"...","name":"...","password":"...","inviteCode":"..."}
- *                       {"action":"saveJob","sessionToken":"<token>","job":{...}}
- *                       {"action":"saveDraft","sessionToken":"<token>","draft":{"job":{...},"recordId":"..."}}
- *                       {"action":"getDraft","sessionToken":"<token>"}
+ *                 body: {"action":"saveJob","job":{...}}
+ *                       {"action":"saveDraft","draft":{"job":{...},"recordId":"..."}}
+ *                       {"action":"getDraft"}
  *                 Every response is HTTP 200 with a JSON envelope:
  *                 {"ok":true,"data":{...}}  |  {"ok":false,"error":"...","code":"..."}
  *                 Always branch on 'ok', never on the HTTP status.
  *
  *  DATA MODEL
- *    The spreadsheet is the system of record. Every account reads and writes the
- *    same "Jobs" sheet, so a record entered under one login is visible under any
- *    other, on any device. The record currently being edited is autosaved to the
+ *    The spreadsheet is the system of record. The internal workspace uses the
+ *    same "Jobs" sheet on every device. The record currently being edited is autosaved to the
  *    "Drafts" sheet (saveDraft / getDraft), so an unfinished job is never
  *    stranded in one browser profile. A device may keep an offline cache plus an
  *    outbox of pending writes, but those are only copies: the queue is replayed

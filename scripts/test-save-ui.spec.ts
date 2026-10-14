@@ -1,7 +1,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { PDFDocument } from 'pdf-lib';
+import { createEmptyJob } from '../src/types/jobData';
 
-const user = { email: 'test@example.com', name: 'Test', role: 'editor' };
 const job = { recordId: 'saved-1', customer: { jobNumber: 'UI-TEST', customerName: 'Recovered customer' } };
 const ok = (route: Route, data: unknown) => route.fulfill({
   contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' },
@@ -21,19 +21,35 @@ async function navigate(page: Page, section: keyof typeof sectionLabels) {
 }
 
 async function start(page: Page, handler: (route: Route, body: any) => Promise<void>, savedJobs: unknown[] = [], customReference = false) {
-  await page.addInitScript((account) => {
-    localStorage.setItem('hays.db.session', JSON.stringify({ token: 'ui-session', expiresAt: '2099-01-01T00:00:00Z', user: account }));
-  }, user);
   await page.route(/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/, async (route) => {
     const body = route.request().postDataJSON();
-    if (body.action === 'checkSession') await ok(route, { user });
-    else if (body.action === 'analyzeIntake' && !customReference) await route.fallback();
+    if (body.action === 'analyzeIntake' && !customReference) await route.fallback();
     else if (body.action === 'listJobs') await ok(route, savedJobs);
     else if (body.action === 'getCustomerReference' && !customReference) await ok(route, { customers: [], fileName: '', updatedAt: '', updatedBy: '' });
     else await handler(route, body);
   });
   await page.goto('/');
 }
+
+test('a fresh browser opens the main page without an account', async ({ page }) => {
+  const requests: any[] = [];
+  const errors: string[] = [];
+  page.on('pageerror', (err) => errors.push(err.message));
+  await start(page, async (route, body) => {
+    requests.push(body);
+    if (body.action === 'getDraft') await ok(route, { draft: null });
+    else await ok(route, {});
+  });
+  await expect(page.getByRole('button', { name: 'Save job', exact: true })).toBeVisible();
+  await expect(page.locator('#login-email')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Connections', exact: true }).click();
+  await expect(page.getByText('Shared internal workspace', { exact: true })).toBeVisible();
+  await expect(page.getByText('Sign out', { exact: true })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Save job', exact: true })).toBeVisible();
+  expect(requests.every((body) => !body.sessionToken && !body.sharedSecret)).toBe(true);
+  expect(errors).toEqual([]);
+});
 
 test('startup recovers the shared draft before any autosave writes', async ({ page }) => {
   const sent: any[] = [];
@@ -99,7 +115,7 @@ const intakePayload = {
   financials: { totalApprovedRcv: 12000 },
 };
 const emptyContext = { version: '', fileName: '', customerCount: 0, matchStatus: 'none', matchedCustomer: null, explanation: 'No customer CSV uploaded.', estimateTotal: 12000, priceReview: null };
-const aiResponse = (route: Route) => ok(route, { ...intakePayload, knowledgeBase: emptyContext });
+const aiResponse = (route: Route) => ok(route, { ...createEmptyJob(), ...intakePayload, knowledgeBase: emptyContext });
 const intakeInput = (page: Page) => page.getByRole('textbox', { name: 'Or paste intake notes', exact: true });
 
 async function openNewJob(page: Page) {
@@ -272,7 +288,7 @@ test('jobs can be searched and sorted, and Continue editing keeps current draft 
   expect(loads).toBe(0);
 });
 
-test('phone and tablet navigation, form actions, and account menu fit the screen', async ({ page }) => {
+test('phone and tablet navigation, form actions, and connections menu fit the screen', async ({ page }) => {
   await start(page, async (route, body) => {
     if (body.action === 'getDraft') await ok(route, { draft: { job, recordId: job.recordId, updatedAt: '2026-10-06T12:00:00Z' } });
     else if (body.action === 'saveDraft') await ok(route, { job: body.draft.job, updatedAt: new Date().toISOString() });
@@ -290,7 +306,7 @@ test('phone and tablet navigation, form actions, and account menu fit the screen
     await navigate(page, 'home');
     await expect(page.getByRole('region', { name: 'Jobs', exact: true })).toBeVisible();
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    const account = page.getByRole('button', { name: 'Account and connections', exact: true });
+    const account = page.getByRole('button', { name: 'Connections', exact: true });
     await account.click();
     await expect(page.locator('#account-panel')).toBeVisible();
     await page.keyboard.press('Escape');

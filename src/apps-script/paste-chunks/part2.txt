@@ -268,25 +268,10 @@ function handleAction_(payload) {
   if (action === 'ping') {
     return successResponse_({ status: 'ok', timestamp: new Date().toISOString() });
   }
-  if (action === 'login') {
-    var loginResult = loginUser_(payload.email, payload.password);
-    return successResponse_(loginResult);
-  }
-  if (action === 'register') {
-    var regResult = registerUser_(payload.email, payload.name, payload.password, payload.inviteCode);
-    return successResponse_(regResult);
-  }
+  // Internal workspace: no application login or session is required.
+  ensureDatabaseReady_();
+  var user = { email: 'internal@system.local', name: 'Internal Workspace', role: 'editor' };
 
-  // Authenticated routes
-  var user = authenticateRequest_(payload);
-
-  if (action === 'logout') {
-    revokeSession_(payload.sessionToken || payload.token);
-    return successResponse_({ loggedOut: true });
-  }
-  if (action === 'getCurrentUser' || action === 'checkSession') {
-    return successResponse_({ user: user });
-  }
   if (action === 'listJobs') {
     var jobs = listJobs_(user, payload);
     return successResponse_(jobs);
@@ -310,11 +295,15 @@ function handleAction_(payload) {
   if (action === 'getDraft') {
     return successResponse_({ draft: getDraft_(user) });
   }
-  if (action === 'listUsers') {
-    if (user.role !== 'admin') throw appError_('forbidden', 'Administrator rights required.');
-    return successResponse_(listUsers());
+  if (action === 'getCustomerReference') {
+    return successResponse_(getCustomerReference_());
   }
-
+  if (action === 'replaceCustomerReference') {
+    return successResponse_(replaceCustomerReference_(user, payload));
+  }
+  if (action === 'analyzeIntake') {
+    return successResponse_(analyzeIntake_(payload));
+  }
   throw appError_('unknown_action', 'Unrecognized action: ' + action);
 }
 
@@ -336,142 +325,89 @@ function appError_(code, message) {
   return err;
 }
 
-/* ---------------------------------------------------------------------------
- * 5. AUTHENTICATION & SECURITY
- * ------------------------------------------------------------------------ */
-
-function hashPassword_(password, salt) {
-  var iterations = DEFAULTS.PASSWORD_ITERATIONS;
-  var key = salt;
-  var hash = password;
-  for (var i = 0; i < iterations; i++) {
-    var sig = Utilities.computeHmacSha256Signature(hash + key, key);
-    hash = Utilities.base64Encode(sig);
-  }
-  return hash;
+/* Shared CSV reference: one JSON record per cell prevents spreadsheet formulas.
+ * Metadata is JSON too. Each replacement overwrites all prior rows, including
+ * blank padding when the new list is shorter, in ONE locked setValues call.
+ * No raw CSV or previous customer snapshot is retained.
+ */
+function customerReferenceSheet_() {
+  var ss = getSpreadsheet_();
+  return ss.getSheetByName('CustomerReference') || ss.insertSheet('CustomerReference');
 }
 
-function generateSalt_() {
-  var randomString = Utilities.getUuid() + ':' + Math.random() + ':' + new Date().getTime();
-  var digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, randomString);
-  return Utilities.base64Encode(digest);
-}
-
-function authenticateRequest_(payload) {
-  ensureDatabaseReady_();
-  var props = PropertiesService.getScriptProperties();
-
-  // Developer bypass (if explicitly configured)
-  var devSecret = props.getProperty(PROP.SHARED_SECRET);
-  if (devSecret && payload.sharedSecret === devSecret) {
-    return { email: 'dev-bypass@system.local', name: 'Developer Bypass', role: 'admin' };
-  }
-
-  var token = payload.sessionToken || payload.token;
-  if (!token) {
-    throw appError_('unauthorized', 'Authentication required. No session token provided.');
-  }
-
-  var user = validateSession_(token);
-  if (!user) {
-    throw appError_('session_expired', 'Session invalid or expired. Please sign in again.');
-  }
-  return user;
-}
-
-function createSession_(email, name, role) {
-  var sheet = sessionsSheet_();
-  var token = Utilities.getUuid();
-  var now = new Date();
-  var expires = new Date(now.getTime() + DEFAULTS.SESSION_HOURS * 60 * 60 * 1000);
-
-  sheet.appendRow([
-    token,
-    email,
-    name,
-    role,
-    now.toISOString(),
-    expires.toISOString(),
-    now.toISOString()
-  ]);
-
-  return {
-    token: token,
-    expiresAt: expires.toISOString()
-  };
-}
-
-function validateSession_(token) {
-  if (!token) return null;
-  var sheet = sessionsSheet_();
-  var data = sheet.getDataRange().getValues();
-  if (data.length <= 1) return null;
-
-  var now = new Date();
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]) === String(token)) {
-      var expiresAt = new Date(data[i][5]);
-      if (now > expiresAt) {
-        return null;
-      }
-      // Autosave must not rewrite Sessions on every keystroke pause.
-      if (!data[i][6] || now.getTime() - new Date(data[i][6]).getTime() >= 300000) {
-        try { sheet.getRange(i + 1, 7).setValue(now.toISOString()); } catch (e) {}
-      }
-      return {
-        email: String(data[i][1]),
-        name: String(data[i][2]),
-        role: String(data[i][3])
-      };
+function getCustomerReference_() {
+  return withWriteLock_(function () {
+    var rows = customerReferenceSheet_().getDataRange().getValues();
+    var metadata = rows.length > 1 && rows[1][1] ? JSON.parse(String(rows[1][1])) : {};
+    var customers = [];
+    for (var i = 1; i < rows.length; i++) {
+      if (rows[i][0]) customers.push(JSON.parse(String(rows[i][0])));
     }
-  }
-  return null;
+    return {
+      customers: customers,
+      fileName: metadata.fileName || '',
+      updatedAt: metadata.updatedAt || '',
+      updatedBy: metadata.updatedBy || ''
+      ,version: metadata.version || metadata.updatedAt || ''
+    };
+  });
 }
 
-function revokeSession_(token) {
-  if (!token) return;
-  var sheet = sessionsSheet_();
-  var data = sheet.getDataRange().getValues();
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]) === String(token)) {
-      sheet.deleteRow(i + 1);
-      return;
+function replaceCustomerReference_(user, payload) {
+  if (user.role !== 'admin' && user.role !== 'editor') {
+    throw appError_('forbidden', 'Your role does not have permission to replace the customer reference.');
+  }
+  var input = payload.customers;
+  if (!Array.isArray(input) || input.length < 1 || input.length > 5000) {
+    throw appError_('bad_request', 'Upload between 1 and 5000 customer records.');
+  }
+  if (typeof payload.fileName !== 'string' || !payload.fileName.trim() || payload.fileName.length > 300) {
+    throw appError_('bad_request', 'A valid CSV filename is required.');
+  }
+  var seen = Object.create(null);
+  var customers = input.map(function (item) {
+    if (!item || typeof item.customerName !== 'string' || typeof item.jobNumber !== 'string') {
+      throw appError_('bad_request', 'Customer name and job number are required.');
     }
-  }
-}
-
-function revokeAllSessions() {
-  var sheet = sessionsSheet_();
-  var lastRow = sheet.getLastRow();
-  if (lastRow > 1) {
-    sheet.deleteRows(2, lastRow - 1);
-  }
-  Logger.log('All active sessions have been revoked.');
-}
-
-function cleanupSessions() {
-  var sheet = sessionsSheet_();
-  var data = sheet.getDataRange().getValues();
-  if (data.length <= 1) return 0;
-
-  var now = new Date();
-  var removed = 0;
-  for (var i = data.length - 1; i >= 1; i--) {
-    var expiresAt = new Date(data[i][5]);
-    if (now > expiresAt) {
-      sheet.deleteRow(i + 1);
-      removed++;
+    var name = item.customerName.trim(), number = item.jobNumber.trim(), price = item.contractPrice;
+    if (!name || name.length > 300 || !number || number.length > 100) {
+      throw appError_('bad_request', 'Invalid customer name or job number.');
     }
-  }
-  Logger.log('Cleaned up ' + removed + ' expired session(s).');
-  return removed;
+    if (price !== null && (typeof price !== 'number' || !isFinite(price) || price < 0 || price > 1e12 || Math.abs(price * 100 - Math.round(price * 100)) > 0.01)) {
+      throw appError_('bad_request', 'Invalid contract price.');
+    }
+    var key = number.toUpperCase();
+    if (seen[key]) throw appError_('bad_request', 'Duplicate job number: ' + number);
+    seen[key] = true;
+    var record = { customerName: name, jobNumber: number, contractPrice: price };
+    var limits = { jobAddress: 500, city: 100, state: 100, zip: 20 };
+    Object.keys(limits).forEach(function (field) {
+      if (item[field] !== undefined && typeof item[field] !== 'string') throw appError_('bad_request', 'Invalid address field.');
+      record[field] = (item[field] || '').trim();
+      if (record[field].length > limits[field]) throw appError_('bad_request', 'Address field is too long.');
+    });
+    return record;
+  });
+  assertKnowledgeContextSize_(customers);
+  return withWriteLock_(function () {
+    var sheet = customerReferenceSheet_();
+    var metadata = { fileName: payload.fileName.trim(), updatedAt: new Date().toISOString(), updatedBy: user.email, version: Utilities.getUuid() };
+    var rows = [['CustomerJson', 'ImportJson']];
+    customers.forEach(function (customer, index) {
+      rows.push([JSON.stringify(customer), index === 0 ? JSON.stringify(metadata) : '']);
+    });
+    var rowCount = Math.max(rows.length, sheet.getLastRow());
+    while (rows.length < rowCount) rows.push(['', '']);
+    if (rowCount > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), rowCount - sheet.getMaxRows());
+    sheet.getRange(1, 1, rows.length, 2).setValues(rows);
+    return { customers: customers, fileName: metadata.fileName, updatedAt: metadata.updatedAt, updatedBy: metadata.updatedBy, version: metadata.version };
+  });
 }
 
-/* ---------------------------------------------------------------------------
- * 6. USER MANAGEMENT & REGISTRATION
- * ------------------------------------------------------------------------ */
-
-function registrationMode_() {
-  var props = PropertiesService.getScriptProperties();
-  return props.getProperty(PROP.REGISTRATION_MODE) || DEFAULTS.REGISTRATION_MODE;
+function assertKnowledgeContextSize_(customers) {
+  var json = JSON.stringify(customers);
+  if (Utilities.newBlob(json).getBytes().length > 100000) {
+    throw appError_('context_too_large', 'Customer knowledge base exceeds the supported AI context size (100 KB). Upload a smaller current-customer list.');
+  }
+  return json;
 }

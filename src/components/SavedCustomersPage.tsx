@@ -21,10 +21,6 @@ interface SavedCustomersPageProps {
   search: string;
   currentRecordId?: string;
   isDatabaseConfigured: boolean;
-  /** Verified email, when signed in to the database. */
-  databaseEmail: string | null;
-  /** True when the developer shared-secret bypass is active (no sign-in). */
-  isDeveloperBypass: boolean;
   onSearchChange: (value: string) => void;
   onRefresh: () => void;
   onOpenJob: (recordId: string) => void;
@@ -70,8 +66,6 @@ export const SavedCustomersPage: React.FC<SavedCustomersPageProps> = ({
   search,
   currentRecordId,
   isDatabaseConfigured,
-  databaseEmail,
-  isDeveloperBypass,
   onSearchChange,
   onRefresh,
   onOpenJob,
@@ -119,9 +113,7 @@ export const SavedCustomersPage: React.FC<SavedCustomersPageProps> = ({
             </h2>
             <p className="mt-0.5 text-sm text-slate-500 break-words">
               {isDatabaseConfigured
-                ? databaseEmail
-                  ? `Signed in as ${databaseEmail}`
-                  : 'Find a saved job and pick up where you left off.'
+                ? 'Find a saved job and pick up where you left off.'
                 : 'Connect your job library to save and sync jobs.'}
             </p>
           </div>
@@ -215,17 +207,6 @@ export const SavedCustomersPage: React.FC<SavedCustomersPageProps> = ({
                 <code className="font-mono">.env.local</code> and restart the dev server.
               </p>
             </div>
-          </div>
-        )}
-
-        {isDatabaseConfigured && isDeveloperBypass && (
-          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-            <p className="text-[13px] font-semibold text-amber-900">Developer mode</p>
-            <p className="mt-0.5 text-[12px] leading-relaxed text-amber-800">
-              Sign-in is bypassed with a shared secret. Anyone holding the web-app URL and this secret
-              has full access — remove <code className="font-mono">VITE_DEV_SHARED_SECRET</code> and the
-              Apps Script <code className="font-mono">SHARED_SECRET</code> property before going live.
-            </p>
           </div>
         )}
 

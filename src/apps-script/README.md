@@ -1,7 +1,6 @@
 # Hays + Sons — Customer & Job Database (Google Apps Script)
 
-This folder holds the **entire backend** for the app's customer/job database: storage and
-authentication. It is designed to be copied into the Apps Script editor and run once.
+This folder holds the **entire backend** for the app's customer/job database: shared workspace storage. It is designed to be copied into the Apps Script editor and run once.
 
 The backend is **one single file — `Code.gs`** — so setup is one paste. After pasting, press
 **Ctrl+End** and check the end: the last line must be a single `}` and the file must match the line
@@ -39,17 +38,6 @@ Everything is dependency-free — no libraries, no `clasp`, no build step.
 5. Click **Save**, then select **`setupDatabase`** in the function dropdown and click **Run**, then
    approve the permission prompt. Google will ask for *"See, edit, create and delete your
    spreadsheets"* and *"Connect to an external service"*. Both are required.
-
-   > `setupDatabase()` also accepts an email, name and password to create your first admin account —
-   > but the editor's **Run button cannot pass arguments to a function**. To create that account, use
-   > the login page's **Create account** button (sign-up is open by default), or add a temporary
-   > wrapper like this and run *that*:
-   >
-   > ```js
-   > function bootstrap() {
-   >   setupDatabase('you@example.com', 'Your Name', 'a-strong-password');
-   > }
-   > ```
 
 That single call provisions **everything**:
 
@@ -132,92 +120,20 @@ deploy the frontend. Verify an import and estimate analysis from two signed-in
 sessions. Do not rerun database setup or recreate the database to install this
 feature; the reference sheet is created on first use.
 
-### Accounts
+### Internal workspace access
 
-Login is handled by the app's own sign-in page. Credentials are checked against the `Users` sheet, and
-a short-lived bearer token is issued, recorded in `Sessions` and sent with every subsequent request.
+The app opens directly to Jobs. Workspace API requests require no application
+account, session token, or shared secret. Saves and imports use the shared
+`internal@system.local` editor identity in the audit log.
 
-Create or reset an account from the Apps Script editor:
+The login, register, logout, checkSession and listUsers API routes have been removed.
+Legacy Users/Sessions sheets and editor helpers remain for existing database
+compatibility; no account setup is required to use the app.
 
-    createUser('russell@haysandsons.com', 'Russell Shive', 'a-strong-password', 'admin')
-
-Roles are `admin`, `editor` and `viewer`. Running it for an existing email resets that account in place.
-
-| Helper | Purpose |
-| --- | --- |
-| `createUser(email, name, password, role)` | Create an account, or reset an existing password. |
-| `enableRegistration()` | Open sign-up to anyone with the URL (the default). No arguments. |
-| `disableRegistration()` | Refuse all sign-up. No arguments. |
-| `useInviteCode()` | Require an invite code; generates one and logs it. No arguments. |
-| `setRegistrationMode('open'\|"invite"\|'off')` | Set the sign-up policy explicitly. |
-| `setRegistrationCode(code, domains?, role?)` | Invite mode with a code you choose, plus an optional domain list. |
-| `getRegistrationInfo()` | Log the registration state without revealing the invite code. |
-| `listUsers()` | Log every account without exposing credentials. |
-| `setUserActive(email, true/false)` | Enable or disable an account without deleting it. |
-| `cleanupSessions()` | Remove expired sessions. Safe on a daily time-driven trigger. |
-| `revokeAllSessions()` | Sign everyone out immediately. |
-| `showInstallInfo()` | Log configuration plus account and session counts. |
-
-**Passwords are never stored in plain text.** Each account carries a random salt and an iterated
-HMAC-SHA256 derivation — Apps Script has no bcrypt or argon2, so a high-iteration HMAC is the strongest
-primitive available natively. An account locks for 15 minutes after 5 failed attempts, and failures are
-reported uniformly so the endpoint cannot be used to discover which email addresses exist.
-
-**Sessions** last 12 hours. The browser keeps the token in `localStorage` and re-verifies it with the
-server on load, so reloading the page keeps you signed in.
-
-### Self-service sign-up
-
-The login page has a **Create account** button. Anyone who has the app URL can click it, enter their
-email, choose a password, and they are signed straight in. No administrator involvement, no invite
-code — **this is on by default.**
-
-Accounts created this way get the `editor` role, and can never be `admin`.
-
-#### Locking it down (optional)
-
-The policy lives in the `REGISTRATION_MODE` Script Property. Change it from the Apps Script editor:
-pick the function in the dropdown, click **Run**, then read **View → Logs**.
-
-    disableRegistration()   // refuse all sign-up
-    useInviteCode()         // require an invite code; generates one and logs it
-    enableRegistration()    // back to open sign-up (the default)
-
-These take no arguments deliberately — the editor's Run button cannot pass arguments to a function.
-They take effect immediately with **no redeploy needed**, because Script Properties are shared between
-the editor and the deployed web app.
-
-For finer control, call these directly by wrapping them in a temporary function:
-
-    setRegistrationCode('a-long-code')                    // invite mode, with a code you choose
-    setRegistrationCode('a-long-code', 'haysandsons.com') // invite mode + domain restriction
-    setRegistrationMode('off')                            // same as disableRegistration()
-
-| Mode | Behaviour |
-| --- | --- |
-| `open` (default) | Anyone with the URL can create an account |
-| `invite` | An invite code of at least 12 characters is required |
-| `off` | Sign-up is refused; accounts come from `createUser()` only |
-
-#### What is always enforced
-
-Whatever the mode, these hold:
-
-- **Never an administrator.** New accounts get `editor`, or whatever `REGISTRATION_DEFAULT_ROLE` says;
-  `admin` is silently clamped to `editor`.
-- **Passwords are hashed** with a per-user salt, exactly as for accounts you create yourself.
-- **Optional domain allow-list** narrows any mode. Matching is exact, so `not-haysandsons.com` does not
-  pass for `haysandsons.com`.
-- **Every attempt is audited**, successful or not, in `AuditLog`.
-- **In `invite` mode** the code is compared in constant time *before* the `Users` sheet is read, so a
-  wrong code cannot be used to discover which emails already have accounts.
-
-> **Before you widen access:** a row in `Jobs` carries the customer's address, insurance claim details
-> and the last four digits of their SSN. In `open` mode, anyone who obtains the web-app URL can create
-> an account and read all of it. If that matters, run `useInviteCode()` or
-> `setRegistrationCode(code, 'haysandsons.com')`.
-
----
+Deploy the updated Code.gs as a new version of the existing deployment before
+rebuilding/deploying the frontend. Keep the same /exec URL and spreadsheet.
+Restrict reachability through internal hosting/network controls: anyone who can
+reach the backend can read and modify workspace data.
 
 ## 2. Optional Script Properties
 
@@ -311,10 +227,10 @@ Every response is **HTTP 200** with a JSON envelope — always branch on `ok`, n
 | `deleteJob` | `{ recordId, hard? }` | `{ deleted, hard, recordId }` |
 | `searchJobs` | `{ query, includeDeleted?, limit? }` | `{ jobs: [...], count, query }` |
 
-Authenticated actions also accept `idToken` (the Google ID token). Example:
+Workspace actions require no credentials. Example:
 
 ```json
-{ "action": "getJob", "idToken": "<jwt>", "recordId": "b1e2..." }
+{ "action": "getJob", "recordId": "b1e2..." }
 ```
 
 Error codes: `missing_action`, `unknown_action`, `unauthenticated`, `forbidden`, `not_configured`,
@@ -373,9 +289,8 @@ should show `{"ok":true,...}` **without revealing any data**.
 
 ## 9. Security notes
 
-- Nothing is served until `ALLOWED_EMAILS` is configured. The script **fails closed**.
-- Requests are authenticated by verifying a Google ID token server-side before any data is touched.
-- `SHARED_SECRET` is a deliberate developer bypass — leave it empty in production.
+- Workspace requests are open without application authentication.
+- Internal hosting/network controls must provide any required access restrictions.
 - The spreadsheet is **not** shared publicly; only the script owner needs access, because the web app
   executes as the owner.
 - `RecordId` and `RecordJson` columns are hidden in the sheet to reduce accidental edits.

@@ -17,9 +17,9 @@ import {
   deleteJob,
   fetchDraft,
   getCurrentUser,
+  getWorkspaceOwner,
   getJob,
   isDatabaseConfigured,
-  isDeveloperBypassEnabled,
   listJobs,
   saveDraft,
   saveJob,
@@ -87,9 +87,7 @@ function errorMessage(err: unknown): string {
  * server data that every account is entitled to.
  */
 function currentOwner(): string | null {
-  if (isDeveloperBypassEnabled()) return 'dev';
-  const user = getCurrentUser();
-  return user?.email ? user.email.toLowerCase() : null;
+  return getWorkspaceOwner();
 }
 
 /** True when a locally queued row was written by somebody else's account. */

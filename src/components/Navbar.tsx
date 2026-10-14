@@ -4,7 +4,6 @@ import {
   Save,
   Loader2,
   Plus,
-  LogOut,
   ChevronDown,
   Cloud,
   AlertCircle,
@@ -21,16 +20,10 @@ interface NavbarProps {
   isDirty: boolean;
   isSavingJob: boolean;
   savedJobsCount: number;
-  /** Email verified by the customer database, when signed in. */
-  databaseEmail: string | null;
   isDatabaseConfigured: boolean;
-  /** True when the developer shared-secret bypass is active (no sign-in). */
-  isDeveloperBypass: boolean;
   onSaveJob: () => void;
   /** Opens the saved jobs library. */
   onOpenSavedCustomers: () => void;
-  /** Signs the application user out of the database session. */
-  onSignOut: () => void;
   /** Records queued locally that still need to reach the database. */
   pendingSyncCount?: number;
   /** True while the device has no connectivity. */
@@ -49,12 +42,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   isDirty,
   isSavingJob,
   savedJobsCount,
-  databaseEmail,
   isDatabaseConfigured,
-  isDeveloperBypass,
   onSaveJob,
   onOpenSavedCustomers,
-  onSignOut,
   pendingSyncCount = 0,
   isOffline = false,
   draftStatus = 'idle',
@@ -124,7 +114,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               type="button"
               onClick={onOpenSavedCustomers}
               aria-label="Open saved jobs"
-              title={databaseEmail ? `Saved jobs — signed in as ${databaseEmail}` : 'Open saved jobs'}
+              title="Open saved jobs"
               className={`${BTN_BASE} min-h-11 px-2 sm:px-3 border border-slate-200 text-slate-700 hover:bg-slate-50 hover:text-slate-900`}
             >
               <Database className="w-4 h-4 text-slate-400" aria-hidden />
@@ -177,14 +167,14 @@ export const Navbar: React.FC<NavbarProps> = ({
                 ref={accountButtonRef}
                 type="button"
                 onClick={() => setIsMenuOpen((open) => !open)}
-                title="Account and connections"
-                aria-label="Account and connections"
+                title="Connections"
+                aria-label="Connections"
                 aria-controls="account-panel"
                 aria-expanded={isMenuOpen}
                 className={`${BTN_BASE} min-h-11 min-w-11 px-2 border border-slate-200 text-slate-600 hover:bg-slate-50`}
               >
                 <UserCircle className="w-4 h-4" aria-hidden />
-                <span className="hidden 2xl:inline">Account</span>
+                <span className="hidden 2xl:inline">Connections</span>
                 <ChevronDown className={`hidden 2xl:block w-3 h-3 transition-transform ${isMenuOpen ? 'rotate-180' : ''}`} aria-hidden />
               </button>
 
@@ -203,9 +193,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       <div className="flex items-start gap-2.5">
                         {isDatabaseConfigured ? (
                           <span
-                            className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${
-                              isDeveloperBypass ? 'bg-amber-500' : 'bg-emerald-500'
-                            }`}
+                            className="mt-0.5 w-2 h-2 rounded-full shrink-0 bg-emerald-500"
                           />
                         ) : (
                           <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
@@ -215,9 +203,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                             {isDatabaseConfigured ? 'Google Apps Script connected' : 'Google Apps Script not connected'}
                           </p>
                           <p className="text-[11px] text-slate-500 truncate">
-                            {isDeveloperBypass
-                              ? 'Developer mode — sign-in bypassed'
-                              : databaseEmail || (isDatabaseConfigured ? 'Not signed in' : 'Ask your administrator to connect the database')}
+                            {isDatabaseConfigured ? 'Shared internal workspace' : 'Ask your administrator to connect the database'}
                           </p>
                         </div>
                       </div>
@@ -229,30 +215,12 @@ export const Navbar: React.FC<NavbarProps> = ({
                         <Cloud className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
                         <div className="min-w-0">
                           <p className="text-[13px] font-semibold text-slate-900">Shared Drive &amp; job database</p>
-                          <p className="mt-1 text-[11px] leading-relaxed text-slate-500">Documents and job records use this account through the app's Google Apps Script backend.</p>
+                          <p className="mt-1 text-[11px] leading-relaxed text-slate-500">Documents and job records use the shared internal workspace through the app's Google Apps Script backend.</p>
                         </div>
                       </div>
                     </div>
 
-                    {/* Application sign out */}
-                    {databaseEmail && !isDeveloperBypass && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsMenuOpen(false);
-                          onSignOut();
-                        }}
-                        className="w-full flex items-center gap-2.5 px-3.5 py-3 text-left hover:bg-slate-50 transition-colors border-t border-slate-100"
-                      >
-                        <LogOut className="w-4 h-4 text-slate-400" />
-                        <span className="min-w-0">
-                          <span className="block text-[13px] font-semibold text-slate-900">Sign out</span>
-                          <span className="block text-[11px] text-slate-500 truncate">
-                            {databaseEmail}
-                          </span>
-                        </span>
-                      </button>
-                    )}
+
                   </div>
                 </>
               )}

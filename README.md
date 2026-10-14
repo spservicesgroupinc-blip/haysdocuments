@@ -5,6 +5,17 @@ then generate the contract, reports and production packet as PDFs. Runs as a web
 (installable PWA) and as a Windows desktop app (Electron). Works **offline-first**: jobs are
 cached on the device and changes sync to the Google Apps Script database automatically.
 
+## Internal workspace access
+
+The app opens directly to Jobs with no login, registration, or sign-out page.
+Database requests require no app session or shared secret. All edits use the shared
+`internal@system.local` audit identity. Access restrictions belong to the internal
+hosting/network configuration; anyone who can reach the backend can read and edit jobs.
+
+Deploy the updated `src/apps-script/Code.gs` as a new version of the existing Apps
+Script deployment before deploying the frontend, keeping the same `/exec` URL.
+Existing jobs and the shared cloud draft remain in their current spreadsheet.
+
 ## Prerequisites
 
 - Node.js 20+ and npm
@@ -18,7 +29,6 @@ Copy `.env.example` to `.env.local` and set:
 | --- | --- |
 | `VITE_APPS_SCRIPT_URL` | Deployed Apps Script `/exec` URL (the job database) |
 | `VITE_GOOGLE_CLIENT_ID` | OAuth client for Google Drive/Sheets features (web only) |
-| `VITE_DEV_SHARED_SECRET` | **Local development only** — disables auth. Never ship a build with this set. |
 | `DEEPSEEK_API_KEY` | Set in Google Apps Script Properties, never in the frontend environment |
 
 Vite inlines `VITE_*` values at build time — restart `npm run dev` (or rebuild) after changes.
@@ -37,10 +47,10 @@ a completed draft sync. Temporary connection and database-busy errors retry with
 increasing delays; session and deployment errors stay queued until corrected.
 
 Drafts persist after 350 ms of idle time, together with a coalesced backup operation
-owned by the signed-in account. Cloud autosave waits for 2 seconds of idle time, with
+owned by the shared internal workspace. Cloud autosave waits for 2 seconds of idle time, with
 an 8-second maximum wait while typing. Startup recovery happens before autosave can
 write the empty form. Responses from earlier saves and reads cannot replace newer
-device edits. Hiding the window, signing out, and applying an update flush device
+device edits. Hiding the window and applying an update flush device
 autosave; closing with an incomplete device save prompts you to keep the window open.
 
 After updating the backend, deploy `src/apps-script/Code.gs` as a **new version of the

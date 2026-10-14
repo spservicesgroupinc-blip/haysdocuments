@@ -8,13 +8,13 @@ import { IDBFactory, IDBKeyRange, IDBObjectStore } from 'fake-indexeddb';
 const bundle = await build({
   stdin: { contents: `export * from './src/services/jobSync';
     export * as storage from './src/services/localDb';
-    export { login, logout } from './src/services/appsScriptService';`, resolveDir: process.cwd() },
+    export { getCurrentUser } from './src/services/appsScriptService';`, resolveDir: process.cwd() },
   bundle: true, write: false, format: 'iife', globalName: 'syncEngine', platform: 'browser',
   external: ['virtual:pwa-register'],
   define: { 'import.meta.env': JSON.stringify({ VITE_APPS_SCRIPT_URL: 'https://script.google.com/macros/s/TEST/exec' }) },
 });
 
-const owner = 'test@example.com';
+const owner = 'internal@system.local';
 const job = { recordId: 'customer-1', customer: { jobNumber: 'TEST-1', customerName: 'Test' } };
 const reply = (data: unknown) => new Response(JSON.stringify({ ok: true, data }));
 
@@ -24,7 +24,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function setup(t: TestContext, fetcher: (body: any) => Promise<Response> | Response) {
+function setup(t: TestContext, fetcher: (body: any) => Promise<Response> | Response, legacyOwner?: string) {
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const trackedTimeout = (fn: () => void, ms: number) => {
     const timer = setTimeout(() => { timers.delete(timer); fn(); }, ms);
@@ -32,15 +32,18 @@ function setup(t: TestContext, fetcher: (body: any) => Promise<Response> | Respo
     return timer;
   };
   t.after(() => { for (const timer of timers) clearTimeout(timer); });
-  let session: string | null = JSON.stringify({ token: 'test-session', expiresAt: '2099-01-01T00:00:00Z',
-    user: { email: owner, name: 'Test', role: 'editor' } });
+  const localStorage = new Map<string, string>();
+  if (legacyOwner) localStorage.set('hays.db.session', JSON.stringify({
+    token: 'expired-token', expiresAt: '2000-01-01T00:00:00Z', user: { email: legacyOwner },
+  }));
   const context = vm.createContext({
     console, URL, AbortController, structuredClone, indexedDB: new IDBFactory(), IDBKeyRange,
     setTimeout: trackedTimeout, clearTimeout,
     window: { setTimeout: trackedTimeout, clearTimeout }, navigator: { onLine: true },
     localStorage: {
-      getItem: () => session, setItem: (_key: string, value: string) => { session = value; },
-      removeItem: () => { session = null; },
+      getItem: (key: string) => localStorage.get(key) ?? null,
+      setItem: (key: string, value: string) => { localStorage.set(key, value); },
+      removeItem: (key: string) => { localStorage.delete(key); },
     },
     fetch: async (_url: string, options: RequestInit) => fetcher(JSON.parse(options.body as string)),
   });
@@ -266,13 +269,14 @@ test('a delayed customer list cannot replace a job saved and synced after the re
   assert.ok(await storage.getMirrorJob(job.recordId));
 });
 
-test('session expiry returns to sign-in without losing the pending save', async (t) => {
+test('an older backend requiring a session retains saves in the internal workspace', async (t) => {
   const engine = setup(t, () => new Response(JSON.stringify({ ok: false, code: 'session_expired', error: 'Sign in again.' })));
   await engine.saveJobOffline(job);
   await engine.flushOutboxNow();
   assert.equal((await engine.storage.getOutboxOps()).length, 1);
   assert.equal(engine.getSyncState().errorCode, 'session_expired');
-  await assert.rejects(engine.saveJobOffline(job), /Sign in to save/);
+  assert.equal(engine.getCurrentUser().email, owner);
+  assert.equal((await engine.saveJobOffline(job)).queued, true);
 });
 
 test('a busy backend keeps edits queued and schedules a delayed retry', async (t) => {
@@ -282,4 +286,24 @@ test('a busy backend keeps edits queued and schedules a delayed retry', async (t
   assert.equal((await engine.storage.getOutboxOps()).length, 1);
   assert.equal(engine.getSyncState().errorCode, 'busy');
   assert.ok(engine.getSyncState().nextRetryAt > Date.now());
+});
+
+
+test('removing login preserves the previous account device draft and pending saves', async (t) => {
+  const previousOwner = 'previous@example.com';
+  const requests: any[] = [];
+  const engine = setup(t, (body) => {
+    requests.push(body);
+    if (body.action === 'getDraft') return reply({ draft: null });
+    if (body.action === 'saveDraft') return reply({ job: body.draft.job, updatedAt: new Date().toISOString() });
+    return reply(job);
+  }, previousOwner);
+  await engine.storage.persistDraftAndOutbox({ id: 'current', job, savedAt: 1 }, previousOwner);
+  await engine.storage.enqueueOutbox({ type: 'save', recordId: job.recordId, job, createdAt: 1, attempts: 0, owner: previousOwner });
+  assert.equal((await engine.restoreDraft()).job.recordId, job.recordId);
+  await engine.flushOutboxNow();
+  const queued = await engine.storage.getOutboxOps();
+  assert.equal(queued.filter((op: any) => op.type === 'save').length, 0);
+  assert.ok(requests.some((body) => body.action === 'saveJob'));
+  assert.ok(requests.every((body) => !body.sessionToken && !body.sharedSecret));
 });

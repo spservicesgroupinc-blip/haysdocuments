@@ -298,5 +298,20 @@ sessionSheet.rows[1][6] = new Date(now.getTime() - 360000).toISOString();
 call('validateSession_', 'token');
 check('stale heartbeat is updated once', heartbeatWrites === 1);
 
+console.log('\n9. Internal workspace requests need no credentials');
+sandbox.ContentService.createTextOutput = (text: string) => ({ setMimeType: () => JSON.parse(text) });
+const publicDraft = call('handleAction_', { action: 'getDraft' });
+check('getDraft accepts a request without a token', publicDraft.ok === true);
+const publicSave = call('handleAction_', { action: 'saveJob', job: savedJob });
+check('saveJob accepts a request without a token', publicSave.ok === true);
+const publicList = call('handleAction_', { action: 'listJobs' });
+check('listJobs accepts a request without a token', publicList.ok === true && publicList.data.length === 1);
+check('audit identity is the shared workspace', publicList.data[0]?.updatedBy === 'internal@system.local');
+for (const action of ['login', 'register', 'logout', 'checkSession', 'listUsers']) {
+  let code = '';
+  try { call('handleAction_', { action }); } catch (err: any) { code = err.code; }
+  check(`${action} is no longer a public API route`, code === 'unknown_action');
+}
+
 console.log(failures === 0 ? '\n>>> DRAFT BACKEND TESTS: PASS <<<' : `\n>>> DRAFT BACKEND TESTS: ${failures} FAILURE(S) <<<`);
 process.exit(failures === 0 ? 0 : 1);

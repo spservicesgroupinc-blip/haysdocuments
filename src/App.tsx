@@ -29,14 +29,7 @@ import { getPdfFieldSchema } from './services/pdfFieldSchema';
 import type { JobDocument } from './services/documentCatalog';
 import {
   isDatabaseConfigured,
-  isDeveloperBypassEnabled,
-  login as loginToDatabase,
-  registerAccount,
-  logout as logoutFromDatabase,
-  verifySession,
   getCurrentUser,
-  subscribeSession,
-  AppUser,
 } from './services/appsScriptService';
 import {
   deleteJobOffline,
@@ -54,7 +47,6 @@ import {
   type SyncState,
 } from './services/jobSync';
 import type { SyncJobSummary } from './services/localDb';
-import { LoginScreen } from './components/LoginScreen';
 import { Navbar } from './components/Navbar';
 import { MobileSectionNav, Sidebar, WORKSPACE_SECTIONS } from './components/Sidebar';
 import type { WorkspaceTab } from './components/Sidebar';
@@ -84,7 +76,7 @@ export default function App() {
   const [intakeSession, setIntakeSession] = useState(0);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('home');
 
-  // Shared document storage and database actions use the Apps Script account session.
+  // Shared document storage and database actions use the internal workspace.
   const [isDriveLoading, setIsDriveLoading] = useState(false);
   const [isSheetsLoading, setIsSheetsLoading] = useState(false);
   const [driveSuccessLink, setDriveSuccessLink] = useState<string | undefined>();
@@ -135,9 +127,6 @@ export default function App() {
   const [isLoadingJobs, setIsLoadingJobs] = useState(false);
   const [jobListError, setJobListError] = useState<string | null>(null);
   const [jobSearch, setJobSearch] = useState('');
-  const [databaseEmail, setDatabaseEmail] = useState<string | null>(null);
-  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => getCurrentUser());
-  const [isAuthReady, setIsAuthReady] = useState(false);
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [syncState, setSyncState] = useState<SyncState>(getSyncState);
 
@@ -198,31 +187,22 @@ export default function App() {
   // Offline-first sync engine: connectivity listeners, outbox flush, status.
   useEffect(() => initJobSync(), []);
   useEffect(() => subscribeSyncState(setSyncState), []);
-  useEffect(() => subscribeSession((next) => {
-    setCurrentUser(next);
-    if (!next) {
-      draftRestoredRef.current = false;
-      setWorkspaceReady(false);
-    }
-  }), []);
   useEffect(() => {
-    if (!currentUser && !isDeveloperBypassEnabled()) return;
     void readCachedJobSummaries().then(setSavedJobs).catch(() => {});
-  }, [syncState.lastSyncAt, currentUser]);
+  }, [syncState.lastSyncAt]);
 
   // Autosave the workspace record (debounced) so a reload never loses work…
   useEffect(() => {
-    if (!workspaceReady || (!currentUser && !isDeveloperBypassEnabled())) return;
+    if (!workspaceReady) return;
     const serialized = JSON.stringify({ jobData, recordId });
     if (serialized === lastDraftScheduledRef.current) return;
     lastDraftScheduledRef.current = serialized;
     scheduleDraftSave(jobData, recordId);
-  }, [jobData, recordId, workspaceReady, currentUser]);
+  }, [jobData, recordId, workspaceReady]);
 
-  // Restore after authentication, before autosave can publish the empty form.
+  // Restore the shared draft before autosave can publish the empty form.
   useEffect(() => {
-    if (!isAuthReady || draftRestoredRef.current) return;
-    if (!getCurrentUser() && !isDeveloperBypassEnabled()) return;
+    if (draftRestoredRef.current) return;
     let cancelled = false;
     let restoredSnapshot = jobDataRef.current;
     const apply = (draft: RestoredDraft) => {
@@ -249,31 +229,6 @@ export default function App() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthReady, currentUser]);
-
-  // Restore and verify any stored session before rendering the app.
-  useEffect(() => {
-    let cancelled = false;
-
-    const restore = async () => {
-      if (isDeveloperBypassEnabled() || !isDatabaseConfigured() || !getCurrentUser()) {
-        if (!cancelled) setIsAuthReady(true);
-        return;
-      }
-      try {
-        const user = await verifySession();
-        if (!cancelled) setCurrentUser(user);
-      } catch (err) {
-        console.warn('Session verification failed:', err);
-      } finally {
-        if (!cancelled) setIsAuthReady(true);
-      }
-    };
-
-    restore();
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   const handleRefreshJobs = async () => {
@@ -296,12 +251,11 @@ export default function App() {
 
   // Load the saved-customer list as soon as the workspace becomes available.
   useEffect(() => {
-    if (!isAuthReady || !isDatabaseConfigured()) return;
-    if (!currentUser && !isDeveloperBypassEnabled()) return;
+    if (!isDatabaseConfigured()) return;
     void handleRefreshJobs();
     // handleRefreshJobs is rebuilt every render; it is intentionally excluded here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthReady, currentUser]);
+  }, []);
 
   /** Jump to the Saved Customers home page with a fresh list. */
   const handleOpenSavedCustomers = async () => {
@@ -318,41 +272,6 @@ export default function App() {
   const handleReviewField = (field: MissingJobField) => {
     fieldToFocusRef.current = field.inputId;
     setActiveTab(field.section);
-  };
-
-  const handleAppSignIn = async (email: string, password: string) => {
-    const user = await loginToDatabase(email, password);
-    setCurrentUser(user);
-    setDatabaseEmail(user.email);
-    showStatus('success', `Signed in as ${user.name || user.email}.`);
-  };
-
-  const handleAppRegister = async (values: {
-    name: string;
-    email: string;
-    password: string;
-    inviteCode: string;
-  }) => {
-    const user = await registerAccount(values);
-    setCurrentUser(user);
-    setDatabaseEmail(user.email);
-    showStatus('success', `Account created. Welcome, ${user.name || user.email}.`);
-  };
-
-  const handleAppSignOut = async () => {
-    try { await flushDraftSave(); }
-    catch (err: any) { showStatus('error', err?.message || 'Could not save your draft before signing out.'); return; }
-    await logoutFromDatabase();
-    setCurrentUser(null);
-    setDatabaseEmail(null);
-    setSavedJobs([]);
-    setRecordId(undefined);
-    replaceJob(createEmptyJob());
-    clearJobArtifacts();
-    draftRestoredRef.current = false;
-    lastDraftScheduledRef.current = '';
-    setWorkspaceReady(false);
-    showStatus('info', 'Signed out.');
   };
 
   const handleSaveJob = async () => {
@@ -831,28 +750,6 @@ export default function App() {
   const previousSection = sectionIndex > 0 ? jobSections[sectionIndex - 1] : undefined;
   const nextSection = sectionIndex >= 0 ? jobSections[sectionIndex + 1] : undefined;
 
-  // Auth gate — the workspace is only reachable once signed in (or in developer mode).
-  if (!isAuthReady) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <Loader2 className="w-5 h-5 animate-spin text-slate-400" />
-      </div>
-    );
-  }
-
-  if (!currentUser && !isDeveloperBypassEnabled()) {
-    return (
-      <>
-        <LoginScreen
-          onSubmit={handleAppSignIn}
-          onRegister={handleAppRegister}
-          isDatabaseConfigured={isDatabaseConfigured()}
-        />
-        <PwaStatus />
-      </>
-    );
-  }
-
   if (!workspaceReady) return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center gap-2 text-sm text-slate-500" role="status">
       <Loader2 className="w-5 h-5 animate-spin" /> Restoring your workspace…
@@ -869,12 +766,9 @@ export default function App() {
         isDirty={isDirty}
         isSavingJob={isSavingJob}
         savedJobsCount={savedJobs.length}
-        databaseEmail={currentUser ? currentUser.email : null}
         isDatabaseConfigured={isDatabaseConfigured()}
-        isDeveloperBypass={isDeveloperBypassEnabled()}
         onSaveJob={handleSaveJob}
         onOpenSavedCustomers={handleOpenSavedCustomers}
-        onSignOut={handleAppSignOut}
         pendingSyncCount={syncState.pendingCount}
         isOffline={!syncState.online}
         draftStatus={syncState.draftStatus}
@@ -949,8 +843,6 @@ export default function App() {
                 search={jobSearch}
                 currentRecordId={recordId}
                 isDatabaseConfigured={isDatabaseConfigured()}
-                databaseEmail={currentUser ? currentUser.email : null}
-                isDeveloperBypass={isDeveloperBypassEnabled()}
                 onSearchChange={setJobSearch}
                 onRefresh={handleRefreshJobs}
                 onOpenJob={handleLoadJob}
@@ -962,8 +854,8 @@ export default function App() {
 
             {activeTab === 'customerImport' && (
               <CustomerImportPage
-                key={currentUser?.email || 'developer'}
-                canImport={isDeveloperBypassEnabled() || currentUser?.role === 'admin' || currentUser?.role === 'editor'}
+                key="internal-workspace"
+                canImport={true}
                 onOpenIntake={() => handleNavigate('intake')}
               />
             )}
