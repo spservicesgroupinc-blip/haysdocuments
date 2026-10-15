@@ -121,6 +121,9 @@ test('checklist boxes toggle from the form and PDF, persist after reload, and do
   await preliminary.uncheck();
   await expect.poll(() => draft.checklist.preliminaryReportVerified).toBe(false);
   await expect(page.getByRole('checkbox', { name: 'Copy of scope', exact: true })).toBeChecked();
+  await page.setViewportSize({ width: 375, height: 850 });
+  await expect(preliminary).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test('startup recovers the shared draft before any autosave writes', async ({ page }) => {

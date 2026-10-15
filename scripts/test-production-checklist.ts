@@ -8,6 +8,7 @@ import { SAMPLE_WATER } from './fixtures';
 import { PDFDocument } from 'pdf-lib';
 import { generateCompletePacket } from '../src/services/pdfService';
 import { ensureRecordDefaults } from '../src/types/jobData';
+import { CHECKLIST_BOXES } from '../src/types/productionChecklist';
 
 test('checklist boxes are interactive, preserve job checks, and remain editable in the packet', async () => {
   const job = createEmptyJob();
@@ -17,8 +18,13 @@ test('checklist boxes are interactive, preserve job checks, and remain editable 
     const pdf = await PDFDocument.load(await generator(restored));
     const form = pdf.getForm();
     assert.equal(form.getFields().length, 33, 'Every outlined box must be interactive');
+    assert.equal(form.getFields().filter(field => form.getCheckBox(field.getName()).isChecked()).length, 3, 'Only explicitly checked items are marked');
     for (const key of ['jobNumberVerified', 'preliminaryReportVerified', 'managerNotesVerified']) {
       assert.equal(form.getCheckBox(`checklist.${key}`).isChecked(), true, key);
+    }
+    const expectedPage = pdf.getPages()[generator === generateCompletePacket ? 7 : 0];
+    for (const field of form.getFields()) {
+      for (const widget of field.acroField.getWidgets()) assert.equal(widget.P()?.toString(), expectedPage.ref.toString());
     }
     const unchecked = form.getCheckBox('checklist.scopeCopyVerified');
     assert.equal(unchecked.isChecked(), false);
@@ -28,6 +34,15 @@ test('checklist boxes are interactive, preserve job checks, and remain editable 
     assert.equal(reopened.getForm().getCheckBox('checklist.scopeCopyVerified').isChecked(), true);
     assert.equal(reopened.getForm().getCheckBox('checklist.jobNumberVerified').isChecked(), false);
   }
+});
+
+test('older jobs receive unchecked boxes without losing existing checklist data', () => {
+  const legacy = createEmptyJob();
+  for (const item of CHECKLIST_BOXES) delete legacy.checklist[item.key];
+  legacy.checklist.projectManagerNotes = 'Keep these existing notes';
+  const restored = ensureRecordDefaults(JSON.parse(JSON.stringify(legacy)));
+  for (const item of CHECKLIST_BOXES) assert.equal(restored.checklist[item.key], false);
+  assert.equal(restored.checklist.projectManagerNotes, 'Keep these existing notes');
 });
 
 async function inspect(bytes: Uint8Array) {

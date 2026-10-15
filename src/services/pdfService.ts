@@ -1,5 +1,5 @@
 import { assertPriceReviewed } from './knowledgeBaseReview';
-import { PDFDocument, rgb, StandardFonts, PDFPage, PDFFont, PDFDict, PDFName, PDFRef } from 'pdf-lib';
+import { PDFDocument, rgb, StandardFonts, PDFPage, PDFFont, PDFDict, PDFName, PDFRef, drawCheckMark } from 'pdf-lib';
 import { RestorationJobData } from '../types/jobData';
 import productionChecklistTemplate from '../templates/production-checklist.json';
 import { CHECKLIST_BOXES } from '../types/productionChecklist';
@@ -1970,6 +1970,15 @@ export async function generateProductionChecklist(data: RestorationJobData): Pro
       borderWidth: 0, borderColor: undefined, backgroundColor: undefined, textColor: rgb(0, 0, 0),
     });
     if (data.checklist[item.key] === true) checkbox.check();
+    else checkbox.uncheck();
+    // A zero-width PDF stroke still paints a device-pixel hairline. Supply
+    // transparent off appearances and only a tick on, preserving the artwork.
+    checkbox.updateAppearances(() => ({
+      normal: {
+        on: drawCheckMark({ x: item.width / 2, y: item.height / 2, size: 6, thickness: 0.8, color: rgb(0, 0, 0) }),
+        off: [],
+      },
+    }));
     captureFieldSpan({ key, page, x: item.x, yTop: 792 - item.top, width: item.width, height: item.height, size: 10, bold: false });
   }
 
