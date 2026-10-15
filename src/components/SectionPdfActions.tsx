@@ -3,7 +3,6 @@ import { Eye, FileDown, FileText, Loader2 } from 'lucide-react';
 import type { RestorationJobData } from '../types/jobData';
 import type { JobDocument } from '../services/documentCatalog';
 import { downloadPdf } from '../services/pdfService';
-import { hasUnresolvedPriceReview, PRICE_DEPENDENT_DOCUMENT_IDS } from '../services/knowledgeBaseReview';
 
 /** Opens the in-app PDF preview modal (same handler the Documents & Output panel uses). */
 export type PdfPreviewRequest = (doc: JobDocument) => void;
@@ -43,11 +42,9 @@ export const SectionPdfActions: React.FC<SectionPdfActionsProps> = ({
 
   return (
     <div className={`mt-5 pt-4 border-t border-slate-100 ${className ?? ''}`}>
-      {hasUnresolvedPriceReview(jobData) && docs.some(doc => PRICE_DEPENDENT_DOCUMENT_IDS.has(doc.id)) && <p className="mb-3 text-sm text-amber-800">Resolve the contract price discrepancy in Financials to preview or download these documents.</p>}
       <div className="flex flex-col gap-2.5">
         {docs.map((doc) => {
           const isDownloading = downloadingId === doc.id;
-          const priceBlocked = PRICE_DEPENDENT_DOCUMENT_IDS.has(doc.id) && hasUnresolvedPriceReview(jobData);
           return (
             <div key={doc.id} className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-3">
               <span className="inline-flex min-w-0 items-center gap-2 text-[12px] text-slate-500">
@@ -61,7 +58,6 @@ export const SectionPdfActions: React.FC<SectionPdfActionsProps> = ({
                 <button
                   type="button"
                   onClick={() => onPreview(doc)}
-                  disabled={priceBlocked}
                   title={`Preview ${doc.title} PDF`}
                   aria-label={`Preview ${doc.title} PDF`}
                   className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-700 transition hover:bg-slate-50"
@@ -72,7 +68,7 @@ export const SectionPdfActions: React.FC<SectionPdfActionsProps> = ({
                 <button
                   type="button"
                   onClick={() => handleDownload(doc)}
-                  disabled={isDownloading || priceBlocked}
+                  disabled={isDownloading}
                   title={`Download ${doc.title} PDF`}
                   aria-label={`Download ${doc.title} PDF`}
                   className="inline-flex items-center rounded-lg bg-slate-900 px-3 py-1.5 text-[12px] font-semibold text-white shadow-sm transition hover:bg-red-600 disabled:opacity-50"

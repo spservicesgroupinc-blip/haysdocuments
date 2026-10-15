@@ -16,30 +16,10 @@ export interface CustomerReferenceSnapshot {
   version: string;
 }
 
-export interface PriceReview {
-  estimateAmount: number;
-  csvAmount: number;
-  status: 'pending' | 'resolved';
-  selectedSource?: 'estimate' | 'knowledgeBase';
-  resolvedAmount?: number;
-  resolvedAt?: string;
-}
-
-export interface KnowledgeBaseAnalysis {
-  version: string;
-  fileName: string;
-  customerCount: number;
-  matchStatus: 'matched' | 'ambiguous' | 'none';
-  matchedCustomer: CustomerReference | null;
-  explanation: string;
-  estimateTotal: number | null;
-  priceReview: PriceReview | null;
-}
-
 export const MAX_CUSTOMERS = 5000;
 export const MAX_CUSTOMER_CSV_BYTES = 10 * 1024 * 1024;
-// UTF-8 bytes conservatively bound token use, including non-Latin customer names.
-export const MAX_KNOWLEDGE_CONTEXT_BYTES = 100000;
+// UTF-8 bytes conservatively bound the saved list, including non-Latin customer names.
+export const MAX_CUSTOMER_LIST_BYTES = 100000;
 
 /** RFC 4180 fields: quoted commas/newlines/escaped quotes must stay in their column. */
 function csvRows(text: string): string[][] {
@@ -104,7 +84,7 @@ export function parseCustomerCsv(text: string): { customers: CustomerReference[]
     if (location.jobAddress.length > 500 || location.city.length > 100 || location.state.length > 100 || location.zip.length > 20) throw new Error(`Row ${rowNumber}: address field is too long.`);
     return { customerName, jobNumber, contractPrice: amount, ...location };
   });
-  if (new TextEncoder().encode(JSON.stringify(customers)).length > MAX_KNOWLEDGE_CONTEXT_BYTES) throw new Error('Customer knowledge base exceeds the supported AI context size (100 KB). Upload a smaller current-customer list.');
+  if (new TextEncoder().encode(JSON.stringify(customers)).length > MAX_CUSTOMER_LIST_BYTES) throw new Error('Customer list exceeds the supported 100 KB size. Upload a smaller customer list.');
   return { customers, priceColumn: headers[price] };
 }
 

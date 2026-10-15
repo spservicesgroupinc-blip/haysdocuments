@@ -61,67 +61,76 @@ test('authenticated shared snapshot is replaced, erasing previous customer data 
   assert.doesNotMatch(JSON.stringify([...env.sheets.values()].map(sheet => sheet.rows)), /do not execute|first.csv/);
   assert.ok(env.released() >= 2);
 });
-test('estimate analysis sends the complete current knowledge base to DeepSeek and validates its match', () => {
+test('estimate analysis sends only the uploaded document and never reads the customer list', () => {
   const env = backend();
   const customers = [
     { customerName: 'Smith Jane', jobNumber: 'DASH-1', contractPrice: 1500, jobAddress: '10 First St', city: 'Fort Wayne', state: 'IN', zip: '46808' },
     { customerName: 'Smith Jane', jobNumber: 'DASH-2', contractPrice: 2000, jobAddress: '20 Second St', city: 'Fort Wayne', state: 'IN', zip: '46809' },
   ];
-  const saved = env.sandbox.replaceCustomerReference_({ email: 'u1', role: 'editor' }, { customers, fileName: 'context.csv' });
+  env.sandbox.replaceCustomerReference_({ email: 'u1', role: 'editor' }, { customers, fileName: 'context.csv' });
+  // Reading the shared list during analysis would mean the connection came back.
+  env.sandbox.getCustomerReference_ = () => { throw new Error('The customer list must not be read by analyzeIntake'); };
   let request: any;
   env.sandbox.UrlFetchApp = { fetch: (url: string, options: any) => {
     assert.equal(url, 'https://api.deepseek.com/chat/completions');
     request = JSON.parse(options.payload);
     assert.equal(options.headers.Authorization, 'Bearer test-key');
-    return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ customer: { customerName: 'Smith Jane', jobNumber: 'DASH-2', lossAddress: '20 Second St' }, financials: { totalApprovedRcv: 2200 }, knowledgeMatch: { status: 'matched', jobNumber: 'DASH-2', explanation: 'Same name and second address.', evidence: ['Jane Smith', '20 Second St'] }, estimateTotal: 2200 }) } }] }) };
+    return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ customer: { customerName: 'Smith Jane', jobNumber: 'DASH-2', lossAddress: '20 Second St' }, financials: { totalApprovedRcv: 2200 } }) } }] }) };
   } };
   const analyzed = env.sandbox.handleAction_({ action: 'analyzeIntake', sessionToken: 'different-user', rawText: 'Estimate for Jane Smith, 20 Second St. Total $2,200.' }).data;
-  assert.ok(request.messages.some((message: any) => message.content.includes('DASH-1') && message.content.includes('DASH-2')));
-  assert.equal(analyzed.knowledgeBase.version, saved.version);
-  assert.equal(analyzed.knowledgeBase.matchedCustomer.jobNumber, 'DASH-2');
-  assert.equal(analyzed.knowledgeBase.priceReview.status, 'pending');
-  assert.equal(analyzed.knowledgeBase.priceReview.estimateAmount, 2200);
-  assert.equal(analyzed.knowledgeBase.priceReview.csvAmount, 2000);
-  env.sandbox.replaceCustomerReference_({ email: 'u2', role: 'editor' }, { customers: [customers[0]], fileName: 'replacement.csv' });
-  assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Jane Smith, 20 Second St.' }), /not in the current knowledge base/);
-  assert.ok(!request.messages.some((message: any) => message.content.includes('DASH-2')));
+  assert.equal(request.messages.length, 2);
+  const sent = request.messages.map((message: any) => message.content).join('\n');
+  assert.ok(sent.includes('20 Second St'));
+  assert.ok(!sent.includes('DASH-1') && !sent.includes('DASH-2') && !sent.includes('1500') && !sent.includes('2000') && !sent.includes('Fort Wayne'));
+  assert.equal(analyzed.customer.customerName, 'Smith Jane');
+  assert.equal(analyzed.financials.totalApprovedRcv, 2200);
+  assert.equal(analyzed.knowledgeBase, undefined);
 });
 
-test('oversized context is rejected before replacing the previous knowledge base', () => {
+test('oversized customer lists are rejected before replacing the previous snapshot', () => {
   const env = backend();
   env.sandbox.replaceCustomerReference_({ email: 'editor', role: 'editor' }, { customers: first, fileName: 'good.csv' });
   const original = JSON.stringify([...env.sheets.values()].map(sheet => sheet.rows));
   const huge = Array.from({ length: 5000 }, (_, index) => ({ customerName: 'x'.repeat(300), jobNumber: `D-${index}`, contractPrice: 10, jobAddress: 'y'.repeat(500) }));
-  assert.throws(() => env.sandbox.replaceCustomerReference_({ email: 'editor', role: 'editor' }, { customers: huge, fileName: 'huge.csv' }), /context/);
+  assert.throws(() => env.sandbox.replaceCustomerReference_({ email: 'editor', role: 'editor' }, { customers: huge, fileName: 'huge.csv' }), /100 KB/);
   assert.equal(JSON.stringify([...env.sheets.values()].map(sheet => sheet.rows)), original);
 });
 
-test('ambiguous and unknown customers cannot inherit a stored price or invented DASH number', () => {
+test('extraction responses are normalized and any legacy match fields are dropped', () => {
   const env = backend();
-  const snapshot = { customers: first, version: 'v1', fileName: 'customers.csv' };
-  for (const status of ['ambiguous', 'none']) {
-    const analyzed = env.sandbox.validateKnowledgeAnalysis_({ customer: { jobNumber: 'F-2' }, financials: { totalApprovedRcv: 99999 }, estimateTotal: null, knowledgeMatch: { status, explanation: 'Cannot identify a unique customer.' } }, snapshot, 'Estimate for an unidentified customer');
-    assert.equal(analyzed.customer.jobNumber, '');
-    assert.equal(analyzed.financials.totalApprovedRcv, null);
-    assert.equal(analyzed.knowledgeBase.matchedCustomer, null);
-    assert.equal(analyzed.knowledgeBase.priceReview, null);
-  }
+  const analyzed = env.sandbox.validateIntakeAnalysis_({
+    customer: 'not-an-object',
+    insurance: { carrier: 'State Farm' },
+    financials: { totalApprovedRcv: 2200 },
+    missingCoreFields: ['Claim Number', 7],
+    analysisNotes: 'Carrier assignment email.',
+    estimateTotal: 999,
+    knowledgeMatch: { status: 'matched', jobNumber: 'DASH-9', explanation: 'legacy field', evidence: ['x'] },
+  });
+  assert.equal(Object.keys(analyzed.customer).length, 0);
+  assert.equal(analyzed.insurance.carrier, 'State Farm');
+  assert.equal(analyzed.financials.totalApprovedRcv, 2200);
+  assert.deepEqual([...analyzed.missingCoreFields], ['Claim Number']);
+  assert.equal(analyzed.analysisNotes, 'Carrier assignment email.');
+  assert.equal(analyzed.estimateTotal, undefined);
+  assert.equal(analyzed.knowledgeMatch, undefined);
+  assert.equal(analyzed.knowledgeBase, undefined);
 });
 
-test('missing configuration, failed storage, bad model output and API errors fail explicitly', () => {
+test('missing configuration and API errors fail explicitly, and storage is never touched', () => {
   const env = backend();
   env.sandbox.PropertiesService = { getScriptProperties: () => ({ getProperty: () => null }) };
   assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Estimate' }), /DEEPSEEK_API_KEY/);
   env.sandbox.PropertiesService = { getScriptProperties: () => ({ getProperty: () => 'test-key' }) };
-  const originalRead = env.sandbox.getCustomerReference_;
-  env.sandbox.getCustomerReference_ = () => { throw new Error('Storage unavailable'); };
-  assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Estimate' }), /Storage unavailable/);
-  env.sandbox.getCustomerReference_ = originalRead;
   for (const [status, body] of [[503, 'unavailable'], [200, '{}'], [200, JSON.stringify({ choices: [{ finish_reason: 'length' }] })]] as const) {
     env.sandbox.UrlFetchApp = { fetch: () => ({ getResponseCode: () => status, getContentText: () => body }) };
     assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Estimate' }), /DeepSeek/);
   }
-  assert.throws(() => env.sandbox.validateKnowledgeAnalysis_({ estimateTotal: 20, customer: { customerName: first[1].customerName, jobNumber: 'F-2' }, knowledgeMatch: { status: 'matched', jobNumber: 'F-2', explanation: 'Made up quote', evidence: ['not in document'] } }, { customers: first }, 'Real estimate'), /evidence/);
+  // Storage outages are irrelevant: analysis must not read the shared customer list.
+  env.sandbox.UrlFetchApp = { fetch: () => ({ getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ customer: { customerName: 'Jane Smith' } }) } }] }) }) };
+  env.sandbox.getCustomerReference_ = () => { throw new Error('Storage unavailable'); };
+  const analyzed = env.sandbox.analyzeIntake_({ rawText: 'Estimate for Jane Smith' });
+  assert.equal(analyzed.customer.customerName, 'Jane Smith');
 });
 test('viewer, duplicate, empty and invalid uploads cannot alter the shared snapshot', () => {
   const env = backend();

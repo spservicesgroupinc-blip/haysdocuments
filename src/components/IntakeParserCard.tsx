@@ -21,7 +21,6 @@ import {
 import { analyzeIntakeWithAi } from '../services/deepseekIntake';
 import { extractTextFromPdfBuffer } from '../services/pdfExtractor';
 import { getMissingJobFields } from '../services/jobReadiness';
-import { attachKnowledgeBaseAnalysis } from '../services/knowledgeBaseReview';
 
 interface IntakeParserCardProps {
   onApplyIntake: (job: RestorationJobData, provenance: ProvenanceRecord) => void;
@@ -108,7 +107,7 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
     });
   };
 
-  /** The backend supplies the current knowledge base to DeepSeek on every run. */
+  /** The backend analyzes the pasted or uploaded text on its own; no other data is sent. */
   const handleParse = async (textToParse: string, source: ParseSource = 'manual') => {
     const trimmed = textToParse.trim();
     if (!trimmed || isAnalyzing || !isActiveRef.current) return;
@@ -119,15 +118,13 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
     try {
       const payload = await analyzeIntakeWithAi(trimmed);
       if (!isActiveRef.current) return;
-      if (!payload.knowledgeBase) throw new Error('The backend did not return knowledge-base analysis metadata. Deploy the latest Apps Script version.');
       const result = applyAiExtractionToJob(payload, currentJobRef.current);
-      result.jobData = attachKnowledgeBaseAnalysis(result.jobData, payload.knowledgeBase);
       commitResult(result, source, 'ai');
     } catch (error) {
       if (!isActiveRef.current) return;
       const message = error instanceof Error ? error.message : String(error);
       lastParsedTextRef.current = '';
-      setAnalysisError(`Knowledge-base analysis failed: ${message} Your job fields were not changed. Retry the analysis when the connection is ready.`);
+      setAnalysisError(`Intake analysis failed: ${message} Your job fields were not changed. Retry the analysis when the connection is ready.`);
     } finally {
       if (isActiveRef.current) setIsAnalyzing(false);
     }
@@ -405,14 +402,6 @@ export const IntakeParserCard: React.FC<IntakeParserCardProps> = ({
       </div>
 
       {analysisError && <p role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{analysisError}</p>}
-      {currentJob?.knowledgeBase && (
-        <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
-          <p className="font-semibold">{currentJob.knowledgeBase.customerCount ? `Analyzed with customer knowledge base (${currentJob.knowledgeBase.customerCount} customers)` : 'Analyzed without customer context: no CSV imported yet'}</p>
-          <p>{currentJob.knowledgeBase.matchedCustomer ? `Matched ${currentJob.knowledgeBase.matchedCustomer.customerName} · ${currentJob.knowledgeBase.matchedCustomer.jobNumber}` : currentJob.knowledgeBase.matchStatus === 'ambiguous' ? 'Customer match is ambiguous. Confirm the DASH job manually.' : 'No customer match found.'}</p>
-          <p>{currentJob.knowledgeBase.explanation}</p>
-          {currentJob.knowledgeBase.fileName && <p className="mt-1 text-xs">Source: {currentJob.knowledgeBase.fileName} · Version {currentJob.knowledgeBase.version}</p>}
-        </div>
-      )}
       {lastParseResult && !isBusy && !analysisError && (
         <div className="mt-6 border-t border-slate-200 pt-5">
           <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">

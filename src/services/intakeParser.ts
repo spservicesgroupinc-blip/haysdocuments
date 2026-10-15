@@ -1,5 +1,4 @@
 import { ProductionNotesData, RestorationJobData, createEmptyJob } from '../types/jobData';
-import type { KnowledgeBaseAnalysis } from './customerReference';
 
 export type FieldProvenanceType = 'EXTRACTED' | 'FOUND' | 'CALCULATED' | 'DRAFTED' | 'UNRESOLVED';
 
@@ -70,7 +69,6 @@ export interface IntakeParseResult {
  * they are routed into the record.
  */
 export interface AiIntakePayload {
-  knowledgeBase?: KnowledgeBaseAnalysis;
   customer: Record<string, unknown>;
   insurance: Record<string, unknown>;
   financials: Record<string, unknown>;

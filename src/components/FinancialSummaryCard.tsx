@@ -3,7 +3,6 @@ import { CalendarClock } from 'lucide-react';
 import { FinancialData, RestorationJobData } from '../types/jobData';
 import { DOC } from '../services/documentCatalog';
 import { formatCurrency } from '../services/pdfService';
-import { hasUnresolvedPriceReview } from '../services/knowledgeBaseReview';
 import { SectionPdfActions, type PdfPreviewRequest } from './SectionPdfActions';
 
 interface FinancialSummaryCardProps {
@@ -12,7 +11,6 @@ interface FinancialSummaryCardProps {
   onPreview: PdfPreviewRequest;
   onRcvChange: (val: number | '') => void;
   onDeductibleChange: (val: number | '') => void;
-  onResolvePrice: (source: 'estimate' | 'knowledgeBase') => void;
 }
 
 const INPUT_CLASS =
@@ -25,7 +23,6 @@ export const FinancialSummaryCard: React.FC<FinancialSummaryCardProps> = ({
   onPreview,
   onRcvChange,
   onDeductibleChange,
-  onResolvePrice,
 }) => {
   const toNumber = (raw: string): number | '' => (raw === '' ? '' : parseFloat(raw));
 
@@ -84,17 +81,6 @@ export const FinancialSummaryCard: React.FC<FinancialSummaryCardProps> = ({
         </div>
       </div>
 
-      {jobData.knowledgeBase?.priceReview && (
-        <div id="price-review" tabIndex={-1} className="m-4 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 focus:outline-none focus:ring-2 focus:ring-amber-500">
-          <h3 className="font-semibold">{hasUnresolvedPriceReview(jobData) ? 'Choose the contract price before generating documents' : 'Contract price reviewed'}</h3>
-          <p className="mt-1">The uploaded estimate and customer knowledge base contain different amounts for {jobData.knowledgeBase.matchedCustomer?.jobNumber}.</p>
-          <div className="mt-3 flex flex-wrap gap-3">
-            <button type="button" onClick={() => onResolvePrice('estimate')} className="min-h-11 rounded-lg border border-amber-400 bg-white px-3 py-2 font-semibold focus-visible:ring-2 focus-visible:ring-red-600">Use estimate: {formatCurrency(jobData.knowledgeBase.priceReview.estimateAmount)}</button>
-            <button type="button" onClick={() => onResolvePrice('knowledgeBase')} className="min-h-11 rounded-lg border border-amber-400 bg-white px-3 py-2 font-semibold focus-visible:ring-2 focus-visible:ring-red-600">Use knowledge base: {formatCurrency(jobData.knowledgeBase.priceReview.csvAmount)}</button>
-          </div>
-          {!hasUnresolvedPriceReview(jobData) && <p role="status" className="mt-2">Selected {jobData.knowledgeBase.priceReview.selectedSource === 'estimate' ? 'estimate' : 'knowledge-base'} price: {formatCurrency(jobData.knowledgeBase.priceReview.resolvedAmount)}.</p>}
-        </div>
-      )}
       {/* Inputs + headline figure */}
       <div className="p-3 sm:p-5 grid grid-cols-1 lg:grid-cols-12 gap-5">
         <div className="lg:col-span-7 grid grid-cols-1 sm:grid-cols-2 gap-4">

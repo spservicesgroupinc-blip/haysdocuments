@@ -1,4 +1,3 @@
-import type { KnowledgeBaseAnalysis } from '../services/customerReference';
 import { CHECKLIST_BOXES, type ChecklistBoxKey } from './productionChecklist';
 
 export interface CustomerData {
@@ -111,8 +110,6 @@ export interface BranchData {
 }
 
 export interface RestorationJobData {
-  /** Server-validated context and price decisions persist in saved jobs and drafts. */
-  knowledgeBase?: KnowledgeBaseAnalysis;
   /**
    * Immutable database key. Assigned by the customer database on first save and
    * never regenerated. Undefined on a brand-new record that has never been saved.

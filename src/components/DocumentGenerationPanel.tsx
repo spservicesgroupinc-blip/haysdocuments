@@ -30,7 +30,6 @@ import {
 } from '../services/pdfService';
 import { PdfPreviewRequest } from './SectionPdfActions';
 import { getMissingJobFields, type MissingJobField } from '../services/jobReadiness';
-import { hasUnresolvedPriceReview, PRICE_DEPENDENT_DOCUMENT_IDS } from '../services/knowledgeBaseReview';
 
 interface DocumentGenerationPanelProps {
   jobData: RestorationJobData;
@@ -74,7 +73,6 @@ export const DocumentGenerationPanel: React.FC<DocumentGenerationPanelProps> = (
   const docList: JobDocument[] = JOB_DOCUMENTS;
 
   const missingFields = getMissingJobFields(jobData);
-  const priceBlocked = hasUnresolvedPriceReview(jobData);
   const unresolvedList = missingFields.map((field) => field.label);
 
   const isQualityGatePassed = unresolvedList.length === 0;
@@ -212,7 +210,7 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={onSaveToDrive}
-            disabled={isDriveLoading || priceBlocked}
+            disabled={isDriveLoading}
             type="button"
             className="inline-flex items-center px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-slate-900 border border-slate-200 transition shadow-sm disabled:opacity-50"
             title="Save the complete PDF packet to shared Drive storage through Google Apps Script"
@@ -348,7 +346,6 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
 
         <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto justify-end shrink-0">
           <button
-            disabled={priceBlocked}
             onClick={() =>
               onPreview({
                 id: 'completePacket',
@@ -370,7 +367,7 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
 
           <button
             onClick={handleDownloadCompletePacket}
-            disabled={downloadingId === 'packet' || priceBlocked}
+            disabled={downloadingId === 'packet'}
             type="button"
             className="flex-1 sm:flex-initial inline-flex items-center justify-center px-4 py-2.5 rounded-lg text-[13px] font-semibold bg-red-600 hover:bg-red-700 text-white transition shadow-sm disabled:opacity-50"
           >
@@ -384,7 +381,7 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
 
           <button
             onClick={handleDownloadZipPackage}
-            disabled={isZipping || priceBlocked}
+            disabled={isZipping}
             type="button"
             className="w-full sm:w-auto inline-flex items-center justify-center px-4 py-2.5 rounded-lg text-[13px] font-semibold bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 transition disabled:opacity-50"
             title="Download a ZIP containing all 9 files plus a summary"
@@ -432,7 +429,6 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
                 <div className="flex items-center space-x-2 mt-4 pt-3 border-t border-slate-200/70">
                   <button
                     onClick={() => onPreview(doc)}
-                    disabled={priceBlocked && PRICE_DEPENDENT_DOCUMENT_IDS.has(doc.id)}
                     type="button"
                     className="flex-1 inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-700 hover:bg-slate-100 border border-slate-200 transition"
                   >
@@ -441,7 +437,7 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
                   </button>
                   <button
                     onClick={() => handleDownload(doc)}
-                  disabled={isDownloading || (priceBlocked && PRICE_DEPENDENT_DOCUMENT_IDS.has(doc.id))}
+                    disabled={isDownloading}
                     type="button"
                     className="flex-1 inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-900 text-white hover:bg-red-600 transition shadow-sm disabled:opacity-50"
                   >

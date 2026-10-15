@@ -188,9 +188,13 @@ const intakePayload = {
   customer: { customerName: 'Uploaded customer' },
   insurance: { claimNumber: 'OLD-CLAIM' },
   financials: { totalApprovedRcv: 12000 },
+  team: {},
+  mortgage: {},
+  changeOrder: {},
+  productionNotes: {},
+  checklist: {},
 };
-const emptyContext = { version: '', fileName: '', customerCount: 0, matchStatus: 'none', matchedCustomer: null, explanation: 'No customer CSV uploaded.', estimateTotal: 12000, priceReview: null };
-const aiResponse = (route: Route) => ok(route, { ...intakePayload, knowledgeBase: emptyContext });
+const aiResponse = (route: Route) => ok(route, intakePayload);
 const intakeInput = (page: Page) => page.getByRole('textbox', { name: 'Or paste intake notes', exact: true });
 
 async function openNewJob(page: Page) {
@@ -298,7 +302,7 @@ for (const outcome of ['success', 'failure'] as const) {
     await expect(page.locator('#customer-mainPhone')).toHaveValue('260-555-0188');
     await page.getByRole('button', { name: 'Review intake', exact: true }).click();
     if (outcome === 'success') await expect(page.getByText('Job information updated', { exact: true })).toBeVisible();
-    else await expect(page.getByRole('alert')).toContainText('Knowledge-base analysis failed');
+    else await expect(page.getByRole('alert')).toContainText('Intake analysis failed');
     await expect(intakeInput(page)).toHaveValue(/Uploaded customer/);
   });
 }

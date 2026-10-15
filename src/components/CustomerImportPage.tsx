@@ -77,7 +77,7 @@ export function CustomerImportPage({ canImport, onOpenIntake }: { canImport: boo
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-4 sm:p-5">
         <div>
           <h2 className="text-lg font-semibold text-slate-900">Customer Knowledge Base</h2>
-          <p className="mt-1 max-w-2xl text-sm text-slate-600">Upload a customer CSV once. DeepSeek will reference this shared knowledge base when analyzing future estimates, using customer names, DASH job numbers, contract prices, and property addresses.</p>
+          <p className="mt-1 max-w-2xl text-sm text-slate-600">Upload a customer CSV once to keep a shared list of customer names, DASH job numbers, contract prices, and property addresses for all users and devices. Intake analysis reads only the document you upload - this list is never sent to the AI.</p>
         </div>
         <button type="button" onClick={() => void refresh()} disabled={loading || saving || reading} className={buttonClass}>
           <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh shared list
@@ -87,7 +87,7 @@ export function CustomerImportPage({ canImport, onOpenIntake }: { canImport: boo
         <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">Each saved upload replaces the entire shared customer knowledge base for all users and devices. Saved jobs and documents are kept.</p>
         <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4">
           <label htmlFor="customer-csv-upload" className="block text-sm font-semibold text-slate-900">Choose customer CSV</label>
-          <p id="customer-csv-help" className="mt-1 text-sm text-slate-600">Required columns: Customer or Customer Name, Job Number, and Contract Price or Estimate Amount. Up to 5,000 rows and 10 MB. Job Address, Loss City, Loss State, and Loss ZIP are also saved when present. Extracted context must fit within 100 KB.</p>
+          <p id="customer-csv-help" className="mt-1 text-sm text-slate-600">Required columns: Customer or Customer Name, Job Number, and Contract Price or Estimate Amount. Up to 5,000 rows and 10 MB. Job Address, Loss City, Loss State, and Loss ZIP are also saved when present. The saved list must fit within 100 KB.</p>
           <input id="customer-csv-upload" type="file" accept=".csv,text/csv" onChange={readCsv} disabled={!canImport || loading || reading || saving} aria-describedby="customer-csv-help" className="mt-3 block min-h-11 w-full min-w-0 text-sm text-slate-700 file:mr-3 file:rounded-lg file:border-0 file:bg-white file:px-4 file:py-3 file:font-semibold file:text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 disabled:opacity-50" />
           {!canImport && <p className="mt-2 text-sm text-slate-600">An editor or administrator can replace this shared list.</p>}
         </div>
