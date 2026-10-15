@@ -1,5 +1,6 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { PDFDocument } from 'pdf-lib';
+import { SAMPLE_WATER } from './fixtures';
 
 const user = { email: 'test@example.com', name: 'Test', role: 'editor' };
 const job = { recordId: 'saved-1', customer: { jobNumber: 'UI-TEST', customerName: 'Recovered customer' } };
@@ -33,6 +34,54 @@ async function start(page: Page, handler: (route: Route, body: any) => Promise<v
   });
   await page.goto('/');
 }
+
+test('approved production checklist previews, edits and downloads in the browser', async ({ page }, testInfo) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await start(page, async (route, body) => {
+    if (body.action === 'getDraft') await ok(route, { draft: { job: SAMPLE_WATER, recordId: SAMPLE_WATER.recordId, updatedAt: '2026-10-15T12:00:00Z' } });
+    else if (body.action === 'saveDraft') await ok(route, { job: body.draft.job, updatedAt: new Date().toISOString() });
+    else await ok(route, {});
+  });
+  await navigate(page, 'checklist');
+  await page.getByRole('button', { name: 'Preview Production Checklist PDF', exact: true }).click();
+  const modal = page.locator('div.fixed.inset-0.z-50').filter({ has: page.getByTitle('Close modal') });
+  await expect(modal.locator('canvas')).toBeVisible();
+  await expect(modal.getByText('1 Page', { exact: true })).toBeVisible();
+  await modal.getByTitle('Fit page to screen').click();
+  const beforeEdit = await modal.locator('canvas').evaluate((canvas: HTMLCanvasElement) => canvas.toDataURL());
+  await modal.getByTitle('Edit fields directly on the PDF').click();
+  await expect(modal.getByRole('button', { name: 'Customer Name', exact: true })).toBeVisible();
+  await expect(modal.getByRole('button', { name: 'Manager Name', exact: true })).toBeVisible();
+  await modal.getByRole('button', { name: 'Customer Name', exact: true }).click();
+  await modal.getByRole('textbox').fill('Updated Checklist Customer');
+  await modal.getByRole('textbox').press('Enter');
+  await expect.poll(() => modal.locator('canvas').evaluate((canvas: HTMLCanvasElement) => canvas.toDataURL())).not.toBe(beforeEdit);
+  await modal.getByTitle('Finish editing').click();
+  await modal.locator('canvas').screenshot({ path: testInfo.outputPath('approved-checklist-preview.png') });
+  const downloadPromise = page.waitForEvent('download');
+  await modal.getByTitle('Download PDF', { exact: true }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toContain('Production_Checklist');
+  const stream = await download.createReadStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  const bytes = new Uint8Array(Buffer.concat(chunks));
+  const pdf = await PDFDocument.load(bytes);
+  expect(pdf.getTitle()).toBe('Production Checklist');
+  expect(pdf.getPageCount()).toBe(1);
+  expect(pdf.getPages()[0].getSize()).toEqual({ width: 612, height: 792 });
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.js');
+  const downloadedDoc = await pdfjs.getDocument({ data: bytes.slice(), isEvalSupported: false, useSystemFonts: true }).promise;
+  const content = await (await downloadedDoc.getPage(1)).getTextContent();
+  const text = content.items.map((item: any) => item.str || '').join(' ').replace(/\s+/g, ' ');
+  expect(text).toContain('Updated Checklist Customer');
+  expect(text).toContain('New Customer Letter Emailed w/ Link');
+  await modal.getByTitle('Close modal').click();
+  await navigate(page, 'customer');
+  await expect(page.locator('#customer-customerName')).toHaveValue('Updated Checklist Customer');
+  expect(errors).toEqual([]);
+});
 
 test('startup recovers the shared draft before any autosave writes', async ({ page }) => {
   const sent: any[] = [];

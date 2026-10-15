@@ -26,6 +26,7 @@
     "parser:test": "tsx scripts/test-intake-parser.ts",
     "customers:test": "tsx --test scripts/test-customer-reference.ts scripts/test-customer-reference-backend.ts",
     "spans:test": "tsx scripts/test-pdf-spans.ts",
+    "pdf:checklist:test": "tsx --test scripts/test-production-checklist.ts",
     "verify": "npm run lint && npm run apps:ascii && npm run apps:paste && npm run apps:test && npm run apps:register && npm run parser:test && npm run build"
   },
   "dependencies": {

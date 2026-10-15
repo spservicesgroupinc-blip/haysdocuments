@@ -197,7 +197,7 @@ export const PDF_FIELD_SCHEMA: Record<string, PdfEditableField[]> = {
   ],
 
   checklist: [
-    ...branchFields,
+    ...branchFields.map(field => field.key === 'branch.managerName' ? { ...field, drawerOnly: false } : field),
     {
       key: 'checklist.hasDeductibleBeenCollected',
       label: 'Deductible Collected',
@@ -207,7 +207,7 @@ export const PDF_FIELD_SCHEMA: Record<string, PdfEditableField[]> = {
     },
     { key: 'checklist.deductibleExplanation', label: 'Deductible Explanation', kind: 'multiline', group: 'Checklist' },
     { key: 'checklist.xactimateVersion', label: 'Xactimate Version', kind: 'text', group: 'Checklist' },
-    { key: 'checklist.isSelfPay', label: 'Self Pay', kind: 'boolean', group: 'Checklist' },
+    { key: 'checklist.isSelfPay', label: 'Self Pay', kind: 'boolean', group: 'Checklist', drawerOnly: true },
     { key: 'checklist.isProgramClaim', label: 'Program Claim', kind: 'boolean', group: 'Checklist' },
     { key: 'checklist.hasCheckBeenSent', label: 'Check Has Been Sent', kind: 'boolean', group: 'Checklist' },
     { key: 'checklist.checkToWhom', label: 'Check To Whom', kind: 'text', group: 'Checklist' },
@@ -219,8 +219,8 @@ export const PDF_FIELD_SCHEMA: Record<string, PdfEditableField[]> = {
     { key: 'checklist.projectManagerNotes', label: 'Project Manager Notes', kind: 'multiline', group: 'Checklist' },
     { key: 'customer.customerName', label: 'Customer Name', kind: 'text', group: 'Customer Details' },
     { key: 'customer.jobNumber', label: 'Job Number', kind: 'text', group: 'Customer Details' },
-    { key: 'customer.lossAddress', label: 'Loss Address', kind: 'text', group: 'Customer Details' },
-    { key: 'customer.jobName', label: 'Job Name', kind: 'text', group: 'Customer Details' },
+    { key: 'customer.lossAddress', label: 'Loss Address', kind: 'text', group: 'Customer Details', drawerOnly: true },
+    { key: 'customer.jobName', label: 'Job Name', kind: 'text', group: 'Customer Details', drawerOnly: true },
     { key: 'customer.email', label: 'Email', kind: 'email', group: 'Customer Details' },
     { key: 'customer.mainPhone', label: 'Main Phone', kind: 'phone', group: 'Customer Details' },
     { key: 'customer.mobilePhone', label: 'Mobile Phone', kind: 'phone', group: 'Customer Details' },

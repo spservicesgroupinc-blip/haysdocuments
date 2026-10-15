@@ -1,5 +1,6 @@
 import { PDFDocument, rgb, StandardFonts, PDFPage, PDFFont } from 'pdf-lib';
 import { RestorationJobData } from '../types/jobData';
+import productionChecklistTemplate from '../templates/production-checklist.json';
 
 // -------------------------------------------------------------
 // Text sanitisation (WinAnsi safety)
@@ -1941,230 +1942,101 @@ export async function generateChangeOrder(data: RestorationJobData): Promise<Uin
 // 7. PRODUCTION CHECKLIST GENERATOR
 // -------------------------------------------------------------
 export async function generateProductionChecklist(data: RestorationJobData): Promise<Uint8Array> {
-  const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage([612, 792]);
+  // Use the sanitized approved artwork, preserving its logo, type, rules,
+  // checkbox columns and highlights in standalone exports and merged packets.
+  const pdfDoc = await PDFDocument.load(productionChecklistTemplate.base64);
+  pdfDoc.setTitle('Production Checklist');
+  const page = pdfDoc.getPages()[0];
+  // Loaded template pages do not pass through the addPage capture hook.
+  if (fieldCapture.enabled) {
+    fieldCapture.doc = pdfDoc;
+    fieldCapture.pageIndex.set(page, fieldCapture.pageCount++);
+  }
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  drawHeaderLogo(page, fontBold, font, data.branch);
+  // The original form uses 6.96pt Arial (metrically compatible with Helvetica).
+  // Fit values inside the existing lines, including long email/name fields.
+  const field = (key: string, value: unknown, x: number, y: number, right: number, bold = false) => {
+    let text = cleanTextForPdf(val(value, ''));
+    const face = bold ? fontBold : font;
+    let size = 6.96;
+    const width = right - x - 2;
+    while (face.widthOfTextAtSize(text, size) > width && size > 4.5) size = Math.max(4.5, size - 0.2);
+    if (face.widthOfTextAtSize(text, size) > width) {
+      while (text && face.widthOfTextAtSize(text + '...', size) > width) text = text.slice(0, -1);
+      text += '...';
+    }
+    // Fixed line-sized targets keep even empty fields easy to edit.
+    if (text) page.drawText(text, { x, y, size, font: face, color: rgb(0, 0, 0) });
+    captureFieldSpan({ key, page, x, yTop: y + size * 1.05, width, height: size * 1.25, size, bold });
+  };
+  const money = (value: number | '' | null | undefined) =>
+    value === '' || value == null ? '' : formatCurrency(value);
 
-  let y = 680;
-  page.drawText('Production Checklist', { x: 225, y, size: 14, font: fontBold, color: COLOR_DARK });
+  field('customer.customerName', data.customer.customerName, 195.41, 670.18, 383.59);
+  field('customer.jobNumber', data.customer.jobNumber, 141.86, 653.62, 298.51, true);
+  field('financials.deductible', money(data.financials.deductible), 176.21, 637.06, 298.51);
+  field('checklist.hasDeductibleBeenCollected', data.checklist.hasDeductibleBeenCollected, 464.86, 637.06, 504.46, true);
+  field('checklist.deductibleExplanation', data.checklist.deductibleExplanation, 141.86, 620.5, 457.54);
+  field('customer.email', data.customer.email, 174.29, 606.46, 406.3);
+  field('customer.mainPhone', data.customer.mainPhone, 174.29, 592.42, 406.3);
+  field('customer.mobilePhone', data.customer.mobilePhone, 174.29, 578.38, 406.3);
+  field('checklist.xactimateVersion', data.checklist.xactimateVersion, 161.5, 516.22, 229.5);
 
-  // Section: Homeowner Information (Red title)
-  y -= 20;
-  page.drawText('Homeowner Information', { x: 50, y, size: 8.5, font: fontBold, color: COLOR_RED });
+  field('insurance.carrier', data.insurance.carrier, 305.83, 386.69, 509.74);
+  field('insurance.brokerAgent', data.insurance.brokerAgent, 141.86, 370.13, 383.59);
+  field('insurance.agentPhone', data.insurance.agentPhone, 174.29, 353.57, 457.54);
+  field('insurance.primaryAdjuster', data.insurance.primaryAdjuster, 174.29, 339.53, 383.59);
+  field('insurance.adjusterPhone', data.insurance.adjusterPhone, 174.29, 322.97, 457.54);
+  field('insurance.adjusterEmail', data.insurance.adjusterEmail, 174.29, 308.93, 298.51);
 
-  y -= 15;
-  page.drawText('Homeowner Name:', { x: 50, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'customer.customerName', value: data.customer.customerName, x: 135, y, size: 8, font: fontBold, color: COLOR_DARK, bold: true });
-  page.drawLine({ start: { x: 130, y: y - 2 }, end: { x: 310, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
+  field('insurance.claimNumber', data.insurance.claimNumber, 143.78, 264.29, 383.59);
+  field('checklist.isProgramClaim', data.checklist.isProgramClaim ? 'Yes' : 'No', 520, 264.29, 612);
+  field('checklist.hasCheckBeenSent', data.checklist.hasCheckBeenSent ? 'Yes' : 'No', 194.47, 247.7, 383.59);
+  field('checklist.checkToWhom', data.checklist.checkToWhom, 468, 247.7, 612);
+  field('checklist.checkPayableTo', data.checklist.checkPayableTo, 303.91, 233.66, 612);
+  field('mortgage.hasMortgage', data.mortgage.hasMortgage ? 'Yes' : 'No', 174.29, 219.74, 298.51);
+  field('mortgage.mortgageCompany', data.mortgage.mortgageCompany, 411.7, 219.74, 612);
+  field('checklist.isDepreciationWithheld', data.checklist.isDepreciationWithheld ? 'Yes' : 'No', 303.91, 205.7, 383.59);
+  field('checklist.depreciationAmount', money(data.checklist.depreciationAmount), 515.14, 205.7, 612);
+  field('financials.totalApprovedRcv', money(data.financials.totalApprovedRcv), 174.29, 186.86, 383.59);
+  field('team.estimator', data.team.estimator, 141.86, 172.82, 450);
+  field('team.projectManager', data.team.projectManager, 174.29, 156.26, 457.54);
+  field('checklist.startDate', data.checklist.startDate, 141.86, 142.22, 298.51);
+  field('checklist.finishDate', data.checklist.finishDate, 411.7, 142.22, 463.18);
+  field('branch.managerName', data.branch.managerName, 506, 142.22, 578.04);
 
-  page.drawText('Job Number:', { x: 330, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'customer.jobNumber', value: data.customer.jobNumber, x: 395, y, size: 8, font: fontBold, color: COLOR_RED, bold: true });
-  page.drawLine({ start: { x: 390, y: y - 2 }, end: { x: 550, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
-
-  y -= 14;
-  page.drawText('Property Address:', { x: 50, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'customer.lossAddress', value: data.customer.lossAddress, x: 135, y, size: 7.5, font, color: COLOR_DARK });
-  page.drawLine({ start: { x: 130, y: y - 2 }, end: { x: 310, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
-
-  page.drawText('Job Name:', { x: 330, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'customer.jobName', value: data.customer.jobName, fallback: `${data.customer.customerName} Restoration`, x: 395, y, size: 7.5, font, color: COLOR_DARK });
-  page.drawLine({ start: { x: 390, y: y - 2 }, end: { x: 550, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
-
-  y -= 14;
-  page.drawText('Deductible Amount:', { x: 50, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'financials.deductible', value: formatCurrency(data.financials.deductible), x: 140, y, size: 7.5, font: fontBold, color: COLOR_DARK, bold: true });
-  page.drawLine({ start: { x: 135, y: y - 2 }, end: { x: 250, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
-
-  const deductibleCollectedPrefix = 'Has deductible been collected?  [ ';
-  page.drawText(deductibleCollectedPrefix, { x: 270, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  let deductibleCollectedX = 270 + fontBold.widthOfTextAtSize(deductibleCollectedPrefix, 7.5);
-  drawFieldValue(page, { key: 'checklist.hasDeductibleBeenCollected', value: data.checklist.hasDeductibleBeenCollected, x: deductibleCollectedX, y, size: 7.5, font: fontBold, color: COLOR_DARK, bold: true });
-  deductibleCollectedX += fontBold.widthOfTextAtSize(val(data.checklist.hasDeductibleBeenCollected), 7.5);
-  page.drawText(' ]', { x: deductibleCollectedX, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-
-  y -= 14;
-  page.drawText('If no, explain:', { x: 50, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'checklist.deductibleExplanation', value: data.checklist.deductibleExplanation, fallback: 'Collected at pre-construction walk.', x: 120, y, size: 7.5, font, color: COLOR_DARK });
-  page.drawLine({ start: { x: 115, y: y - 2 }, end: { x: 550, y: y - 2 }, thickness: 0.75, color: COLOR_BORDER });
-
-  y -= 14;
-  const emailPrefix = 'Email Address: ';
-  page.drawText(emailPrefix, { x: 50, y, size: 7.5, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'customer.email', value: data.customer.email, x: 50 + font.widthOfTextAtSize(emailPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
-  const phonePrefix = 'Phone: ';
-  const phoneSep = '   |   Alt Phone: ';
-  page.drawText(phonePrefix, { x: 270, y, size: 7.5, font, color: COLOR_DARK });
-  let phoneX = 270 + font.widthOfTextAtSize(phonePrefix, 7.5);
-  drawFieldValue(page, { key: 'customer.mainPhone', value: data.customer.mainPhone, x: phoneX, y, size: 7.5, font, color: COLOR_DARK });
-  phoneX += font.widthOfTextAtSize(val(data.customer.mainPhone), 7.5);
-  page.drawText(phoneSep, { x: phoneX, y, size: 7.5, font, color: COLOR_DARK });
-  phoneX += font.widthOfTextAtSize(phoneSep, 7.5);
-  drawFieldValue(page, { key: 'customer.mobilePhone', value: data.customer.mobilePhone, x: phoneX, y, size: 7.5, font, color: COLOR_DARK });
-
-  // Yellow Highlight Header: Estimates and Required Documentation
-  y -= 22;
-  page.drawRectangle({ x: 50, y: y - 14, width: 500, height: 14, color: COLOR_HIGHLIGHT });
-  page.drawText('Estimates and Required Documentation', { x: 55, y: y - 10, size: 8, font: fontBold, color: COLOR_DARK });
-
-  y -= 26;
-  page.drawText('[X] Preliminary Report with Correct Information', { x: 55, y, size: 7.5, font, color: COLOR_DARK });
-  page.drawText('[X] Copy of Scope', { x: 330, y, size: 7.5, font, color: COLOR_DARK });
-
-  y -= 15;
-  page.drawText('[X] Repair Authorization / Contract', { x: 55, y, size: 7.5, font, color: COLOR_DARK });
-  page.drawText('[X] Pictures / Matterport in DASH', { x: 330, y, size: 7.5, font, color: COLOR_DARK });
-
-  y -= 15;
-  const xactimatePrefix = 'Xactimate Version?  ____';
-  const xactimateSuffix = '_____';
-  page.drawText(xactimatePrefix, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
-  let xactimateX = 55 + font.widthOfTextAtSize(xactimatePrefix, 7.5);
-  drawFieldValue(page, { key: 'checklist.xactimateVersion', value: data.checklist.xactimateVersion, x: xactimateX, y, size: 7.5, font, color: COLOR_DARK });
-  xactimateX += font.widthOfTextAtSize(val(data.checklist.xactimateVersion), 7.5);
-  page.drawText(xactimateSuffix, { x: xactimateX, y, size: 7.5, font, color: COLOR_DARK });
-  page.drawText('[X] Two Copies of APPROVED estimate', { x: 330, y, size: 7.5, font, color: COLOR_DARK });
-
-  y -= 15;
-  page.drawText('[X] Signed Mortgage Authorization Required & Enclosed?', { x: 55, y, size: 7.5, font, color: COLOR_DARK });
-  page.drawText('[X] Building Permit Enclosed? / County: Yes', { x: 330, y, size: 7.5, font, color: COLOR_DARK });
-
-  // Yellow Highlight Header: IPC Requirements
-  y -= 24;
-  page.drawRectangle({ x: 50, y: y - 14, width: 500, height: 14, color: COLOR_HIGHLIGHT });
-  page.drawText('IPC Requirements', { x: 55, y: y - 10, size: 8, font: fontBold, color: COLOR_DARK });
-
-  y -= 22;
-  page.drawText('All items on this checklist are complete and verified by the GM:  [X] Kenneth Belford', {
-    x: 55,
-    y,
-    size: 7.5,
-    font: fontBold,
-    color: COLOR_DARK,
-  });
-  y -= 12;
-  page.drawText('Upload Necessary Authorizations to Insurance Carrier (Contractor Connection / IMACC)', {
-    x: 55,
-    y,
-    size: 7.5,
-    font,
-    color: COLOR_DARK,
-  });
-
-  // Yellow Highlight Header: Agent / Adjuster Information
-  y -= 22;
-  page.drawRectangle({ x: 50, y: y - 14, width: 500, height: 14, color: COLOR_HIGHLIGHT });
-  page.drawText('Agent / Adjuster Information - Capture if blank or unknown!', { x: 55, y: y - 10, size: 8, font: fontBold, color: COLOR_DARK });
-
-  y -= 22;
-  const insCompanyPrefix = 'Insurance Company: ';
-  page.drawText(insCompanyPrefix, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'insurance.carrier', value: data.insurance.carrier, x: 55 + font.widthOfTextAtSize(insCompanyPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
-  const agentNamePrefix = 'Agent Name: ';
-  page.drawText(agentNamePrefix, { x: 280, y, size: 7.5, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'insurance.brokerAgent', value: data.insurance.brokerAgent, x: 280 + font.widthOfTextAtSize(agentNamePrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
-  const agentPhonePrefix = 'Agent Phone: ';
-  page.drawText(agentPhonePrefix, { x: 440, y, size: 7.5, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'insurance.agentPhone', value: data.insurance.agentPhone, x: 440 + font.widthOfTextAtSize(agentPhonePrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
-
-  y -= 14;
-  const adjusterNamePrefix = 'Adjuster Name: ';
-  page.drawText(adjusterNamePrefix, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'insurance.primaryAdjuster', value: data.insurance.primaryAdjuster, x: 55 + font.widthOfTextAtSize(adjusterNamePrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
-  const adjusterPhonePrefix = 'Adjuster Phone: ';
-  page.drawText(adjusterPhonePrefix, { x: 280, y, size: 7.5, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'insurance.adjusterPhone', value: data.insurance.adjusterPhone, x: 280 + font.widthOfTextAtSize(adjusterPhonePrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
-  const adjusterEmailPrefix = 'Adjuster Email: ';
-  page.drawText(adjusterEmailPrefix, { x: 410, y, size: 7.5, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'insurance.adjusterEmail', value: data.insurance.adjusterEmail, x: 410 + font.widthOfTextAtSize(adjusterEmailPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
-
-  // Yellow Highlight Header: Claim / Check Information
-  y -= 22;
-  page.drawRectangle({ x: 50, y: y - 14, width: 500, height: 14, color: COLOR_HIGHLIGHT });
-  page.drawText('Claim / Check Information', { x: 55, y: y - 10, size: 8, font: fontBold, color: COLOR_DARK });
-
-  y -= 20;
-  const claimPrefix = 'Claim #:  ';
-  page.drawText(claimPrefix, { x: 55, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'insurance.claimNumber', value: data.insurance.claimNumber, x: 55 + fontBold.widthOfTextAtSize(claimPrefix, 7.5), y, size: 7.5, font: fontBold, color: COLOR_DARK, bold: true });
-  const selfPayPrefix = 'Self Pay: ';
-  page.drawText(selfPayPrefix, { x: 230, y, size: 7.5, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'checklist.isSelfPay', value: data.checklist.isSelfPay ? 'Yes' : 'No', x: 230 + font.widthOfTextAtSize(selfPayPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
-  const programClaimPrefix = 'Program Claim? ';
-  page.drawText(programClaimPrefix, { x: 360, y, size: 7.5, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'checklist.isProgramClaim', value: data.checklist.isProgramClaim ? 'Yes' : 'No', x: 360 + font.widthOfTextAtSize(programClaimPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
-
-  y -= 14;
-  const checkSentPrefix = 'Has check been sent?  ';
-  page.drawText(checkSentPrefix, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'checklist.hasCheckBeenSent', value: data.checklist.hasCheckBeenSent ? 'Yes' : 'No', x: 55 + font.widthOfTextAtSize(checkSentPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
-  const checkToWhomPrefix = 'To whom?  ';
-  page.drawText(checkToWhomPrefix, { x: 230, y, size: 7.5, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'checklist.checkToWhom', value: data.checklist.checkToWhom, x: 230 + font.widthOfTextAtSize(checkToWhomPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
-
-  y -= 14;
-  const payablePrefix = 'Check payable to: ';
-  page.drawText(payablePrefix, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'checklist.checkPayableTo', value: data.checklist.checkPayableTo, x: 55 + font.widthOfTextAtSize(payablePrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
-
-  y -= 14;
-  const mortgageCheckPrefix = 'Mortgage on check?  ';
-  const mortgageCheckMid = ' (';
-  page.drawText(mortgageCheckPrefix, { x: 55, y, size: 7.5, font, color: COLOR_DARK });
-  let mortgageCheckX = 55 + font.widthOfTextAtSize(mortgageCheckPrefix, 7.5);
-  drawFieldValue(page, { key: 'mortgage.hasMortgage', value: data.mortgage.hasMortgage ? 'Yes' : 'No', x: mortgageCheckX, y, size: 7.5, font, color: COLOR_DARK });
-  mortgageCheckX += font.widthOfTextAtSize(data.mortgage.hasMortgage ? 'Yes' : 'No', 7.5);
-  page.drawText(mortgageCheckMid, { x: mortgageCheckX, y, size: 7.5, font, color: COLOR_DARK });
-  mortgageCheckX += font.widthOfTextAtSize(mortgageCheckMid, 7.5);
-  drawFieldValue(page, { key: 'mortgage.mortgageCompany', value: data.mortgage.mortgageCompany, fallback: 'None', x: mortgageCheckX, y, size: 7.5, font, color: COLOR_DARK });
-  mortgageCheckX += font.widthOfTextAtSize(val(data.mortgage.mortgageCompany, 'None'), 7.5);
-  page.drawText(')', { x: mortgageCheckX, y, size: 7.5, font, color: COLOR_DARK });
-
-  const depreciationPrefix = 'Depreciation withheld?  ';
-  const depreciationMid = ' (';
-  page.drawText(depreciationPrefix, { x: 320, y, size: 7.5, font, color: COLOR_DARK });
-  let depreciationX = 320 + font.widthOfTextAtSize(depreciationPrefix, 7.5);
-  drawFieldValue(page, { key: 'checklist.isDepreciationWithheld', value: data.checklist.isDepreciationWithheld ? 'Yes' : 'No', x: depreciationX, y, size: 7.5, font, color: COLOR_DARK });
-  depreciationX += font.widthOfTextAtSize(data.checklist.isDepreciationWithheld ? 'Yes' : 'No', 7.5);
-  page.drawText(depreciationMid, { x: depreciationX, y, size: 7.5, font, color: COLOR_DARK });
-  depreciationX += font.widthOfTextAtSize(depreciationMid, 7.5);
-  drawFieldValue(page, { key: 'checklist.depreciationAmount', value: formatCurrency(data.checklist.depreciationAmount), x: depreciationX, y, size: 7.5, font, color: COLOR_DARK });
-  depreciationX += font.widthOfTextAtSize(val(formatCurrency(data.checklist.depreciationAmount)), 7.5);
-  page.drawText(')', { x: depreciationX, y, size: 7.5, font, color: COLOR_DARK });
-
-  y -= 14;
-  const contractAmountPrefix = 'Contract Amount:  ';
-  page.drawText(contractAmountPrefix, { x: 55, y, size: 8, font: fontBold, color: COLOR_RED });
-  drawFieldValue(page, { key: 'financials.totalApprovedRcv', value: formatCurrency(data.financials.totalApprovedRcv), x: 55 + fontBold.widthOfTextAtSize(contractAmountPrefix, 8), y, size: 8, font: fontBold, color: COLOR_RED, bold: true });
-  const estimatorPrefix = 'Estimator: ';
-  page.drawText(estimatorPrefix, { x: 280, y, size: 7.5, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'team.estimator', value: data.team.estimator, x: 280 + font.widthOfTextAtSize(estimatorPrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
-
-  y -= 18;
-  const pmPrefix = 'Project Manager: ';
-  page.drawText(pmPrefix, { x: 55, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'team.projectManager', value: data.team.projectManager, x: 55 + fontBold.widthOfTextAtSize(pmPrefix, 7.5), y, size: 7.5, font: fontBold, color: COLOR_DARK, bold: true });
-  const startDatePrefix = 'Start Date: ';
-  page.drawText(startDatePrefix, { x: 240, y, size: 7.5, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'checklist.startDate', value: data.checklist.startDate, fallback: 'TBD', x: 240 + font.widthOfTextAtSize(startDatePrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
-  const finishDatePrefix = 'Finish Date: ';
-  page.drawText(finishDatePrefix, { x: 380, y, size: 7.5, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'checklist.finishDate', value: data.checklist.finishDate, fallback: 'TBD', x: 380 + font.widthOfTextAtSize(finishDatePrefix, 7.5), y, size: 7.5, font, color: COLOR_DARK });
-
-  y -= 16;
-  page.drawText('PM Notes:', { x: 55, y, size: 7.5, font: fontBold, color: COLOR_DARK });
-  drawWrappedText(page, data.checklist.projectManagerNotes || '', {
-    x: 105,
-    y,
-    maxWidth: 440,
-    lineHeight: 10,
-    font,
-    size: 7.5,
-    maxLines: 2,
-    key: 'checklist.projectManagerNotes',
-  });
+  // Notes continue on the full-width second rule. Reduce type only when needed
+  // to preserve both lines; the remaining fields never move the printed form.
+  const notes = cleanTextForPdf(data.checklist.projectManagerNotes).trim();
+  let size = 6.96;
+  const splitNotes = (pointSize: number) => {
+    let split = notes.length;
+    while (split > 0 && font.widthOfTextAtSize(notes.slice(0, split), pointSize) > 434) split--;
+    if (split < notes.length) {
+      const wordBreak = notes.lastIndexOf(' ', split);
+      if (wordBreak > 0) split = wordBreak;
+    }
+    return [notes.slice(0, split).trim(), notes.slice(split).trim()];
+  };
+  let lines = splitNotes(size);
+  while (font.widthOfTextAtSize(lines[1], size) > 497 && size > 4.5) {
+    size = Math.max(4.5, size - 0.2);
+    lines = splitNotes(size);
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const x = i === 0 ? 175.96 : 37.1;
+    const y = i === 0 ? 128.18 : 110.3;
+    const width = i === 0 ? 434 : 497;
+    let text = lines[i];
+    if (font.widthOfTextAtSize(text, size) > width) {
+      while (text && font.widthOfTextAtSize(text + '...', size) > width) text = text.slice(0, -1);
+      text += '...';
+    }
+    if (text) page.drawText(text, { x, y, size, font, color: rgb(0, 0, 0) });
+    captureFieldSpan({ key: 'checklist.projectManagerNotes', page, x, yTop: y + size * 1.05, width, height: size * 1.25, size, bold: false });
+  }
 
   return pdfDoc.save();
 }

@@ -80,8 +80,9 @@ const CASES: Array<{ file: string; markers: string[] }> = [
     file: 'water_07_Production_Checklist.pdf',
     markers: [
       'confirmed by homeowner.',
-      'Upload Necessary Authorizations to Insurance Carrier (Contractor Connection / IMACC)',
-      'Finish Date: 2026-10-30',
+      'Upload Necessary Authorizations to Appropriate Insurance Company',
+      'Connection, Innovation Property, and IMACC',
+      '2026-10-30',
     ],
   },
   {

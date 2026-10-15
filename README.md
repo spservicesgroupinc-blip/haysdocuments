@@ -55,6 +55,7 @@ existing deployment**, keeping its `/exec` URL. `npm run apps:paste` and
 | `npm run build` | Production build into `dist/` (web app + service worker + manifest) |
 | `npm run preview` | Serve the production build locally (use this to test PWA/offline behaviour) |
 | `npm run lint` | Type-check (`tsc --noEmit`) |
+| `npm run pdf:checklist:test` | Approved production checklist layout, populated fields, editing targets and long-value checks |
 | `npm run database:test` | Save/sync/transport regressions, including real IndexedDB transactions |
 | `npm run apps:test:drafts` | Current backend draft/job write locks, round trips and session heartbeat checks |
 | `npm run save:ui:test` | Chromium tests for recovery, saving while editing and connection failures (run `npx playwright install chromium` once) |
@@ -62,6 +63,18 @@ existing deployment**, keeping its `/exec` URL. `npm run apps:paste` and
 | `npm run icons` | Regenerate all app icons from `public/logo.svg` |
 | `npm run deploy:web` | Build + deploy the PWA to Vercel (linked project) |
 | `npm run apps:test`, `npm run apps:register`, `npm run parser:test` | Backend / parser test suites |
+
+## Production checklist PDF
+
+The production checklist uses the approved October 2026 form artwork, with the
+reference job's completed entries removed from its content stream. Its original
+logo, wording, checkbox columns, yellow highlights and rule positions are preserved
+in previews, individual downloads and the combined packet. Only current job data
+fills the form; document-verification boxes remain blank for review. Fields absent
+from the printed form (loss address, job name and self-pay) remain in the fields drawer.
+The manager line uses the branch manager. To regenerate the embedded blank artwork
+from the approved reference, run `python scripts/prepare-checklist-template.py <reference.pdf>`
+with `pypdf` installed. The script checks the source fingerprint before removing entries.
 
 ## PWA (browser install)
 

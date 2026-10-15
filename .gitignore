@@ -6,6 +6,7 @@ dist/
 dist-electron/
 dist_desktop/
 out/
+output/
 release/*
 !release/vercel.json
 electron-dist/
