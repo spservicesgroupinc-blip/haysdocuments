@@ -16,7 +16,10 @@
  *   boolean (Yes/No), yesNoPending (Yes/No/Pending), select (options[]).
  */
 
+import { CHECKLIST_BOXES } from '../types/productionChecklist';
+
 export type PdfFieldKind =
+  | 'checkbox'
   | 'text'
   | 'multiline'
   | 'phone'
@@ -198,6 +201,7 @@ export const PDF_FIELD_SCHEMA: Record<string, PdfEditableField[]> = {
 
   checklist: [
     ...branchFields.map(field => field.key === 'branch.managerName' ? { ...field, drawerOnly: false } : field),
+    ...CHECKLIST_BOXES.map(item => ({ key: `checklist.${item.key}`, label: item.label, kind: 'checkbox' as const, group: item.group })),
     {
       key: 'checklist.hasDeductibleBeenCollected',
       label: 'Deductible Collected',

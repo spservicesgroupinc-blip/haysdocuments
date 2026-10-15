@@ -76,6 +76,7 @@ import { PwaStatus } from './components/PwaStatus';
 import { ProvenanceRecord } from './services/intakeParser';
 import { getMissingJobFields, type MissingJobField } from './services/jobReadiness';
 import { hasUnresolvedPriceReview, PRICE_DEPENDENT_DOCUMENT_IDS, resolveKnowledgeBasePrice } from './services/knowledgeBaseReview';
+import { CHECKLIST_BOXES } from './types/productionChecklist';
 import { ArrowLeft, ArrowRight, Loader2 } from 'lucide-react';
 
 export default function App() {
@@ -593,6 +594,7 @@ export default function App() {
 
   // Fields whose PDF editor widgets commit 'Yes'/'No' instead of raw booleans.
   const BOOLEAN_PDF_FIELDS = new Set<string>([
+    ...CHECKLIST_BOXES.map(item => `checklist.${item.key}`),
     'mortgage.hasMortgage',
     'changeOrder.isInsuranceRelated',
     'checklist.isSelfPay',

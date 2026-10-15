@@ -1,7 +1,8 @@
 import { assertPriceReviewed } from './knowledgeBaseReview';
-import { PDFDocument, rgb, StandardFonts, PDFPage, PDFFont } from 'pdf-lib';
+import { PDFDocument, rgb, StandardFonts, PDFPage, PDFFont, PDFDict, PDFName, PDFRef } from 'pdf-lib';
 import { RestorationJobData } from '../types/jobData';
 import productionChecklistTemplate from '../templates/production-checklist.json';
+import { CHECKLIST_BOXES } from '../types/productionChecklist';
 
 // -------------------------------------------------------------
 // Text sanitisation (WinAnsi safety)
@@ -1960,6 +1961,18 @@ export async function generateProductionChecklist(data: RestorationJobData): Pro
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
   // The original form uses 6.96pt Arial (metrically compatible with Helvetica).
+  const form = pdfDoc.getForm();
+  for (const item of CHECKLIST_BOXES) {
+    const key = `checklist.${item.key}`;
+    const checkbox = form.createCheckBox(key);
+    checkbox.addToPage(page, {
+      x: item.x, y: 792 - item.top - item.height, width: item.width, height: item.height,
+      borderWidth: 0, borderColor: undefined, backgroundColor: undefined, textColor: rgb(0, 0, 0),
+    });
+    if (data.checklist[item.key] === true) checkbox.check();
+    captureFieldSpan({ key, page, x: item.x, yTop: 792 - item.top, width: item.width, height: item.height, size: 10, bold: false });
+  }
+
   // Fit values inside the existing lines, including long email/name fields.
   const field = (key: string, value: unknown, x: number, y: number, right: number, bold = false) => {
     let text = cleanTextForPdf(val(value, ''));
@@ -2250,7 +2263,29 @@ export async function generateCompletePacket(data: RestorationJobData): Promise<
 
   for (const doc of docs) {
     const copiedPages = await mergedPdf.copyPages(doc, doc.getPageIndices());
-    copiedPages.forEach((page) => mergedPdf.addPage(page));
+    const copiedFieldRoots = new Set<string>();
+    copiedPages.forEach((page) => {
+      mergedPdf.addPage(page);
+      // copyPages carries widget appearances, but the destination also needs
+      // their canonical AcroForm tree for checks to remain editable and saved.
+      for (const annotation of page.node.Annots()?.asArray() ?? []) {
+        const widget = mergedPdf.context.lookup(annotation, PDFDict);
+        if (widget.get(PDFName.of('Subtype')) !== PDFName.of('Widget')) continue;
+        widget.set(PDFName.of('P'), page.ref);
+        const fieldRef = widget.get(PDFName.of('Parent'));
+        if (!(fieldRef instanceof PDFRef)) continue;
+        let root: PDFRef = fieldRef;
+        let parent = mergedPdf.context.lookup(root, PDFDict).get(PDFName.of('Parent'));
+        while (parent instanceof PDFRef) {
+          root = parent;
+          parent = mergedPdf.context.lookup(root, PDFDict).get(PDFName.of('Parent'));
+        }
+        if (!copiedFieldRoots.has(root.toString())) {
+          mergedPdf.getForm().acroForm.addField(root);
+          copiedFieldRoots.add(root.toString());
+        }
+      }
+    });
   }
 
   // Stamp running page footers across all pages for complete packet integrity

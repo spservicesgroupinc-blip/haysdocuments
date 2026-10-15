@@ -2,6 +2,7 @@ import React from 'react';
 import { ClipboardCheck, CheckSquare, Calendar, DollarSign, FileText } from 'lucide-react';
 import { RestorationJobData } from '../types/jobData';
 import { DOC } from '../services/documentCatalog';
+import { CHECKLIST_BOXES } from '../types/productionChecklist';
 import { SectionPdfActions, type PdfPreviewRequest } from './SectionPdfActions';
 
 interface SectionChecklistProps {
@@ -217,6 +218,28 @@ export const SectionChecklist: React.FC<SectionChecklistProps> = ({
           />
         </div>
       </div>
+
+      <details open className="mt-5 rounded-lg border border-slate-200">
+        <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-900">
+          Checklist boxes ({CHECKLIST_BOXES.filter(item => checklist[item.key] === true).length}/{CHECKLIST_BOXES.length} checked)
+        </summary>
+        <div className="space-y-4 border-t border-slate-200 p-3 sm:p-4">
+          <p className="text-xs text-slate-600">Check completed items here or click their boxes in the PDF preview. Checks are saved with this job.</p>
+          {[...new Set(CHECKLIST_BOXES.map(item => item.group))].map(group => (
+            <fieldset key={group}>
+              <legend className="mb-1 text-xs font-semibold text-slate-700">{group}</legend>
+              <div className="grid sm:grid-cols-2 gap-x-4">
+                {CHECKLIST_BOXES.filter(item => item.group === group).map(item => (
+                  <label key={item.key} className="flex min-h-11 cursor-pointer items-center gap-3 rounded px-2 py-2 text-sm text-slate-800 hover:bg-slate-50">
+                    <input type="checkbox" checked={checklist[item.key] === true} onChange={event => onChange(item.key, event.target.checked)} className="h-4 w-4 shrink-0 accent-red-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600" />
+                    {item.label}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          ))}
+        </div>
+      </details>
 
       <SectionPdfActions jobData={jobData} docs={[DOC.productionChecklist]} onPreview={onPreview} />
     </div>

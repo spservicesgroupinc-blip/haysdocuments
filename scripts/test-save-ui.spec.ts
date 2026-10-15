@@ -84,6 +84,45 @@ test('approved production checklist previews, edits and downloads in the browser
   expect(errors).toEqual([]);
 });
 
+test('checklist boxes toggle from the form and PDF, persist after reload, and download as editable fields', async ({ page }) => {
+  let draft = structuredClone(SAMPLE_WATER);
+  await start(page, async (route, body) => {
+    if (body.action === 'getDraft') await ok(route, { draft: { job: draft, recordId: draft.recordId, updatedAt: '2026-10-15T12:00:00Z' } });
+    else if (body.action === 'saveDraft') {
+      draft = body.draft.job;
+      await ok(route, { job: draft, updatedAt: new Date().toISOString() });
+    } else await ok(route, {});
+  });
+  await navigate(page, 'checklist');
+  const preliminary = page.getByRole('checkbox', { name: 'Preliminary report with correct information', exact: true });
+  await expect(preliminary).toBeVisible({ timeout: 2000 });
+  await preliminary.check();
+  await page.getByRole('button', { name: 'Preview Production Checklist PDF', exact: true }).click();
+  const modal = page.locator('div.fixed.inset-0.z-50').filter({ has: page.getByTitle('Close modal') });
+  await expect(modal.getByRole('checkbox', { name: 'Preliminary report with correct information', exact: true })).toBeChecked();
+  const scope = modal.getByRole('checkbox', { name: 'Copy of scope', exact: true });
+  await scope.click();
+  await expect(scope).toBeChecked();
+  await expect.poll(() => draft.checklist.scopeCopyVerified).toBe(true);
+  const downloadPromise = page.waitForEvent('download');
+  await modal.getByTitle('Download PDF', { exact: true }).click();
+  const stream = await (await downloadPromise).createReadStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  const form = (await PDFDocument.load(Buffer.concat(chunks))).getForm();
+  expect(form.getFields()).toHaveLength(33);
+  expect(form.getCheckBox('checklist.preliminaryReportVerified').isChecked()).toBe(true);
+  expect(form.getCheckBox('checklist.scopeCopyVerified').isChecked()).toBe(true);
+  await modal.getByTitle('Close modal').click();
+  await page.reload();
+  await navigate(page, 'checklist');
+  await expect(preliminary).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'Copy of scope', exact: true })).toBeChecked();
+  await preliminary.uncheck();
+  await expect.poll(() => draft.checklist.preliminaryReportVerified).toBe(false);
+  await expect(page.getByRole('checkbox', { name: 'Copy of scope', exact: true })).toBeChecked();
+});
+
 test('startup recovers the shared draft before any autosave writes', async ({ page }) => {
   const sent: any[] = [];
   await start(page, async (route, body) => {

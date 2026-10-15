@@ -5,6 +5,30 @@ import { generateDocWithSpans, generateProductionChecklist } from '../src/servic
 import { getPdfFieldSchema } from '../src/services/pdfFieldSchema';
 import { createEmptyJob } from '../src/types/jobData';
 import { SAMPLE_WATER } from './fixtures';
+import { PDFDocument } from 'pdf-lib';
+import { generateCompletePacket } from '../src/services/pdfService';
+import { ensureRecordDefaults } from '../src/types/jobData';
+
+test('checklist boxes are interactive, preserve job checks, and remain editable in the packet', async () => {
+  const job = createEmptyJob();
+  Object.assign(job.checklist, { jobNumberVerified: true, preliminaryReportVerified: true, managerNotesVerified: true });
+  const restored = ensureRecordDefaults(JSON.parse(JSON.stringify(job)));
+  for (const generator of [generateProductionChecklist, generateCompletePacket]) {
+    const pdf = await PDFDocument.load(await generator(restored));
+    const form = pdf.getForm();
+    assert.equal(form.getFields().length, 33, 'Every outlined box must be interactive');
+    for (const key of ['jobNumberVerified', 'preliminaryReportVerified', 'managerNotesVerified']) {
+      assert.equal(form.getCheckBox(`checklist.${key}`).isChecked(), true, key);
+    }
+    const unchecked = form.getCheckBox('checklist.scopeCopyVerified');
+    assert.equal(unchecked.isChecked(), false);
+    unchecked.check();
+    form.getCheckBox('checklist.jobNumberVerified').uncheck();
+    const reopened = await PDFDocument.load(await pdf.save());
+    assert.equal(reopened.getForm().getCheckBox('checklist.scopeCopyVerified').isChecked(), true);
+    assert.equal(reopened.getForm().getCheckBox('checklist.jobNumberVerified').isChecked(), false);
+  }
+});
 
 async function inspect(bytes: Uint8Array) {
   const doc = await pdfjs.getDocument({ data: bytes.slice(), isEvalSupported: false, useSystemFonts: true }).promise;

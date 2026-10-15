@@ -70,7 +70,11 @@ The production checklist uses the approved October 2026 form artwork, with the
 reference job's completed entries removed from its content stream. Its original
 logo, wording, checkbox columns, yellow highlights and rule positions are preserved
 in previews, individual downloads and the combined packet. Only current job data
-fills the form; document-verification boxes remain blank for review. Fields absent
+fills the form. All 33 boxes can be checked in the Checklist section, directly in
+the PDF preview, or in a PDF reader after downloading. App checks are saved with
+the job and carried into individual PDFs and the combined packet. Older jobs
+start with unchecked boxes. Changes made in an external PDF reader remain in
+that PDF; they are not imported back into the job. Fields absent
 from the printed form (loss address, job name and self-pay) remain in the fields drawer.
 The manager line uses the branch manager. To regenerate the embedded blank artwork
 from the approved reference, run `python scripts/prepare-checklist-template.py <reference.pdf>`

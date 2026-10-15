@@ -116,6 +116,15 @@ const FieldWidget: React.FC<FieldWidgetProps> = ({
     onCancel?.();
   };
 
+  if (kind === 'checkbox') {
+    return (
+      <label className="flex min-h-11 items-center gap-2 px-2 text-sm text-white">
+        <input type="checkbox" checked={prefill === 'true' || prefill === 'Yes'} onChange={event => onCommit(event.target.checked ? 'Yes' : 'No')} className="h-4 w-4 accent-red-600" />
+        Completed
+      </label>
+    );
+  }
+
   if (kind === 'boolean' || kind === 'yesNoPending' || kind === 'select') {
     const opts =
       kind === 'boolean'
@@ -599,6 +608,10 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
 
   const openSpanEditor = (span: PdfFieldSpan) => {
     if (isRegenerating) return;
+    if (findField(editableFields, span.key)?.kind === 'checkbox') {
+      onFieldChange?.(span.key, lookupJobValue(jobData, span.key) === 'true' ? 'No' : 'Yes');
+      return;
+    }
     setFieldsDrawerOpen(false);
     setDrawerInlineKey(null);
     setEditingSpan(span);
@@ -852,10 +865,26 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
                   </div>
 
                   {/* Click-to-edit overlay targets for the current page */}
-                  {isEditMode &&
-                    pageSpans.map((span) => {
+                  {canEdit &&
+                    pageSpans.filter(span => isEditMode || findField(editableFields, span.key)?.kind === 'checkbox').map((span) => {
                       const field = findField(editableFields, span.key);
                       const inert = editingSpan != null || isRegenerating;
+                      if (field?.kind === 'checkbox') {
+                        return (
+                          <button
+                            key={`${span.key}-${span.page}`}
+                            type="button"
+                            role="checkbox"
+                            aria-label={field.label}
+                            aria-checked={lookupJobValue(jobData, span.key) === 'true'}
+                            disabled={inert}
+                            onClick={() => openSpanEditor(span)}
+                            title={field.label}
+                            className="absolute z-10 cursor-pointer border border-transparent hover:border-red-600 hover:bg-red-600/10 focus-visible:outline-2 focus-visible:outline-red-600 disabled:cursor-wait"
+                            style={{ left: span.x * viewScale, top: span.y * viewScale, width: span.width * viewScale, height: span.height * viewScale }}
+                          />
+                        );
+                      }
                       return (
                         <div
                           key={`${span.key}-${span.page}-${span.x.toFixed(2)}-${span.y.toFixed(2)}`}
