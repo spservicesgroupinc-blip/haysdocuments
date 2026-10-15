@@ -986,7 +986,7 @@ function analyzeIntake_(payload) {
     response = UrlFetchApp.fetch('https://api.deepseek.com/chat/completions', {
       method: 'post', contentType: 'application/json', muteHttpExceptions: true,
       headers: { Authorization: 'Bearer ' + key },
-      payload: JSON.stringify({ model: props.getProperty('DEEPSEEK_MODEL') || 'deepseek-flash', thinking: { type: 'disabled' }, messages: messages, temperature: 0.1, max_tokens: 8000, stream: false, response_format: { type: 'json_object' } })
+      payload: JSON.stringify({ model: 'deepseek-chat', messages: messages, temperature: 0.1, max_tokens: 6000, stream: false, response_format: { type: 'json_object' } })
     });
   } catch (error) { throw appError_('ai_unavailable', 'Could not reach DeepSeek. Retry the estimate analysis.'); }
   if (response.getResponseCode() !== 200) throw appError_('ai_unavailable', 'DeepSeek request failed (HTTP ' + response.getResponseCode() + '). Check the server API key, quota and model configuration, then retry.');

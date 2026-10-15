@@ -45,6 +45,29 @@ function backend() {
   return { sandbox, sheets, writes: () => writes, released: () => released, fail: () => { failWrite = true; } };
 }
 const first = [{ customerName: '=do not execute', jobNumber: 'F-1', contractPrice: 15 }, { customerName: 'Two', jobNumber: 'F-2', contractPrice: 0 }];
+
+test('new-job intake sends only the document and never reads or modifies the saved CSV', () => {
+  const env = backend();
+  env.sandbox.replaceCustomerReference_({ email: 'editor', role: 'editor' }, { customers: first, fileName: 'keep-for-later.csv' });
+  const stored = JSON.stringify([...env.sheets.values()].map(sheet => sheet.rows));
+  env.sandbox.getCustomerReference_ = () => { throw new Error('CSV must not be read during intake'); };
+  let request: any;
+  env.sandbox.UrlFetchApp = { fetch: (_url: string, options: any) => {
+    request = JSON.parse(options.payload);
+    return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ customer: { customerName: 'New document customer' }, financials: { totalApprovedRcv: 4250 }, analysisNotes: 'Document-only extraction.' }) } }] }) };
+  } };
+  const result = env.sandbox.analyzeIntake_({ rawText: 'Customer: New document customer. Approved total: $4,250.' });
+  assert.equal(request.model, 'deepseek-chat');
+  assert.equal(request.max_tokens, 6000);
+  assert.equal(request.thinking, undefined);
+  assert.equal(request.messages.length, 2);
+  assert.doesNotMatch(request.messages[0].content, /knowledge.?base|customer reference|knowledgeMatch/i);
+  assert.match(request.messages[1].content, /New document customer/);
+  assert.equal(result.customer.customerName, 'New document customer');
+  assert.equal(result.financials.totalApprovedRcv, 4250);
+  assert.equal(result.knowledgeBase, undefined);
+  assert.equal(JSON.stringify([...env.sheets.values()].map(sheet => sheet.rows)), stored);
+});
 test('authenticated shared snapshot is replaced, erasing previous customer data in one write', () => {
   const env = backend();
   const call = (payload: any) => env.sandbox.handleAction_(payload);

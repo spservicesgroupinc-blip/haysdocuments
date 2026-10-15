@@ -103,8 +103,8 @@ Editors/admins can replace it; signed-in users can read it. The list is a shared
 reference for the team only - it is never sent to the AI.
 
 Set `DEEPSEEK_API_KEY` in **Project Settings > Script Properties**. No API key is
-embedded in the frontend. `DEEPSEEK_MODEL` optionally overrides the default
-`deepseek-flash` model. The existing external-request OAuth scope is sufficient.
+embedded in the frontend. Intake uses the earlier `deepseek-chat` request with
+temperature 0.1 and a 6,000-token output limit. The existing external-request OAuth scope is sufficient.
 See [DeepSeek chat completions](https://api-docs.deepseek.com/api/create-chat-completion/).
 
 The authenticated `analyzeIntake` action accepts `{ rawText }`. Apps Script sends
