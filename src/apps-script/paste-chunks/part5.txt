@@ -1,0 +1,64 @@
+
+/* ---------------------------------------------------------------------------
+ * 9. SELF TEST & DIAGNOSTICS
+ * ------------------------------------------------------------------------ */
+
+function selfTest() {
+  Logger.log('Starting Self-Test verification...');
+  ensureDatabaseReady_();
+
+  var testEmail = 'selftest.' + new Date().getTime() + '@example.com';
+  var testPass = 'SelfTestPass123!';
+
+  // 1. Create User
+  var user = createUser(testEmail, 'Self-Test Operator', testPass, 'editor');
+  if (!user || user.email !== testEmail) throw new Error('SelfTest: Failed to create user.');
+
+  // 2. Login
+  var loginResult = loginUser_(testEmail, testPass);
+  if (!loginResult.sessionToken) throw new Error('SelfTest: Login did not return sessionToken.');
+
+  // 3. Save Job
+  var template = emptyRecordTemplate_();
+  template.jobNumber = 'TEST-001';
+  template.jobName = 'Self-Test Drying Phase';
+  template.customerName = 'Test Property';
+  template.status = 'Draft';
+
+  var saved = saveJob_(loginResult.user, template);
+  if (!saved.recordId) throw new Error('SelfTest: Job save failed to produce recordId.');
+
+  // 4. Retrieve Job
+  var fetched = getJob_(loginResult.user, saved.recordId);
+  if (fetched.jobName !== 'Self-Test Drying Phase') throw new Error('SelfTest: Fetched job mismatch.');
+
+  // 5. Delete Job
+  var deleted = deleteJob_(loginResult.user, saved.recordId);
+  if (!deleted.deleted) throw new Error('SelfTest: Job deletion failed.');
+
+  // 6. Shared workspace draft round trip
+  saveDraft_(loginResult.user, { job: template, recordId: saved.recordId });
+  var draft = getDraft_(loginResult.user);
+  if (!draft || !draft.job) throw new Error('SelfTest: Draft save failed.');
+  if (draft.updatedBy !== testEmail) throw new Error('SelfTest: Draft updatedBy mismatch.');
+  if (draft.job.jobName !== 'Self-Test Drying Phase') throw new Error('SelfTest: Draft payload mismatch.');
+  if (!draftsSheet_()) throw new Error('SelfTest: Drafts sheet is missing.');
+
+  // 7. Cleanup. Remove the self-test draft row, but never a real one: the
+  //    draft only goes if this test wrote it.
+  var draftCleanupSheet = draftsSheet_();
+  var draftRows = draftCleanupSheet.getDataRange().getValues();
+  for (var dr = draftRows.length - 1; dr >= 1; dr--) {
+    if (String(draftRows[dr][0]) === DRAFT_ROW_ID && String(draftRows[dr][2]) === testEmail) {
+      draftCleanupSheet.deleteRow(dr + 1);
+    }
+  }
+
+  removeUser_(testEmail);
+  cleanupSessions();
+
+  Logger.log('=============================');
+  Logger.log('>>> SELF TEST RESULT: PASS <<<');
+  Logger.log('=============================');
+  return 'PASS';
+}

@@ -1,3 +1,5 @@
+import { CHECKLIST_BOXES, type ChecklistBoxKey } from './productionChecklist';
+
 export interface CustomerData {
   jobNumber: string;
   jobName: string;
@@ -143,7 +145,7 @@ export interface RestorationJobData {
     startDate: string;
     finishDate: string;
     projectManagerNotes: string;
-  };
+  } & Partial<Record<ChecklistBoxKey, boolean>>;
 }
 
 /** Current record schema version. Bump when the stored record shape changes. */
@@ -272,6 +274,7 @@ export function createEmptyJob(): RestorationJobData {
       additionalNotes: '',
     },
     checklist: {
+      ...Object.fromEntries(CHECKLIST_BOXES.map(item => [item.key, false])),
       hasDeductibleBeenCollected: 'No',
       deductibleExplanation: '',
       xactimateVersion: 'X1',

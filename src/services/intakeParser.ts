@@ -1,4 +1,4 @@
-import { RestorationJobData, createEmptyJob } from '../types/jobData';
+import { ProductionNotesData, RestorationJobData, createEmptyJob } from '../types/jobData';
 
 export type FieldProvenanceType = 'EXTRACTED' | 'FOUND' | 'CALCULATED' | 'DRAFTED' | 'UNRESOLVED';
 
@@ -17,6 +17,7 @@ export type SectionKey =
   | 'team'
   | 'mortgage'
   | 'changeOrder'
+  | 'productionNotes'
   | 'checklist';
 
 export const SECTION_LABELS: Record<SectionKey, string> = {
@@ -26,6 +27,7 @@ export const SECTION_LABELS: Record<SectionKey, string> = {
   team: 'Team',
   mortgage: 'Mortgage',
   changeOrder: 'Change Order',
+  productionNotes: 'Production Notes',
   checklist: 'Production Checklist',
 };
 
@@ -55,7 +57,30 @@ export interface IntakeParseResult {
     fieldsUpdatedCount: number;
     sections: ExtractedSectionSummary[];
     warnings: string[];
+    /** Short narrative the AI wrote about the document and extraction quality. */
+    aiNotes?: string;
   };
+}
+
+/**
+ * Structured extraction returned by the DeepSeek intake analysis call.
+ * Section objects mirror the Master Job Record shape; values are raw JSON
+ * (strings, numbers, booleans, null) that the intake engine sanitizes before
+ * they are routed into the record.
+ */
+export interface AiIntakePayload {
+  customer: Record<string, unknown>;
+  insurance: Record<string, unknown>;
+  financials: Record<string, unknown>;
+  team: Record<string, unknown>;
+  mortgage: Record<string, unknown>;
+  changeOrder: Record<string, unknown>;
+  productionNotes: Record<string, unknown>;
+  checklist: Record<string, unknown>;
+  /** Friendly labels of core fields the AI could not find in the source. */
+  missingCoreFields?: string[];
+  /** 1-2 sentence summary the AI wrote about the document. */
+  analysisNotes?: string;
 }
 
 /**
@@ -1374,7 +1399,7 @@ function recordDerived(
 }
 
 function buildSections(entries: Map<string, ExtractedFieldSummary>): ExtractedSectionSummary[] {
-  const order: SectionKey[] = ['customer', 'insurance', 'financials', 'team', 'mortgage', 'changeOrder', 'checklist'];
+  const order: SectionKey[] = ['customer', 'insurance', 'financials', 'team', 'mortgage', 'changeOrder', 'productionNotes', 'checklist'];
   const bySection = new Map<SectionKey, ExtractedFieldSummary[]>();
   for (const entry of entries.values()) {
     const list = bySection.get(entry.section) ?? [];
@@ -1505,6 +1530,238 @@ export function parseRawIntakeText(rawText: string, existingJob?: RestorationJob
       fieldsUpdatedCount: Array.from(state.entries.values()).filter((entry) => entry.source === 'EXTRACTED' && entry.changed).length,
       sections: buildSections(state.entries),
       warnings: state.warnings,
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * AI (DeepSeek) extraction routing
+ *
+ * The DeepSeek intake service returns a structured extraction of the
+ * document. This engine sanitizes each AI value, routes it into the
+ * master record through the same labelled field definitions and
+ * provenance tracking as the rules parser, and computes the same
+ * derived defaults (payments, net claim value, drafted descriptions).
+ * ------------------------------------------------------------------ */
+
+/** Coerces an AI value (JSON number or "$12,500.00"-style string) to a number. */
+function coerceAiNumber(raw: unknown): number | null {
+  if (typeof raw === 'number') return isFinite(raw) ? raw : null;
+  if (typeof raw === 'boolean' || typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const negative = /^\(.*\)$/.test(trimmed) || trimmed.startsWith('-');
+  const match = trimmed.match(/-?\$?\s*([\d,]+(?:\.\d{1,2})?)/);
+  if (!match) return null;
+  const value = parseFloat(match[1].replace(/,/g, ''));
+  if (isNaN(value)) return null;
+  return negative ? -value : value;
+}
+
+/** Sanitizes one AI-provided value against the field definition's rules. */
+function sanitizeAiValue(def: FieldDef, raw: unknown): SanitizedValue | null {
+  if (raw === undefined || raw === null) return null;
+
+  switch (def.kind) {
+    case 'text': {
+      const value = String(raw).replace(/\u00a0/g, ' ').trim().slice(0, 200);
+      if (!value || (!def.allowPlaceholders && PLACEHOLDER_RE.test(value))) return null;
+      return { value, display: value };
+    }
+    case 'multiline': {
+      const value = String(raw).replace(/\u00a0/g, ' ').trim().slice(0, 600);
+      if (!value || (!def.allowPlaceholders && PLACEHOLDER_RE.test(value))) return null;
+      return { value, display: value.replace(/\n/g, ' \u00b7 ') };
+    }
+    case 'phone': {
+      const normalized = normalizePhone(String(raw));
+      if (normalized.replace(/\D/g, '').length < 10) return null;
+      return { value: normalized, display: normalized };
+    }
+    case 'email': {
+      const match = String(raw).match(EMAIL_RE);
+      if (!match) return null;
+      return { value: match[0], display: match[0] };
+    }
+    case 'date': {
+      const iso = normalizeDate(String(raw));
+      return iso ? { value: iso, display: iso } : null;
+    }
+    case 'time': {
+      const normalized = normalizeTime(String(raw));
+      return normalized ? { value: normalized, display: normalized } : null;
+    }
+    case 'currency': {
+      const value = coerceAiNumber(raw);
+      return typeof value === 'number' && isFinite(value)
+        ? { value: Math.round(value * 100) / 100, display: formatUsd(value) }
+        : null;
+    }
+    case 'int': {
+      const value = coerceAiNumber(raw);
+      return typeof value === 'number' && isFinite(value)
+        ? { value: Math.round(value), display: String(Math.round(value)) }
+        : null;
+    }
+    case 'boolean': {
+      if (raw === true) return { value: true, display: 'Yes' };
+      if (raw === false) return { value: false, display: 'No' };
+      const lower = String(raw).trim().toLowerCase();
+      if (lower === 'yes' || lower === 'true') return { value: true, display: 'Yes' };
+      if (lower === 'no' || lower === 'false') return { value: false, display: 'No' };
+      return null;
+    }
+    case 'yesNoPending': {
+      const text = String(raw).trim();
+      const value =
+        text === 'Yes' || text === 'No' || text === 'Pending' ? text : parseYesNoPending(text);
+      return value ? { value, display: value } : null;
+    }
+    case 'ssn4': {
+      const digits = String(raw).replace(/\D/g, '');
+      if (digits.length < 4) return null;
+      const value = digits.slice(-4);
+      return { value, display: '\u2022\u2022\u2022\u2022 ' + value };
+    }
+  }
+}
+
+const AI_PROD_NOTE_LABELS: Record<keyof ProductionNotesData, string> = {
+  scopeSummary: 'Scope Summary',
+  materialsAndEquipment: 'Materials & Equipment',
+  scheduleAndAccess: 'Schedule & Access',
+  safetyConsiderations: 'Safety Considerations',
+  communicationNotes: 'Communication Notes',
+  additionalNotes: 'Additional Notes',
+};
+
+/**
+ * Routes a DeepSeek AI extraction into the Master Job Record.
+ *
+ * Mirrors parseRawIntakeText: when an existing job is supplied the AI result is
+ * MERGED into it - fields the document does not mention keep their current
+ * values - and all derived defaults (payment splits, net claim value, drafted
+ * loss description) are computed the same way. Provenance records the source
+ * as AI (DeepSeek) extractions so the review chips distinguish them from the
+ * built-in rules parser.
+ */
+export function applyAiExtractionToJob(
+  payload: AiIntakePayload,
+  existingJob?: RestorationJobData
+): IntakeParseResult {
+  const state = createEngineState(existingJob);
+  if (!existingJob) state.job.customer.jobNumber = '';
+
+  const aiByKey: Record<string, unknown> = {
+    ...(payload.customer || {}),
+    ...(payload.insurance || {}),
+    ...(payload.financials || {}),
+    ...(payload.team || {}),
+    ...(payload.mortgage || {}),
+    ...(payload.changeOrder || {}),
+    ...(payload.checklist || {}),
+  };
+
+  for (const def of FIELD_DEFS) {
+    const rawValue = aiByKey[def.key];
+    if (rawValue === undefined || rawValue === null) continue;
+
+    const sanitized = sanitizeAiValue(def, rawValue);
+    if (!sanitized) {
+      const printable = String(rawValue).trim();
+      if (printable && printable.toLowerCase() !== 'null') {
+        state.warnings.push(
+          `AI could not map "${printable.slice(0, 40)}" to ${def.label} - left unchanged.`
+        );
+      }
+      continue;
+    }
+
+    let { value, display } = sanitized;
+    if (def.canonicalize && typeof value === 'string') {
+      const canonical = def.canonicalize(value);
+      if (canonical) {
+        value = canonical;
+        display = canonical;
+      } else if (def.key === 'changeType') {
+        state.warnings.push(
+          `AI could not map "${display}" to increase/decrease/unchanged - left unchanged.`
+        );
+        continue;
+      }
+    }
+
+    const short = display.length > 70 ? display.slice(0, 67).trim() + '...' : display;
+    applyExtractedValue(state, def, { value, display }, `AI (DeepSeek) extracted: "${short}"`);
+  }
+
+  // Production Notes - drafted by the AI from the loss narrative. Never clobber
+  // notes the production team has already typed.
+  for (const key of Object.keys(AI_PROD_NOTE_LABELS) as Array<keyof ProductionNotesData>) {
+    const rawValue = payload.productionNotes[key];
+    if (rawValue === undefined || rawValue === null) continue;
+    const value = String(rawValue).replace(/\u00a0/g, ' ').trim().slice(0, 600);
+    if (!value) continue;
+    if ((state.job.productionNotes[key] || '').trim()) continue;
+    state.job.productionNotes[key] = value;
+    recordDerived(
+      state,
+      { key, label: AI_PROD_NOTE_LABELS[key], section: 'productionNotes' },
+      value.replace(/\n/g, ' ').slice(0, 80),
+      'DRAFTED',
+      'AI drafted from the loss narrative in the document'
+    );
+  }
+
+  // Mailing city/state/ZIP - split out by the AI from the address block.
+  const cityZip = String(payload.customer.mailingCityStateZip ?? '').trim();
+  if (cityZip && cityZip !== state.job.customer.mailingCityStateZip) {
+    state.job.customer.mailingCityStateZip = cityZip.slice(0, 100);
+    recordDerived(
+      state,
+      { key: 'mailingCityStateZip', label: 'Mailing City/State/ZIP', section: 'customer' },
+      cityZip.slice(0, 100),
+      'EXTRACTED',
+      'AI (DeepSeek) extracted the city/state/ZIP from the address'
+    );
+  }
+
+  // Spouse last-4 SSN - tracked on the record but not exposed as a labelled field.
+  const spouseRaw = payload.mortgage.spouseLast4Ssn;
+  if (spouseRaw !== undefined && spouseRaw !== null) {
+    const digits = String(spouseRaw).replace(/\D/g, '');
+    if (digits.length >= 4 && !state.job.mortgage.spouseLast4Ssn) {
+      state.job.mortgage.spouseLast4Ssn = digits.slice(-4);
+      recordDerived(
+        state,
+        { key: 'spouseLast4Ssn', label: 'Spouse Last 4 SSN', section: 'mortgage' },
+        '\u2022\u2022\u2022\u2022 ' + digits.slice(-4),
+        'EXTRACTED',
+        'AI (DeepSeek) extracted the spouse last-4 SSN'
+      );
+    }
+  }
+
+  // AI-reported gaps become review warnings.
+  for (const label of payload.missingCoreFields || []) {
+    const trimmed = String(label).trim();
+    if (trimmed) state.warnings.push(`Not found in the document: ${trimmed}`);
+  }
+
+  finishMissingDefaults(state, Boolean(existingJob));
+
+  return {
+    jobData: state.job,
+    provenance: state.provenance,
+    blockingMissingFields: collectBlockingFields(state.job),
+    extractionSummary: {
+      fieldsExtractedCount: state.extractedCount,
+      fieldsUpdatedCount: Array.from(state.entries.values()).filter(
+        (entry) => entry.source === 'EXTRACTED' && entry.changed
+      ).length,
+      sections: buildSections(state.entries),
+      warnings: state.warnings,
+      aiNotes: (payload.analysisNotes || '').trim() || undefined,
     },
   };
 }

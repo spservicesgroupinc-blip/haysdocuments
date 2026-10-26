@@ -4,7 +4,6 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { User } from 'firebase/auth';
 import {
   RestorationJobData,
   CustomerData,
@@ -17,17 +16,17 @@ import {
   ensureRecordDefaults,
 } from './types/jobData';
 import {
-  initAuth,
-  googleSignIn,
-  logoutGoogle,
   uploadPdfToGoogleDrive,
   syncJobToGoogleSheets,
 } from './services/googleWorkspaceService';
 import {
-  createPdfBlobUrl,
   downloadPdf,
   generateCompletePacket,
+  generateDocWithSpans,
+  type PdfFieldSpan,
 } from './services/pdfService';
+import { getPdfFieldSchema } from './services/pdfFieldSchema';
+import type { JobDocument } from './services/documentCatalog';
 import {
   isDatabaseConfigured,
   isDeveloperBypassEnabled,
@@ -36,6 +35,7 @@ import {
   logout as logoutFromDatabase,
   verifySession,
   getCurrentUser,
+  subscribeSession,
   AppUser,
 } from './services/appsScriptService';
 import {
@@ -48,15 +48,18 @@ import {
   restoreDraft,
   saveJobOffline,
   scheduleDraftSave,
+  flushDraftSave,
   subscribeSyncState,
+  type RestoredDraft,
   type SyncState,
 } from './services/jobSync';
 import type { SyncJobSummary } from './services/localDb';
 import { LoginScreen } from './components/LoginScreen';
 import { Navbar } from './components/Navbar';
-import { MobileSectionNav, Sidebar } from './components/Sidebar';
+import { MobileSectionNav, Sidebar, WORKSPACE_SECTIONS } from './components/Sidebar';
 import type { WorkspaceTab } from './components/Sidebar';
 import { SavedCustomersPage } from './components/SavedCustomersPage';
+import { CustomerImportPage } from './components/CustomerImportPage';
 import { FinancialSummaryCard } from './components/FinancialSummaryCard';
 import { SectionCustomer } from './components/SectionCustomer';
 import { SectionInsurance } from './components/SectionInsurance';
@@ -71,16 +74,17 @@ import { PdfPreviewModal } from './components/PdfPreviewModal';
 import { ConfirmModal } from './components/ConfirmModal';
 import { PwaStatus } from './components/PwaStatus';
 import { ProvenanceRecord } from './services/intakeParser';
-import { Loader2 } from 'lucide-react';
+import { getMissingJobFields, type MissingJobField } from './services/jobReadiness';
+import { CHECKLIST_BOXES } from './types/productionChecklist';
+import { ArrowLeft, ArrowRight, Loader2 } from 'lucide-react';
 
 export default function App() {
   const [jobData, setJobData] = useState<RestorationJobData>(() => createEmptyJob());
   const [provenance, setProvenance] = useState<ProvenanceRecord>({});
+  const [intakeSession, setIntakeSession] = useState(0);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('home');
 
-  // Google Workspace Authentication & state
-  const [user, setUser] = useState<User | null>(null);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  // Shared document storage and database actions use the Apps Script account session.
   const [isDriveLoading, setIsDriveLoading] = useState(false);
   const [isSheetsLoading, setIsSheetsLoading] = useState(false);
   const [driveSuccessLink, setDriveSuccessLink] = useState<string | undefined>();
@@ -88,10 +92,18 @@ export default function App() {
 
   // Preview Modal state
   const [previewTitle, setPreviewTitle] = useState<string>('');
+  const [previewDoc, setPreviewDoc] = useState<JobDocument | null>(null);
   const [previewBytes, setPreviewBytes] = useState<Uint8Array | null>(null);
+  const [previewSpans, setPreviewSpans] = useState<PdfFieldSpan[]>([]);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
-  const [previewGenerator, setPreviewGenerator] = useState<(() => Promise<Uint8Array>) | null>(null);
+  const [isPreviewRegenerating, setIsPreviewRegenerating] = useState(false);
+
+  // Latest job record for async PDF work (generators must read the freshest state).
+  const jobDataRef = React.useRef<RestorationJobData>(jobData);
+  const previewRegenTimerRef = React.useRef<number | null>(null);
+
+  jobDataRef.current = jobData;
 
   // Confirm Modal state (for Workspace changes)
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -126,48 +138,118 @@ export default function App() {
   const [databaseEmail, setDatabaseEmail] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(() => getCurrentUser());
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [workspaceReady, setWorkspaceReady] = useState(false);
   const [syncState, setSyncState] = useState<SyncState>(getSyncState);
 
   // Dirty tracking compares the record against the last saved/loaded baseline,
   // so programmatic whole-record replacements never look like user edits.
   const baselineRef = React.useRef<string>(JSON.stringify(jobData));
+  // True once the workspace has been filled from the shared/draft copy, so a
+  // later sign-in does not overwrite work already on screen.
+  const draftRestoredRef = React.useRef(false);
+  const lastDraftScheduledRef = React.useRef<string>('');
+  const saveInProgressRef = React.useRef(false);
+  const workspaceGenerationRef = React.useRef(0);
+  const workspaceSessionRef = React.useRef(0);
+  const jobLoadRequestRef = React.useRef(0);
+  const fieldToFocusRef = React.useRef<string | null>(null);
+  const notificationTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setIsDirty(JSON.stringify(jobData) !== baselineRef.current);
   }, [jobData]);
 
+  useEffect(() => {
+    if (!fieldToFocusRef.current) return;
+    document.getElementById(fieldToFocusRef.current)?.focus();
+    fieldToFocusRef.current = null;
+  }, [activeTab]);
+
   /** Replaces the whole record and treats it as the new clean baseline. */
   const replaceJob = (next: RestorationJobData) => {
+    workspaceGenerationRef.current++;
     const normalized = ensureRecordDefaults(next);
     baselineRef.current = JSON.stringify(normalized);
+    jobDataRef.current = normalized;
     setJobData(normalized);
     setIsDirty(false);
+  };
+
+  /** Discards intake and document state belonging to the previous workspace. */
+  const clearJobArtifacts = () => {
+    workspaceSessionRef.current++;
+    setProvenance({});
+    setIntakeSession((previous) => previous + 1);
+    setDriveSuccessLink(undefined);
+    setSheetsSuccessLink(undefined);
+    setIsPreviewOpen(false);
+    setPreviewTitle('');
+    setPreviewDoc(null);
+    setPreviewBytes(null);
+    setPreviewSpans([]);
+    setIsPreviewLoading(false);
+    setIsPreviewRegenerating(false);
+    if (previewRegenTimerRef.current !== null) {
+      window.clearTimeout(previewRegenTimerRef.current);
+      previewRegenTimerRef.current = null;
+    }
   };
 
   // Offline-first sync engine: connectivity listeners, outbox flush, status.
   useEffect(() => initJobSync(), []);
   useEffect(() => subscribeSyncState(setSyncState), []);
+  useEffect(() => subscribeSession((next) => {
+    setCurrentUser(next);
+    if (!next) {
+      draftRestoredRef.current = false;
+      setWorkspaceReady(false);
+    }
+  }), []);
+  useEffect(() => {
+    if (!currentUser && !isDeveloperBypassEnabled()) return;
+    void readCachedJobSummaries().then(setSavedJobs).catch(() => {});
+  }, [syncState.lastSyncAt, currentUser]);
 
   // Autosave the workspace record (debounced) so a reload never loses work…
   useEffect(() => {
+    if (!workspaceReady || (!currentUser && !isDeveloperBypassEnabled())) return;
+    const serialized = JSON.stringify({ jobData, recordId });
+    if (serialized === lastDraftScheduledRef.current) return;
+    lastDraftScheduledRef.current = serialized;
     scheduleDraftSave(jobData, recordId);
-  }, [jobData, recordId]);
+  }, [jobData, recordId, workspaceReady, currentUser]);
 
-  // …and restore it once when the app starts.
+  // Restore after authentication, before autosave can publish the empty form.
   useEffect(() => {
+    if (!isAuthReady || draftRestoredRef.current) return;
+    if (!getCurrentUser() && !isDeveloperBypassEnabled()) return;
     let cancelled = false;
-    void restoreDraft().then((draft) => {
-      if (cancelled || !draft) return;
-      replaceJob(draft.job);
+    let restoredSnapshot = jobDataRef.current;
+    const apply = (draft: RestoredDraft) => {
+      if (cancelled || jobDataRef.current !== restoredSnapshot) return;
+      const normalized = ensureRecordDefaults(draft.job);
+      baselineRef.current = JSON.stringify(normalized);
+      restoredSnapshot = normalized;
+      jobDataRef.current = normalized;
+      lastDraftScheduledRef.current = JSON.stringify({ jobData: normalized, recordId: draft.recordId ?? draft.job.recordId });
+      setJobData(normalized);
       setRecordId(draft.recordId ?? draft.job.recordId);
-      showStatus('info', 'Restored your last workspace from this device.');
+      setWorkspaceReady(true);
+    };
+    void restoreDraft(apply).then((draft) => {
+      if (cancelled) return;
+      if (draft) apply(draft);
+      else lastDraftScheduledRef.current = JSON.stringify({ jobData: jobDataRef.current, recordId: undefined });
+      draftRestoredRef.current = true;
+      setWorkspaceReady(true);
+    }).catch((err) => {
+      if (!cancelled) { setWorkspaceReady(true); showStatus('error', err?.message || 'Could not restore the workspace draft.'); }
     });
     return () => {
       cancelled = true;
     };
-    // Restore once on mount; the workspace is autosaved from then on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isAuthReady, currentUser]);
 
   // Restore and verify any stored session before rendering the app.
   useEffect(() => {
@@ -195,15 +277,21 @@ export default function App() {
   }, []);
 
   const handleRefreshJobs = async () => {
+    const owner = getCurrentUser()?.email;
     setIsLoadingJobs(true);
     setJobListError(null);
     // Paint the cached list instantly, then reconcile with the server.
-    const cached = await readCachedJobSummaries();
-    if (cached.length) setSavedJobs(cached);
-    const result = await refreshJobs();
-    setSavedJobs(result.jobs);
-    setJobListError(result.error ?? null);
-    setIsLoadingJobs(false);
+    try {
+      const cached = await readCachedJobSummaries();
+      if (getCurrentUser()?.email !== owner) return;
+      if (cached.length) setSavedJobs(cached);
+      const result = await refreshJobs();
+      if (getCurrentUser()?.email !== owner) return;
+      setSavedJobs(result.jobs);
+      setJobListError(result.error ?? null);
+    } catch (err) {
+      setJobListError(err instanceof Error ? err.message : 'Could not load saved customers.');
+    } finally { if (getCurrentUser()?.email === owner) setIsLoadingJobs(false); }
   };
 
   // Load the saved-customer list as soon as the workspace becomes available.
@@ -227,12 +315,16 @@ export default function App() {
     if (tab === 'home') void handleRefreshJobs();
   };
 
+  const handleReviewField = (field: MissingJobField) => {
+    fieldToFocusRef.current = field.inputId;
+    setActiveTab(field.section);
+  };
+
   const handleAppSignIn = async (email: string, password: string) => {
     const user = await loginToDatabase(email, password);
     setCurrentUser(user);
     setDatabaseEmail(user.email);
     showStatus('success', `Signed in as ${user.name || user.email}.`);
-    await handleRefreshJobs();
   };
 
   const handleAppRegister = async (values: {
@@ -245,29 +337,44 @@ export default function App() {
     setCurrentUser(user);
     setDatabaseEmail(user.email);
     showStatus('success', `Account created. Welcome, ${user.name || user.email}.`);
-    await handleRefreshJobs();
   };
 
   const handleAppSignOut = async () => {
+    try { await flushDraftSave(); }
+    catch (err: any) { showStatus('error', err?.message || 'Could not save your draft before signing out.'); return; }
     await logoutFromDatabase();
     setCurrentUser(null);
     setDatabaseEmail(null);
     setSavedJobs([]);
     setRecordId(undefined);
+    replaceJob(createEmptyJob());
+    clearJobArtifacts();
+    draftRestoredRef.current = false;
+    lastDraftScheduledRef.current = '';
+    setWorkspaceReady(false);
     showStatus('info', 'Signed out.');
   };
 
   const handleSaveJob = async () => {
-    if (isSavingJob) return;
+    if (saveInProgressRef.current) return;
+    saveInProgressRef.current = true;
+    const snapshot = jobDataRef.current;
+    const generation = workspaceGenerationRef.current;
     setIsSavingJob(true);
     try {
-      const outcome = await saveJobOffline({ ...jobData, recordId: jobData.recordId ?? recordId });
-      setRecordId(outcome.recordId);
-      replaceJob(outcome.record);
+      const outcome = await saveJobOffline({ ...snapshot, recordId: snapshot.recordId ?? recordId });
+      // Never replace edits made while device persistence was in flight.
+      if (workspaceGenerationRef.current === generation && jobDataRef.current === snapshot) {
+        setRecordId(outcome.recordId);
+        replaceJob(outcome.record);
+      } else if (workspaceGenerationRef.current === generation) {
+        setRecordId(outcome.recordId);
+        setJobData(prev => ({ ...prev, recordId: outcome.recordId }));
+      }
       if (outcome.queued) {
         showStatus(
           'info',
-          `Job ${jobData.customer.jobNumber} saved on this device — it will sync when you're back online.`
+          `Job ${snapshot.customer.jobNumber || ''} saved on this device. ${navigator.onLine ? 'Syncing to the customer database.' : 'It will sync when the connection returns.'}`
         );
       } else {
         showStatus(
@@ -277,20 +384,30 @@ export default function App() {
             : `Updated job ${jobData.customer.jobNumber} in the customer database.`
         );
       }
-      if (activeTab === 'home') await handleRefreshJobs();
+      void readCachedJobSummaries().then(setSavedJobs).catch(() => {});
     } catch (err: any) {
       showStatus('error', err?.message || 'Could not save to the customer database.');
     } finally {
+      saveInProgressRef.current = false;
       setIsSavingJob(false);
     }
   };
 
   const handleLoadJob = async (id: string) => {
+    // Continue editing the open workspace without replacing its draft with a saved copy.
+    if (recordId === id) {
+      setActiveTab('customer');
+      return;
+    }
+    const request = ++jobLoadRequestRef.current;
+    const session = workspaceSessionRef.current;
     try {
       const { job, fromCache } = await loadJobOffline(id);
+      if (request !== jobLoadRequestRef.current || session !== workspaceSessionRef.current) return;
       replaceJob(job);
       setRecordId(job.recordId ?? id);
-      setProvenance({});
+      clearJobArtifacts();
+      setActiveTab('customer');
       const who = job.customer.customerName || 'record';
       const label = `(${job.customer.jobNumber || 'no job number'})`;
       showStatus(
@@ -298,6 +415,7 @@ export default function App() {
         fromCache ? `Opened ${who} ${label} from this device's saved copy.` : `Opened ${who} ${label}.`
       );
     } catch (err: any) {
+      if (request !== jobLoadRequestRef.current || session !== workspaceSessionRef.current) return;
       showStatus('error', err?.message || 'Could not open that saved job.');
     }
   };
@@ -327,50 +445,20 @@ export default function App() {
     });
   };
 
-  // Initialize auth
-  useEffect(() => {
-    const unsubscribe = initAuth(
-      (currentUser) => {
-        setUser(currentUser);
-      },
-      () => {
-        setUser(null);
-      }
-    );
-    return () => unsubscribe();
-  }, []);
-
-  const handleLogin = async () => {
-    setIsLoggingIn(true);
-    try {
-      const res = await googleSignIn();
-      if (res?.user) {
-        setUser(res.user);
-        showStatus('success', `Connected to Google as ${res.user.displayName || res.user.email}`);
-      }
-    } catch (err: any) {
-      console.error('Google Sign-in failed:', err);
-      showStatus('error', err.message || 'Failed to sign in with Google');
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    await logoutGoogle();
-    setUser(null);
-    showStatus('info', 'Disconnected from Google');
-  };
-
   const showStatus = (type: 'success' | 'error' | 'info', message: string) => {
     setStatusNotification({ type, message });
-    setTimeout(() => {
+    if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+    notificationTimerRef.current = setTimeout(() => {
       setStatusNotification(null);
     }, 5000);
   };
 
   // Recalculate Financials whenever RCV or Deductible changes
-  const updateFinancials = (rcvVal: number | '', dedVal: number | '') => {
+  const computeFinancialRecord = (
+    current: RestorationJobData,
+    rcvVal: number | '',
+    dedVal: number | ''
+  ): RestorationJobData => {
     const rcv = typeof rcvVal === 'number' && !isNaN(rcvVal) ? rcvVal : 0;
     const deductible = typeof dedVal === 'number' && !isNaN(dedVal) ? dedVal : 0;
 
@@ -379,10 +467,10 @@ export default function App() {
     const midProgressPayment = rcv * 0.25; // 25%
     const balancePayment = rcv * 0.25; // 25%
 
-    setJobData((prev) => ({
-      ...prev,
+    return {
+      ...current,
       financials: {
-        ...prev.financials,
+        ...current.financials,
         totalApprovedRcv: rcvVal,
         deductible: dedVal,
         netClaimValue,
@@ -391,10 +479,14 @@ export default function App() {
         balancePayment,
       },
       changeOrder: {
-        ...prev.changeOrder,
+        ...current.changeOrder,
         originalContractSum: rcvVal,
       },
-    }));
+    };
+  };
+
+  const updateFinancials = (rcvVal: number | '', dedVal: number | '') => {
+    setJobData((prev) => computeFinancialRecord(prev, rcvVal, dedVal));
   };
 
   // Field change handlers
@@ -454,19 +546,18 @@ export default function App() {
   };
 
   // Preview Document Handler
-  const handleOpenPreview = async (
-    title: string,
-    generator: () => Promise<Uint8Array>
-  ) => {
-    setPreviewTitle(title);
-    setPreviewGenerator(() => generator);
+  const handleOpenPreview = async (doc: JobDocument) => {
+    setPreviewTitle(doc.title);
+    setPreviewDoc(doc);
     setPreviewBytes(null);
+    setPreviewSpans([]);
     setIsPreviewOpen(true);
     setIsPreviewLoading(true);
 
     try {
-      const bytes = await generator();
+      const { bytes, spans } = await generateDocWithSpans(doc.generator, jobDataRef.current);
       setPreviewBytes(bytes);
+      setPreviewSpans(spans);
     } catch (err: any) {
       console.error('Failed generating preview:', err);
       showStatus('error', 'Error generating PDF preview');
@@ -475,39 +566,180 @@ export default function App() {
     }
   };
 
+  /** Debounced live regeneration after a click-to-edit change in the preview. */
+  const regeneratePreview = (doc: JobDocument, data: RestorationJobData) => {
+    if (previewRegenTimerRef.current !== null) {
+      window.clearTimeout(previewRegenTimerRef.current);
+    }
+    previewRegenTimerRef.current = window.setTimeout(async () => {
+      setIsPreviewRegenerating(true);
+      try {
+        const { bytes, spans } = await generateDocWithSpans(doc.generator, data);
+        setPreviewBytes(bytes);
+        setPreviewSpans(spans);
+      } catch (err: any) {
+        console.error('Failed regenerating preview:', err);
+        showStatus('error', 'Error refreshing PDF preview');
+      } finally {
+        setIsPreviewRegenerating(false);
+      }
+    }, 300);
+  };
+
+  // Fields whose PDF editor widgets commit 'Yes'/'No' instead of raw booleans.
+  const BOOLEAN_PDF_FIELDS = new Set<string>([
+    ...CHECKLIST_BOXES.map(item => `checklist.${item.key}`),
+    'mortgage.hasMortgage',
+    'changeOrder.isInsuranceRelated',
+    'checklist.isSelfPay',
+    'checklist.isProgramClaim',
+    'checklist.hasCheckBeenSent',
+    'checklist.isDepreciationWithheld',
+  ]);
+
+  // Fields stored as number | '' that the PDF editor edits as free text.
+  const NUMERIC_PDF_FIELDS = new Set<string>([
+    'changeOrder.originalContractSum',
+    'changeOrder.netPreviousChanges',
+    'changeOrder.changeAmount',
+    'changeOrder.addedDays',
+    'checklist.depreciationAmount',
+  ]);
+
+  const coercePdfFieldValue = (field: string, value: string): string | number | boolean => {
+    if (BOOLEAN_PDF_FIELDS.has(field)) {
+      const lower = value.toLowerCase();
+      return lower === 'yes' ? true : lower === 'no' ? false : value;
+    }
+    if (NUMERIC_PDF_FIELDS.has(field)) {
+      if (value === '') return '';
+      const n = Number(value);
+      return Number.isNaN(n) ? '' : n;
+    }
+    return value;
+  };
+
+  /** Routes an edit from the click-to-edit PDF preview into the job record. */
+  const handlePdfFieldChange = (field: string, value: string) => {
+    const dot = field.indexOf('.');
+    if (dot === -1) return;
+    const section = field.slice(0, dot);
+    const fieldName = field.slice(dot + 1);
+
+    const current = jobDataRef.current;
+    let next: RestorationJobData;
+
+    if (section === 'financials') {
+      if (fieldName === 'totalApprovedRcv' || fieldName === 'deductible') {
+        const num = value === '' ? '' : Number(value);
+        const parsed = typeof num === 'number' && !Number.isNaN(num) ? num : '';
+        next = computeFinancialRecord(
+          current,
+          fieldName === 'totalApprovedRcv' ? parsed : current.financials.totalApprovedRcv,
+          fieldName === 'deductible' ? parsed : current.financials.deductible
+        );
+      } else {
+        // commenceDays / completeDays are day counts.
+        next = {
+          ...current,
+          financials: {
+            ...current.financials,
+            [fieldName]: value === '' ? 0 : Number(value) || 0,
+          },
+        };
+      }
+    } else if (section === 'branch') {
+      next = { ...current, branch: { ...current.branch, [fieldName]: value } };
+    } else if (
+      section === 'customer' ||
+      section === 'insurance' ||
+      section === 'team' ||
+      section === 'mortgage' ||
+      section === 'changeOrder' ||
+      section === 'checklist' ||
+      section === 'productionNotes'
+    ) {
+      const nextRaw: any = { ...current };
+      nextRaw[section] = {
+        ...(current as any)[section],
+        [fieldName]: coercePdfFieldValue(field, value),
+      };
+      next = nextRaw as RestorationJobData;
+    } else {
+      return;
+    }
+
+    jobDataRef.current = next;
+    setJobData(next);
+
+    if (previewDoc) {
+      regeneratePreview(previewDoc, next);
+    }
+  };
+
   const handlePreviewDownload = async () => {
-    if (!previewGenerator) return;
+    if (!previewDoc) return;
     try {
-      const bytes = await previewGenerator();
-      const filename = `${previewTitle.replace(/\s+/g, '_')}.pdf`;
-      downloadPdf(bytes, filename);
+      const bytes = await previewDoc.generator(jobDataRef.current);
+      downloadPdf(bytes, previewDoc.buildFileName(jobDataRef.current));
     } catch (err) {
       console.error('Download error:', err);
     }
   };
 
-  // Save to Google Drive with Mandatory User Confirmation
-  const handleSaveToDrive = () => {
-    if (!user) {
-      handleLogin();
-      return;
-    }
-
-    const fileName = `${jobData.customer.jobNumber}_Complete_Packet_${jobData.customer.customerName}.pdf`;
+  // Save the CURRENTLY previewed document to Google Drive (per-document upload).
+  const handleSaveDocToDrive = () => {
+    if (!previewDoc) return;
+    const doc = previewDoc;
+    const snapshot = jobDataRef.current;
+    const session = workspaceSessionRef.current;
+    const fileName = doc.buildFileName(snapshot);
 
     setConfirmDialog({
       isOpen: true,
-      title: 'Save Packet to Google Drive?',
-      message: `This will generate the complete 9-page Hays + Sons restoration packet for Job #${jobData.customer.jobNumber} (${jobData.customer.customerName}) and upload it to your Google Drive in the "Hays & Sons Restoration" folder.`,
+      title: `Save ${doc.title} to Google Drive?`,
+      message: `This will generate ${doc.title} for Job #${snapshot.customer.jobNumber} and save it in the shared Google Drive folder managed by the app's Google Apps Script backend.`,
       confirmLabel: 'Upload to Drive',
       action: async () => {
         setIsDriveLoading(true);
         try {
-          const pdfBytes = await generateCompletePacket(jobData);
+          const pdfBytes = await doc.generator(snapshot);
           const result = await uploadPdfToGoogleDrive(pdfBytes, fileName);
+          if (session !== workspaceSessionRef.current) return;
           setDriveSuccessLink(result.webViewLink);
-          showStatus('success', `Saved "${fileName}" to your Google Drive!`);
+          showStatus('success', `Saved "${fileName}" to shared Google Drive storage.`);
         } catch (err: any) {
+          if (session !== workspaceSessionRef.current) return;
+          console.error('Drive save error:', err);
+          showStatus('error', err.message || 'Failed to save to Google Drive');
+        } finally {
+          setIsDriveLoading(false);
+        }
+      },
+    });
+  };
+
+  // Save to Google Drive with Mandatory User Confirmation
+  const handleSaveToDrive = () => {
+    const snapshot = jobDataRef.current;
+    const session = workspaceSessionRef.current;
+    const fileName = `${snapshot.customer.jobNumber}_Complete_Packet_${snapshot.customer.customerName}.pdf`;
+
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Save Packet to Google Drive?',
+      message: `This will generate the complete Hays + Sons restoration packet for Job #${snapshot.customer.jobNumber} (${snapshot.customer.customerName}) and save it in the shared Google Drive folder managed by the app's Google Apps Script backend.`,
+      confirmLabel: 'Upload to Drive',
+      action: async () => {
+        setIsDriveLoading(true);
+        try {
+          const pdfBytes = await generateCompletePacket(snapshot);
+          const result = await uploadPdfToGoogleDrive(pdfBytes, fileName);
+          if (session !== workspaceSessionRef.current) return;
+          setDriveSuccessLink(result.webViewLink);
+          showStatus('success', `Saved "${fileName}" to shared Google Drive storage.`);
+        } catch (err: any) {
+          if (session !== workspaceSessionRef.current) return;
           console.error('Drive save error:', err);
           showStatus('error', err.message || 'Failed to save to Google Drive');
         } finally {
@@ -519,23 +751,22 @@ export default function App() {
 
   // Sync to Google Sheets with Mandatory User Confirmation
   const handleSyncToSheets = () => {
-    if (!user) {
-      handleLogin();
-      return;
-    }
-
+    const snapshot = jobDataRef.current;
+    const session = workspaceSessionRef.current;
     setConfirmDialog({
       isOpen: true,
       title: 'Sync Job to Google Sheets?',
-      message: `This will append a new row for Job #${jobData.customer.jobNumber} (${jobData.customer.customerName}) to your "Hays & Sons - Restoration Job Log" Google Spreadsheet, recording all financial figures and team assignments.`,
+      message: `This will save Job #${snapshot.customer.jobNumber} (${snapshot.customer.customerName}), including its financial figures and team assignments, to the app's shared Google Apps Script database. An existing job is updated in its current row.`,
       confirmLabel: 'Sync to Sheets',
       action: async () => {
         setIsSheetsLoading(true);
         try {
-          const result = await syncJobToGoogleSheets(jobData);
+          const result = await syncJobToGoogleSheets(snapshot);
+          if (session !== workspaceSessionRef.current) return;
           setSheetsSuccessLink(result.spreadsheetUrl);
-          showStatus('success', `Logged Job #${jobData.customer.jobNumber} to Google Sheets!`);
+          showStatus('success', `Saved Job #${snapshot.customer.jobNumber} to the shared Google Sheets database.`);
         } catch (err: any) {
+          if (session !== workspaceSessionRef.current) return;
           console.error('Sheets sync error:', err);
           showStatus('error', err.message || 'Failed to sync to Google Sheets');
         } finally {
@@ -551,12 +782,24 @@ export default function App() {
       isOpen: true,
       title: 'Start New Restoration Job?',
       message:
-        'This will clear all current customer, insurance, and claim fields back to default empty values. Make sure you have downloaded or saved any needed PDF documents first.',
+        'This will remove the uploaded intake file, pasted text, and analysis results, and reset all job fields to their defaults. Make sure you have downloaded or saved any needed PDF documents first.',
       confirmLabel: 'Clear All Fields',
       isDanger: true,
       action: async () => {
-        replaceJob(createEmptyJob());
+        const blankJob = createEmptyJob();
+        replaceJob(blankJob);
         setRecordId(undefined);
+        clearJobArtifacts();
+        setActiveTab('intake');
+        // Persist the cleared workspace immediately instead of waiting for autosave.
+        lastDraftScheduledRef.current = JSON.stringify({ jobData: blankJob, recordId: undefined });
+        scheduleDraftSave(blankJob);
+        try {
+          await flushDraftSave();
+        } catch (err: any) {
+          showStatus('error', err?.message || 'Could not save the cleared workspace on this device.');
+          return;
+        }
         showStatus('info', 'New blank job created — not yet saved to the database.');
       },
     });
@@ -569,6 +812,15 @@ export default function App() {
     const who = newJob.customer.customerName || 'new intake';
     showStatus('success', `Master Job Record updated from intake (${who}) - all production documents refreshed.`);
   };
+
+  const missingFieldCounts: Partial<Record<WorkspaceTab, number>> = {};
+  for (const field of getMissingJobFields(jobData)) {
+    missingFieldCounts[field.section] = (missingFieldCounts[field.section] ?? 0) + 1;
+  }
+  const jobSections = WORKSPACE_SECTIONS.filter((section) => section.id !== 'home' && section.id !== 'customerImport');
+  const sectionIndex = jobSections.findIndex((section) => section.id === activeTab);
+  const previousSection = sectionIndex > 0 ? jobSections[sectionIndex - 1] : undefined;
+  const nextSection = sectionIndex >= 0 ? jobSections[sectionIndex + 1] : undefined;
 
   // Auth gate — the workspace is only reachable once signed in (or in developer mode).
   if (!isAuthReady) {
@@ -592,16 +844,18 @@ export default function App() {
     );
   }
 
+  if (!workspaceReady) return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center gap-2 text-sm text-slate-500" role="status">
+      <Loader2 className="w-5 h-5 animate-spin" /> Restoring your workspace…
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col">
       {/* Top Navbar */}
       <Navbar
         jobNumber={jobData.customer.jobNumber}
         customerName={jobData.customer.customerName}
-        user={user}
-        isLoggingIn={isLoggingIn}
-        onLogin={handleLogin}
-        onLogout={handleLogout}
         onReset={handleReset}
         isDirty={isDirty}
         isSavingJob={isSavingJob}
@@ -614,12 +868,14 @@ export default function App() {
         onSignOut={handleAppSignOut}
         pendingSyncCount={syncState.pendingCount}
         isOffline={!syncState.online}
+        draftStatus={syncState.draftStatus}
+        isSyncing={syncState.syncing}
       />
 
       {/* Status toast */}
       {statusNotification && (
-        <div className="fixed top-20 right-5 z-50 animate-in slide-in-from-top-2 duration-200">
-          <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-lg max-w-sm">
+        <div className="fixed top-[calc(5rem+env(safe-area-inset-top))] inset-x-4 sm:inset-x-auto sm:right-5 z-50 animate-in slide-in-from-top-2 duration-200">
+          <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-lg w-full sm:w-auto sm:max-w-sm">
             <span
               className={`mt-1 w-2 h-2 rounded-full shrink-0 ${
                 statusNotification.type === 'success'
@@ -637,12 +893,19 @@ export default function App() {
       )}
 
       {/* Main */}
-      <main className="flex-1 w-full max-w-[1400px] mx-auto px-5 py-6">
+      <main className="flex-1 w-full min-w-0 max-w-[1400px] mx-auto px-3 py-4 sm:px-5 sm:py-6">
+        {activeTab !== 'home' && (
+          <div className="mb-4 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm lg:hidden" aria-label="Current job">
+            <span className="font-semibold text-slate-900">{jobData.customer.customerName || 'New job'}</span>
+            <span className="text-slate-500">· {jobData.customer.jobNumber}</span>
+          </div>
+        )}
         {/* Compact section menu below the lg breakpoint */}
         <MobileSectionNav
           activeTab={activeTab}
           onNavigate={handleNavigate}
           savedJobsCount={savedJobs.length}
+          missingFieldCounts={missingFieldCounts}
         />
 
         <div className="flex items-start gap-6">
@@ -654,15 +917,19 @@ export default function App() {
             customerName={jobData.customer.customerName}
             jobNumber={jobData.customer.jobNumber}
             isDirty={isDirty}
+            missingFieldCounts={missingFieldCounts}
           />
 
           {/* Section workspace */}
-          <div className="flex-1 min-w-0 space-y-6">
-            {/* The intake parser always sits at the top — paste an intake to refresh every section. */}
+          <div className="flex-1 min-w-0 space-y-4 sm:space-y-6">
+            {/* Keep intake mounted across sections so navigation preserves pending analysis. */}
             <IntakeParserCard
+              key={intakeSession}
               onApplyIntake={handleApplyIntake}
               currentJob={jobData}
               currentProvenance={provenance}
+              isExpanded={activeTab === 'intake'}
+              onExpand={() => handleNavigate('intake')}
             />
 
             {activeTab === 'home' && (
@@ -679,6 +946,16 @@ export default function App() {
                 onRefresh={handleRefreshJobs}
                 onOpenJob={handleLoadJob}
                 onDeleteJob={handleDeleteJob}
+                onNewJob={handleReset}
+                onImportCustomers={() => handleNavigate('customerImport')}
+              />
+            )}
+
+            {activeTab === 'customerImport' && (
+              <CustomerImportPage
+                key={currentUser?.email || 'developer'}
+                canImport={isDeveloperBypassEnabled() || currentUser?.role === 'admin' || currentUser?.role === 'editor'}
+                onOpenIntake={() => handleNavigate('intake')}
               />
             )}
 
@@ -713,21 +990,22 @@ export default function App() {
             )}
 
             {activeTab === 'team' && (
-              <>
-                <SectionTeam
-                  data={jobData.team}
-                  branch={jobData.branch}
-                  jobData={jobData}
-                  onPreview={handleOpenPreview}
-                  onChange={handleTeamChange}
-                />
-                <SectionMortgage
-                  data={jobData.mortgage}
-                  jobData={jobData}
-                  onPreview={handleOpenPreview}
-                  onChange={handleMortgageChange}
-                />
-              </>
+              <SectionTeam
+                data={jobData.team}
+                branch={jobData.branch}
+                jobData={jobData}
+                onPreview={handleOpenPreview}
+                onChange={handleTeamChange}
+              />
+            )}
+
+            {activeTab === 'mortgage' && (
+              <SectionMortgage
+                data={jobData.mortgage}
+                jobData={jobData}
+                onPreview={handleOpenPreview}
+                onChange={handleMortgageChange}
+              />
             )}
 
             {activeTab === 'changeOrder' && (
@@ -768,7 +1046,25 @@ export default function App() {
                 isSheetsLoading={isSheetsLoading}
                 driveSuccessLink={driveSuccessLink}
                 sheetsSuccessLink={sheetsSuccessLink}
+                onReviewField={handleReviewField}
               />
+            )}
+
+            {activeTab !== 'home' && activeTab !== 'customerImport' && (
+              <nav className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4" aria-label="Job section actions">
+                {previousSection ? (
+                  <button type="button" onClick={() => handleNavigate(previousSection.id)} className="inline-flex min-h-10 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 hover:bg-white hover:text-slate-900">
+                    <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+                    {previousSection.label}
+                  </button>
+                ) : <span className="text-sm text-slate-500">Upload an intake or enter the job details manually.</span>}
+                {nextSection && (
+                  <button type="button" onClick={() => handleNavigate(nextSection.id)} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:border-slate-400 hover:bg-slate-50">
+                    Next: {nextSection.label}
+                    <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                )}
+              </nav>
             )}
           </div>
         </div>
@@ -776,7 +1072,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="border-t border-slate-200 mt-auto">
-        <div className="max-w-[1400px] mx-auto px-5 py-6 flex flex-col sm:flex-row items-center justify-between gap-2 text-[12px] text-slate-500">
+        <div className="max-w-[1400px] mx-auto px-3 sm:px-5 py-6 flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-left text-[12px] text-slate-500">
           <p className="font-medium text-slate-600">
             Hays &amp; Sons Complete Restoration — Fort Wayne Division
           </p>
@@ -784,17 +1080,31 @@ export default function App() {
         </div>
       </footer>
 
-      {/* PDF In-App Preview Modal */}
+      {/* PDF In-App Preview Modal (click-to-edit) */}
       <PdfPreviewModal
         isOpen={isPreviewOpen}
         title={previewTitle}
         pdfBytes={previewBytes}
         isLoading={isPreviewLoading}
+        isRegenerating={isPreviewRegenerating}
         onClose={() => {
           setIsPreviewOpen(false);
           setPreviewBytes(null);
+          setPreviewDoc(null);
+          setPreviewSpans([]);
+          if (previewRegenTimerRef.current !== null) {
+            window.clearTimeout(previewRegenTimerRef.current);
+            previewRegenTimerRef.current = null;
+          }
         }}
         onDownload={handlePreviewDownload}
+        jobData={jobData}
+        editableFields={previewDoc ? getPdfFieldSchema(previewDoc.id) : []}
+        spans={previewSpans}
+        onFieldChange={handlePdfFieldChange}
+        onSaveToDrive={previewDoc ? handleSaveDocToDrive : undefined}
+        isDriveLoading={isDriveLoading}
+        driveSuccessLink={driveSuccessLink}
       />
 
       {/* Workspace / Destructive Confirmation Modal */}

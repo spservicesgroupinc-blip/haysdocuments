@@ -34,6 +34,8 @@ export interface BrandLogoProps {
   withWordmark?: boolean;
   /** Optional sub-label stacked under the wordmark. */
   sublabel?: string;
+  /** Extra classes for the sub-label line (e.g. hide it below a breakpoint). */
+  sublabelClassName?: string;
   /** Use on dark surfaces: the plus and wordmark switch to white. */
   tone?: 'default' | 'inverted';
   className?: string;
@@ -46,6 +48,7 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
   size = 34,
   withWordmark = true,
   sublabel,
+  sublabelClassName = '',
   tone = 'default',
   className = '',
 }) => {
@@ -88,7 +91,10 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
             {BRAND_NAME}
           </p>
           {sublabel ? (
-            <p className="truncate" style={{ fontSize: sublabelSize, color: sublabelColor }}>
+            <p
+              className={`truncate ${sublabelClassName}`}
+              style={{ fontSize: sublabelSize, color: sublabelColor }}
+            >
               {sublabel}
             </p>
           ) : null}

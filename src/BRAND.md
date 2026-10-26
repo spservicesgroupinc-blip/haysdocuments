@@ -130,12 +130,16 @@ floating layers, which is what keeps the interface from reading as decorative.
 
 - **Canvas** — max-width 1400px, 20px gutters, `slate-50` background
 - **Header** — sticky, 64px tall, white at 95% opacity with backdrop blur, 1px bottom border
-- **Header order** — brand, job-context chip, Customers, primary Save, account menu
-- **Navigation** — persistent side menu, one entry per section, with a red-tinted active pill; below
-  the `lg` breakpoint it collapses into a scrollable pill strip. The intake parser card always stays
-  at the top of the workspace, above the selected section.
+- **Header order** — brand, job-context chip, Jobs, New job, primary Save job, account menu
+- **Navigation** — grouped side menu for Workspace, Job details, Production, and Documents, with a
+  red-tinted active item and counts for missing required fields. Tablets use a scrollable strip;
+  phones use a grouped section picker. Team and Mortgage have separate pages.
+- **Intake** — the dedicated Intake page shows upload, paste, and analysis controls. Other sections
+  show a compact source summary when an intake exists. Navigation preserves in-progress analysis.
+- **Job library** — searchable jobs with recent, customer, and job-number sorting. Continue editing
+  opens the current workspace without replacing its draft with an older saved copy.
 - **Content** — single column of cards on a 24px vertical rhythm
-- **Control heights** — 36px in the header, 40px for form inputs
+- **Control heights** — 44px for navigation and header actions, 40px for desktop form inputs
 
 ---
 
@@ -177,15 +181,12 @@ Contrast ratios measured against white:
 
 ## 9. Outstanding gaps
 
-1. **No real logo asset** — the mark is text in a coloured box. No SVG, no favicon (`index.html` has
-   no `icon` link), and no usage guidance for print or PDF.
-2. **Three reds** in circulation — see section 2.
-3. **Type scale is approximately 85% unified.** The legacy section components (`SectionInsurance`,
+1. **Type scale is approximately 85% unified.** The legacy section components (`SectionInsurance`,
    `SectionTeam`, `SectionMortgage`, `SectionChangeOrder`, `SectionChecklist`) still use `text-sm`
    (14px) inputs and a few `text-[10px]` labels, while `Navbar`, `FinancialSummaryCard`,
    `SectionCustomer` and `DocumentGenerationPanel` use the 13px / 12px scale.
-4. **No named type tokens** — sizes are inline arbitrary values.
-5. **System font only** — Windows and macOS render the product differently. Consider a licensed or
+2. **No named type tokens** — sizes are inline arbitrary values.
+3. **System font only** — Windows and macOS render the product differently. Consider a licensed or
    open typeface such as Inter if cross-platform consistency matters.
-6. **White on red** is the only place brand red carries small text; verify in print, where `#DC2626`
+4. **White on red** is the only place brand red carries small text; verify in print, where `#DC2626`
    can shift noticeably.

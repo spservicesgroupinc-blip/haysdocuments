@@ -30,6 +30,22 @@ if (files.length === 0) {
   process.exit(1);
 }
 
+// The backend ships as ONE pasteable file. A leftover split (the six-file
+// fallback) or a stray copy here would silently inflate the line count this
+// check prints - and that count is what a paste gets verified against in the
+// Apps Script editor. Worse, pasting a split file on its own makes helpers
+// defined in its siblings (`currentSchemaVersion_`, for one) vanish, which
+// surfaces at run time as "X is not defined". Refuse to guess.
+if (files.length > 1) {
+  console.error(`Expected exactly one .gs file in ${dir}, found ${files.length}:`);
+  for (const name of files) console.error(`  ${name}`);
+  console.error(
+    '\nsrc/apps-script/ must contain only Code.gs. Use src/apps-script/paste-chunks/ ' +
+      '(npm run apps:chunks) to get past the editor\'s paste-size limit instead of splitting the file.',
+  );
+  process.exit(1);
+}
+
 interface Finding {
   file: string;
   line: number;

@@ -34,7 +34,7 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
   const newContractTotal = origSum + prevChanges + currentDelta;
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5">
+    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-5 pb-4 border-b border-slate-100">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-slate-100 text-slate-500">
@@ -49,7 +49,7 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
         </div>
 
         {/* Insurance vs Non-Insurance Selection */}
-        <div className="flex items-center space-x-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200">
           <button
             type="button"
             onClick={() => onChange('isInsuranceRelated', true)}
@@ -158,7 +158,7 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
         </div>
 
         {/* Summary Mini Bar */}
-        <div className="sm:col-span-3 bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="sm:col-span-2 lg:col-span-3 bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
           <div>
             <span className="text-slate-400 block text-[10px]">Orig Contract Sum:</span>
             <span className="font-semibold text-slate-800">{formatCurrency(origSum)}</span>

@@ -9,6 +9,9 @@
  *    branch on the JSON envelope's `ok` field rather than `res.ok`.
  */
 import { RestorationJobData } from '../types/jobData';
+import { DatabaseError, normalizeDatabaseUrl, requestDatabase } from './appsScriptTransport';
+import { APPS_SCRIPT_URL } from '../config/appsScript';
+export { DatabaseError } from './appsScriptTransport';
 
 /** Lightweight row used by the job library list (no full record). */
 export interface JobSummary {
@@ -31,31 +34,9 @@ export interface JobSummary {
   record?: RestorationJobData;
 }
 
-interface Envelope<T> {
-  ok: boolean;
-  data?: T;
-  error?: string;
-  code?: string;
-  schemaVersion?: number;
-}
-
-/** Error carrying the backend's machine-readable code. */
-export class DatabaseError extends Error {
-  readonly code: string;
-
-  constructor(message: string, code = 'unknown') {
-    super(message);
-    this.name = 'DatabaseError';
-    this.code = code;
-  }
-}
-
-const REQUEST_TIMEOUT_MS = 30000;
-
-/** The configured Apps Script Web App URL, or null when not set up yet. */
+/** The Apps Script deployment bundled into the app. */
 export function getDatabaseUrl(): string | null {
-  const url = (import.meta.env.VITE_APPS_SCRIPT_URL as string | undefined)?.trim();
-  return url && /^https:\/\/script\.google\.com\/macros\/s\/.+\/exec/.test(url) ? url : null;
+  return normalizeDatabaseUrl(APPS_SCRIPT_URL);
 }
 
 export function isDatabaseConfigured(): boolean {
@@ -100,13 +81,19 @@ interface StoredSession {
 const SESSION_STORAGE_KEY = 'hays.db.session';
 
 let currentSession: StoredSession | null = null;
+const sessionListeners = new Set<(user: AppUser | null) => void>();
+
+export function subscribeSession(listener: (user: AppUser | null) => void): () => void {
+  sessionListeners.add(listener);
+  return () => { sessionListeners.delete(listener); };
+}
 
 function readStoredSession(): StoredSession | null {
   try {
     const raw = localStorage.getItem(SESSION_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as StoredSession;
-    if (!parsed || !parsed.token || !parsed.expiresAt) return null;
+    if (!parsed || !parsed.token || !parsed.user?.email || !Number.isFinite(Date.parse(parsed.expiresAt))) return null;
     if (new Date(parsed.expiresAt).getTime() <= Date.now()) {
       localStorage.removeItem(SESSION_STORAGE_KEY);
       return null;
@@ -125,6 +112,7 @@ function writeStoredSession(session: StoredSession | null) {
   } catch {
     /* storage unavailable (private mode) — memory only */
   }
+  for (const listener of sessionListeners) listener(session?.user ?? null);
 }
 
 // Restore eagerly so a page reload keeps the user signed in.
@@ -265,13 +253,13 @@ export async function verifySession(): Promise<AppUser | null> {
   };
 
   try {
-    const result = await callApi<{ user: AppUser }>('session', { sessionToken: session.token });
+    const result = await callApi<{ user: AppUser }>('checkSession', { sessionToken: session.token });
     return adopt(result.user);
   } catch (err) {
     if (err instanceof DatabaseError && err.code === 'unknown_action') {
-      // Deployments that expose `checkSession` instead of `session`.
+      // Older deployments may expose `session` instead.
       try {
-        const result = await callApi<{ user: AppUser }>('checkSession', {
+        const result = await callApi<{ user: AppUser }>('session', {
           sessionToken: session.token,
         });
         return adopt(result.user);
@@ -297,8 +285,8 @@ export async function verifySession(): Promise<AppUser | null> {
  */
 export async function acquireAuthContext(): Promise<AuthContext> {
   const secret = getDevSharedSecret();
-  if (secret) return { secret };
-  if (currentSession) return { sessionToken: currentSession.token };
+  if (secret) return { sharedSecret: secret };
+  if (getCurrentUser() && currentSession) return { sessionToken: currentSession.token };
   throw new DatabaseError('You are signed out. Please sign in again.', 'no_session');
 }
 
@@ -308,59 +296,38 @@ export function isConfigurationError(err: unknown): boolean {
 }
 
 /**
+ * True when the deployment predates an action the client just called, i.e. the
+ * script needs to be redeployed with the latest Code.gs.
+ */
+export function isMissingActionError(err: unknown): boolean {
+  return err instanceof DatabaseError && err.code === 'unknown_action';
+}
+
+/**
  * Sends one request to the backend and unwraps the JSON envelope.
  * Throws {@link DatabaseError} on any application-level failure.
  */
-async function callApi<T>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
+async function callApi<T>(action: string, payload: Record<string, unknown> = {}, timeoutMs = 30000): Promise<T> {
   const url = getDatabaseUrl();
   if (!url) {
     throw new DatabaseError(
-      'The customer database is not configured. Set VITE_APPS_SCRIPT_URL to your Apps Script /exec URL.',
+      'The bundled Apps Script deployment URL is invalid. Update src/config/appsScript.ts and rebuild the app.',
       'not_configured'
     );
   }
 
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-  let response: Response;
   try {
-    response = await fetch(url, {
-      method: 'POST',
-      // Must stay text/plain to avoid a CORS preflight that Apps Script cannot answer.
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action, ...payload }),
-      redirect: 'follow',
-      signal: controller.signal,
-    });
-  } catch (err: any) {
-    if (err?.name === 'AbortError') {
-      throw new DatabaseError('The database request timed out. Please try again.', 'timeout');
-    }
-    throw new DatabaseError(
-      'Could not reach the customer database. Check your connection and that the web app is deployed.',
-      'network_error'
-    );
-  } finally {
-    window.clearTimeout(timer);
+    return await requestDatabase<T>(url, action, payload, timeoutMs);
+  } catch (err) {
+    if (err instanceof DatabaseError && ['session_expired', 'unauthorized', 'unauthenticated'].includes(err.code)
+      && payload.sessionToken && payload.sessionToken === currentSession?.token) writeStoredSession(null);
+    throw err;
   }
+}
 
-  const text = await response.text();
-  let envelope: Envelope<T>;
-  try {
-    envelope = JSON.parse(text) as Envelope<T>;
-  } catch {
-    throw new DatabaseError(
-      'The database returned an unreadable response. The Apps Script deployment may need to be redeployed.',
-      'bad_response'
-    );
-  }
-
-  if (!envelope.ok) {
-    throw new DatabaseError(envelope.error || 'The database rejected the request.', envelope.code || 'unknown');
-  }
-
-  return envelope.data as T;
+/** All document and intake operations use the same Apps Script session as job saves. */
+export async function callAuthenticatedAppsScript<T>(action: string, payload: Record<string, unknown> = {}, timeoutMs = 30000): Promise<T> {
+  return callApi<T>(action, { ...payload, ...await acquireAuthContext() }, timeoutMs);
 }
 
 /** Unauthenticated liveness check. */
@@ -384,6 +351,11 @@ export async function saveJob(
   job: RestorationJobData
 ): Promise<{ record: RestorationJobData; created: boolean; recordId: string }> {
   const data = await callApi<any>('saveJob', { ...auth, job });
+  const acknowledged = data?.record ?? data;
+  if (!acknowledged || typeof acknowledged !== 'object' || !acknowledged.recordId
+    || acknowledged.recordId !== job.recordId) {
+    throw new DatabaseError('The database did not acknowledge this job. Your save remains on this device.', 'bad_response');
+  }
   if (data && typeof data === 'object' && data.record) {
     return data as { record: RestorationJobData; created: boolean; recordId: string };
   }
@@ -399,6 +371,9 @@ export async function listJobs(
   options: { includeDeleted?: boolean; limit?: number; fullRecords?: boolean } = {}
 ): Promise<{ jobs: JobSummary[]; count: number }> {
   const data = await callApi<any>('listJobs', { ...auth, ...options });
+  if (!Array.isArray(data) && !Array.isArray(data?.jobs)) {
+    throw new DatabaseError('The database returned an unreadable customer list.', 'bad_response');
+  }
   const jobs: JobSummary[] = Array.isArray(data) ? data : Array.isArray(data?.jobs) ? data.jobs : [];
   return { jobs, count: typeof data?.count === 'number' ? data.count : jobs.length };
 }
@@ -460,4 +435,55 @@ export async function searchJobs(
       : jobs;
     return { jobs: matches, count: matches.length, query };
   }
+}
+
+// ---- shared workspace draft ----------------------------------------------
+
+/**
+ * The record the team is currently editing, as stored in the Apps Script
+ * database. There is one shared draft, so in-progress work is never stranded in
+ * a single browser: it survives a cleared profile, a new device and a different
+ * sign-in.
+ */
+export interface ServerDraft {
+  job: RestorationJobData;
+  recordId: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+/** What the client sends when autosaving the workspace. */
+export interface DraftPayload {
+  job: RestorationJobData;
+  recordId?: string;
+  /** Client clock at the moment of the edit, used to resolve local-vs-server. */
+  savedAt?: number;
+}
+
+/** Stores the shared workspace draft. Throws {@link DatabaseError} on failure. */
+export async function saveDraft(auth: AuthContext, draft: DraftPayload): Promise<ServerDraft> {
+  const data = await callApi<any>('saveDraft', { ...auth, draft });
+  if (!data?.job || typeof data.job !== 'object' || typeof data.updatedAt !== 'string') {
+    throw new DatabaseError('The database did not acknowledge your draft. It remains saved on this device.', 'bad_response');
+  }
+  const job = (data && typeof data === 'object' && data.job ? data.job : draft.job) as RestorationJobData;
+  return {
+    job,
+    recordId: typeof data?.recordId === 'string' ? data.recordId : draft.recordId ?? job.recordId ?? '',
+    updatedAt: typeof data?.updatedAt === 'string' ? data.updatedAt : new Date().toISOString(),
+    updatedBy: typeof data?.updatedBy === 'string' ? data.updatedBy : '',
+  };
+}
+
+/** Reads the shared workspace draft. Returns null when the workspace is empty. */
+export async function fetchDraft(auth: AuthContext): Promise<ServerDraft | null> {
+  const data = await callApi<any>('getDraft', { ...auth });
+  const draft = data && typeof data === 'object' && data.draft ? data.draft : data;
+  if (!draft || typeof draft !== 'object' || !draft.job) return null;
+  return {
+    job: draft.job as RestorationJobData,
+    recordId: typeof draft.recordId === 'string' ? draft.recordId : '',
+    updatedAt: typeof draft.updatedAt === 'string' ? draft.updatedAt : '',
+    updatedBy: typeof draft.updatedBy === 'string' ? draft.updatedBy : '',
+  };
 }

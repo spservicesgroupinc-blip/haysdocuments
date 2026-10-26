@@ -26,7 +26,7 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
-      <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
+      <div className="bg-white rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-4 sm:p-6 shadow-2xl border border-slate-200">
         <div className="flex items-start space-x-3">
           <div
             className={`p-2 rounded-xl shrink-0 ${
@@ -41,7 +41,7 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center justify-end space-x-2 mt-6 pt-4 border-t border-slate-100">
+        <div className="flex flex-wrap items-center justify-end gap-2 mt-6 pt-4 border-t border-slate-100">
           <button
             type="button"
             onClick={onCancel}

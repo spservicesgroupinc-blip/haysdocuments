@@ -28,17 +28,19 @@ import {
   downloadPdf,
   formatCurrency,
 } from '../services/pdfService';
-import { isDesktop } from '../services/desktopBridge';
+import { PdfPreviewRequest } from './SectionPdfActions';
+import { getMissingJobFields, type MissingJobField } from '../services/jobReadiness';
 
 interface DocumentGenerationPanelProps {
   jobData: RestorationJobData;
-  onPreview: (title: string, generator: () => Promise<Uint8Array>) => void;
+  onPreview: PdfPreviewRequest;
   onSaveToDrive: () => void;
   onSyncToSheets: () => void;
   isDriveLoading: boolean;
   isSheetsLoading: boolean;
   driveSuccessLink?: string;
   sheetsSuccessLink?: string;
+  onReviewField?: (field: MissingJobField) => void;
 }
 
 export const DocumentGenerationPanel: React.FC<DocumentGenerationPanelProps> = ({
@@ -50,6 +52,7 @@ export const DocumentGenerationPanel: React.FC<DocumentGenerationPanelProps> = (
   isSheetsLoading,
   driveSuccessLink,
   sheetsSuccessLink,
+  onReviewField,
 }) => {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [isZipping, setIsZipping] = useState(false);
@@ -69,14 +72,8 @@ export const DocumentGenerationPanel: React.FC<DocumentGenerationPanelProps> = (
   // so the per-section quick actions always match this panel.
   const docList: JobDocument[] = JOB_DOCUMENTS;
 
-  // Quality Gate Verification check
-  const unresolvedList: string[] = [];
-  if (!jobData.customer.customerName) unresolvedList.push('Customer Name');
-  if (!jobData.customer.lossAddress) unresolvedList.push('Loss Property Address');
-  if (!jobData.insurance.carrier) unresolvedList.push('Insurance Carrier');
-  if (!jobData.insurance.claimNumber) unresolvedList.push('Claim Number');
-  if (jobData.financials.totalApprovedRcv === '') unresolvedList.push('Total Approved RCV');
-  if (jobData.financials.deductible === '') unresolvedList.push('Deductible');
+  const missingFields = getMissingJobFields(jobData);
+  const unresolvedList = missingFields.map((field) => field.label);
 
   const isQualityGatePassed = unresolvedList.length === 0;
 
@@ -190,7 +187,7 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
   };
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5 mt-8 mb-10">
+    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5">
       {/* Header */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-100">
         <div>
@@ -200,10 +197,10 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
             </span>
             <div>
               <h2 className="text-[15px] font-semibold text-slate-900 tracking-tight">
-                Documents &amp; Output
+                Documents
               </h2>
               <p className="text-[12px] text-slate-500 mt-0.5">
-                Standard Hays + Sons package following production naming conventions
+                Review, preview, and download the production packet or individual forms
               </p>
             </div>
           </div>
@@ -213,14 +210,10 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={onSaveToDrive}
-            disabled={isDriveLoading || isDesktop()}
+            disabled={isDriveLoading}
             type="button"
             className="inline-flex items-center px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-slate-900 border border-slate-200 transition shadow-sm disabled:opacity-50"
-            title={
-              isDesktop()
-                ? 'Google Drive upload is available in the browser version of the app'
-                : 'Upload Complete PDF packet directly to Google Drive'
-            }
+            title="Save the complete PDF packet to shared Drive storage through Google Apps Script"
           >
             {isDriveLoading ? (
               <Loader2 className="w-4 h-4 mr-2 animate-spin text-red-600" />
@@ -232,14 +225,10 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
 
           <button
             onClick={onSyncToSheets}
-            disabled={isSheetsLoading || isDesktop()}
+            disabled={isSheetsLoading}
             type="button"
             className="inline-flex items-center px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-slate-900 border border-slate-200 transition shadow-sm disabled:opacity-50"
-            title={
-              isDesktop()
-                ? 'Google Sheets sync is available in the browser version of the app'
-                : 'Log job row and claim financials to Google Sheets'
-            }
+            title="Update this job in the shared Google Sheets database through Google Apps Script"
           >
             {isSheetsLoading ? (
               <Loader2 className="w-4 h-4 mr-2 animate-spin text-emerald-600" />
@@ -266,18 +255,18 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
           <div>
             <span className="font-bold text-slate-800">
               {isQualityGatePassed
-                ? 'Production Quality Gate: Verified Ready'
-                : 'Quality Gate Notice: Incomplete Fields'}
+                ? 'Required fields complete'
+                : `${missingFields.length} required field${missingFields.length === 1 ? '' : 's'} to review`}
             </span>
             <span className="text-slate-500 block text-[11px]">
               {isQualityGatePassed
-                ? 'All mandatory customer identity, claim numbers, and financial reconciliations agree.'
-                : `Missing: ${unresolvedList.join(', ')} (documents can still be generated with blank placeholders).`}
+                ? 'Customer, claim, and financial fields are filled in. Review the packet before sharing.'
+                : 'Choose a missing field below to fill it in. Downloads remain available with blank placeholders.'}
             </span>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 text-[11px] font-mono text-slate-600">
+        <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono text-slate-600">
           <span className="bg-white px-2 py-1 rounded border border-slate-200">
             RCV: {formatCurrency(jobData.financials.totalApprovedRcv)}
           </span>
@@ -287,12 +276,28 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
         </div>
       </div>
 
+      {missingFields.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2" aria-label="Missing required fields">
+          {missingFields.map((field) => onReviewField ? (
+            <button
+              key={field.inputId}
+              type="button"
+              onClick={() => onReviewField(field)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900 hover:bg-amber-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700"
+            >
+              <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
+              {field.label}
+            </button>
+          ) : <span key={field.inputId} className="text-xs text-amber-900">{field.label}</span>)}
+        </div>
+      )}
+
       {/* Cloud Links Notifications if saved */}
       {(driveSuccessLink || sheetsSuccessLink) && (
         <div className="mt-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs text-emerald-800">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span>Successfully updated Google Workspace:</span>
+            <span>Shared storage updated:</span>
           </div>
           <div className="flex items-center gap-3">
             {driveSuccessLink && (
@@ -320,7 +325,7 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
       )}
 
       {/* Complete packet */}
-      <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-5 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-5">
+      <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-3 sm:p-5 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-5">
         <div className="flex items-start gap-3.5 min-w-0">
           <div className="w-10 h-10 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0">
             <FileCheck2 className="w-5 h-5 text-slate-500" />
@@ -342,9 +347,16 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
         <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto justify-end shrink-0">
           <button
             onClick={() =>
-              onPreview('Complete 9-Page Restoration Packet', () =>
-                generateCompletePacket(jobData)
-              )
+              onPreview({
+                id: 'completePacket',
+                code: '',
+                label: 'Complete Packet',
+                title: 'Complete 9-Page Restoration Packet',
+                pages: '9 pages',
+                description: 'All eight documents bundled in exact production order.',
+                generator: () => generateCompletePacket(jobData),
+                buildFileName: () => buildCombinedPacketFileName(jobData),
+              })
             }
             type="button"
             className="flex-1 sm:flex-initial inline-flex items-center justify-center px-3.5 py-2.5 rounded-lg text-[13px] font-semibold bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 transition"
@@ -388,9 +400,9 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
       <div className="mt-8">
         <div className="flex items-center justify-between mb-3">
           <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-            Separate Logical Deliverables (01 through 08)
+            Individual documents
           </h4>
-          <span className="text-[11px] text-slate-400">Standardized Hays production naming</span>
+          <span className="text-xs text-slate-500">Preview or download a single form</span>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
@@ -416,7 +428,7 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
 
                 <div className="flex items-center space-x-2 mt-4 pt-3 border-t border-slate-200/70">
                   <button
-                    onClick={() => onPreview(doc.title, () => doc.generator(jobData))}
+                    onClick={() => onPreview(doc)}
                     type="button"
                     className="flex-1 inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-700 hover:bg-slate-100 border border-slate-200 transition"
                   >
@@ -475,7 +487,7 @@ ${docList.map((d) => `- ${d.buildFileName(jobData)}`).join('\n')}
             </p>
           ) : (
             <p className="mt-2 text-emerald-400 text-[11px]">
-              ✓ All required core fields reconciled with 100% data consistency across all pages.
+              Required fields were filled in when generated. Review the documents before sharing.
             </p>
           )}
         </div>

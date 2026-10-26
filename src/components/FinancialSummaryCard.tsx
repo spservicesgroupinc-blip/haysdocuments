@@ -53,7 +53,7 @@ export const FinancialSummaryCard: React.FC<FinancialSummaryCardProps> = ({
   return (
     <section className="bg-white rounded-xl border border-slate-200 shadow-sm">
       {/* Header */}
-      <div className="px-5 py-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div className="px-3 sm:px-5 py-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-[15px] font-semibold text-slate-900 tracking-tight">
             Contract Financials
@@ -82,7 +82,7 @@ export const FinancialSummaryCard: React.FC<FinancialSummaryCardProps> = ({
       </div>
 
       {/* Inputs + headline figure */}
-      <div className="p-5 grid grid-cols-1 lg:grid-cols-12 gap-5">
+      <div className="p-3 sm:p-5 grid grid-cols-1 lg:grid-cols-12 gap-5">
         <div className="lg:col-span-7 grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label
@@ -149,7 +149,7 @@ export const FinancialSummaryCard: React.FC<FinancialSummaryCardProps> = ({
       </div>
 
       {/* Payment schedule */}
-      <div className="px-5 py-4 border-t border-slate-100">
+      <div className="px-3 sm:px-5 py-4 border-t border-slate-100">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-[13px] font-semibold text-slate-900">Payment schedule</h3>
           <span className="text-[11px] text-slate-500">Split of the approved RCV</span>
@@ -188,7 +188,7 @@ export const FinancialSummaryCard: React.FC<FinancialSummaryCardProps> = ({
         jobData={jobData}
         docs={[DOC.contract, DOC.cancellationNotice]}
         onPreview={onPreview}
-        className="mt-0 px-5 pb-4"
+        className="mt-0 px-3 sm:px-5 pb-4"
       />
     </section>
   );

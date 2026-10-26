@@ -6,6 +6,7 @@ import {
   getSyncState,
   subscribeSyncState,
   syncNow,
+  flushDraftSave,
   type SyncState,
 } from '../services/jobSync';
 import { isDesktop } from '../services/desktopBridge';
@@ -57,11 +58,15 @@ export const PwaStatus: React.FC = () => {
   }, []);
 
   const showInstall = !!installEvent && !installed && !dismissedInstall && !isDesktop();
-  const showSyncCard = !sync.online || sync.pendingCount > 0;
+  const showSyncCard = !sync.online || sync.pendingCount > 0 || sync.strandedCount > 0 || !!sync.lastError;
+  const retryable = ['network_error', 'timeout', 'busy', 'server_error', 'internal_error'].includes(sync.errorCode ?? '');
 
   if (!showInstall && !showSyncCard && !updateReady && !sync.conflictNotice) return null;
 
   const pendingLabel = `${sync.pendingCount} change${sync.pendingCount === 1 ? '' : 's'}`;
+  const strandedLabel = `${sync.strandedCount} change${
+    sync.strandedCount === 1 ? '' : 's'
+  } saved by ${sync.strandedOwner ?? 'another account'}`;
 
   const handleInstall = async () => {
     if (!installEvent) return;
@@ -72,7 +77,7 @@ export const PwaStatus: React.FC = () => {
   };
 
   return (
-    <div className="fixed bottom-5 right-5 z-50 flex flex-col items-end gap-2 max-w-sm">
+    <div className="fixed inset-x-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] sm:inset-x-auto sm:right-5 sm:bottom-5 sm:max-w-sm z-50 flex flex-col items-stretch sm:items-end gap-2">
       {updateReady && (
         <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-lg flex items-start gap-3">
           <RotateCw className="w-4 h-4 text-red-600 mt-0.5 shrink-0" />
@@ -83,7 +88,7 @@ export const PwaStatus: React.FC = () => {
             </p>
             <button
               type="button"
-              onClick={() => void updateReady()}
+              onClick={() => void flushDraftSave().then(() => updateReady()).catch(() => {})}
               className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors"
             >
               Reload now
@@ -123,22 +128,28 @@ export const PwaStatus: React.FC = () => {
           <div className="min-w-0">
             <p className="text-[13px] font-semibold text-slate-900">
               {sync.online
-                ? sync.syncing
-                  ? `Syncing ${pendingLabel}…`
-                  : `${pendingLabel} waiting to sync`
+                ? sync.pendingCount > 0
+                  ? sync.syncing
+                    ? `Syncing ${pendingLabel}…`
+                    : `${pendingLabel} waiting to sync`
+                  : sync.lastError ? 'Saving needs attention' : `${strandedLabel} waiting to sync`
                 : 'Offline — working from saved copies'}
             </p>
             <p className="text-[12px] text-slate-500 mt-0.5 leading-snug">
-              {sync.online
-                ? 'Saving to the customer database automatically.'
+              {sync.errorCode === 'device_storage' ? 'The latest changes could not be saved. Keep this window open and try saving again.' : sync.online
+                ? sync.pendingCount > 0
+                  ? sync.lastError
+                    ? retryable ? 'Changes are saved on this device. Retrying the connection automatically.' : 'Changes are saved on this device. Resolve the connection issue, then select Sync now.'
+                    : 'Saving to the customer database automatically.'
+                  : sync.lastError ? 'Keep this window open until your changes are saved.' : `Sign in as ${sync.strandedOwner ?? 'the account that made them'} to send them to the customer database.`
                 : sync.pendingCount > 0
                   ? 'Changes are saved on this device and will sync when the connection returns.'
                   : 'You can keep editing and generating documents.'}
             </p>
-            {sync.lastError && sync.pendingCount > 0 && (
+            {sync.lastError && (
               <p className="text-[11px] text-rose-700 mt-1 leading-snug">Last sync error: {sync.lastError}</p>
             )}
-            {sync.online && !sync.syncing && sync.pendingCount > 0 && (
+            {sync.online && !sync.syncing && (sync.pendingCount > 0 || sync.errorCode === 'device_storage') && (
               <button
                 type="button"
                 onClick={() => void syncNow()}

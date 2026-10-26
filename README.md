@@ -19,8 +19,33 @@ Copy `.env.example` to `.env.local` and set:
 | `VITE_APPS_SCRIPT_URL` | Deployed Apps Script `/exec` URL (the job database) |
 | `VITE_GOOGLE_CLIENT_ID` | OAuth client for Google Drive/Sheets features (web only) |
 | `VITE_DEV_SHARED_SECRET` | **Local development only** — disables auth. Never ship a build with this set. |
+| `DEEPSEEK_API_KEY` | Set in Google Apps Script Properties, never in the frontend environment |
 
 Vite inlines `VITE_*` values at build time — restart `npm run dev` (or rebuild) after changes.
+
+If saving reports a non-JSON response, check the configured `/exec` URL first. The client
+normalizes copied links and Google account-specific URLs to the public deployment URL.
+Google sign-in pages, unavailable deployments and invalid responses produce separate
+instructions; failed writes stay queued on the device. After correcting the URL, rebuild
+the app, reload it (apply any pending app update), and select **Sync now**.
+Run `npm run database:test` to verify the save transport and response handling.
+
+Saving commits the job and its pending cloud write in one IndexedDB transaction. The
+Save button finishes after that device commit; cloud sync runs in the background.
+The status badge distinguishes a draft being saved, a device copy awaiting sync, and
+a completed draft sync. Temporary connection and database-busy errors retry with
+increasing delays; session and deployment errors stay queued until corrected.
+
+Drafts persist after 350 ms of idle time, together with a coalesced backup operation
+owned by the signed-in account. Cloud autosave waits for 2 seconds of idle time, with
+an 8-second maximum wait while typing. Startup recovery happens before autosave can
+write the empty form. Responses from earlier saves and reads cannot replace newer
+device edits. Hiding the window, signing out, and applying an update flush device
+autosave; closing with an incomplete device save prompts you to keep the window open.
+
+After updating the backend, deploy `src/apps-script/Code.gs` as a **new version of the
+existing deployment**, keeping its `/exec` URL. `npm run apps:paste` and
+`npm run apps:chunks` regenerate the editor paste files from this source.
 
 ## Commands
 
@@ -30,10 +55,30 @@ Vite inlines `VITE_*` values at build time — restart `npm run dev` (or rebuild
 | `npm run build` | Production build into `dist/` (web app + service worker + manifest) |
 | `npm run preview` | Serve the production build locally (use this to test PWA/offline behaviour) |
 | `npm run lint` | Type-check (`tsc --noEmit`) |
+| `npm run pdf:checklist:test` | Approved production checklist layout, populated fields, editing targets and long-value checks |
+| `npm run database:test` | Save/sync/transport regressions, including real IndexedDB transactions |
+| `npm run apps:test:drafts` | Current backend draft/job write locks, round trips and session heartbeat checks |
+| `npm run save:ui:test` | Chromium tests for recovery, saving while editing and connection failures (run `npx playwright install chromium` once) |
 | `npm run verify` | Full gate: lint + backend tests + parser tests + build |
 | `npm run icons` | Regenerate all app icons from `public/logo.svg` |
 | `npm run deploy:web` | Build + deploy the PWA to Vercel (linked project) |
 | `npm run apps:test`, `npm run apps:register`, `npm run parser:test` | Backend / parser test suites |
+
+## Production checklist PDF
+
+The production checklist uses the approved October 2026 form artwork, with the
+reference job's completed entries removed from its content stream. Its original
+logo, wording, checkbox columns, yellow highlights and rule positions are preserved
+in previews, individual downloads and the combined packet. Only current job data
+fills the form. All 33 boxes can be checked in the Checklist section, directly in
+the PDF preview, or in a PDF reader after downloading. App checks are saved with
+the job and carried into individual PDFs and the combined packet. Older jobs
+start with unchecked boxes. Changes made in an external PDF reader remain in
+that PDF; they are not imported back into the job. Fields absent
+from the printed form (loss address, job name and self-pay) remain in the fields drawer.
+The manager line uses the branch manager. To regenerate the embedded blank artwork
+from the approved reference, run `python scripts/prepare-checklist-template.py <reference.pdf>`
+with `pypdf` installed. The script checks the source fingerprint before removing entries.
 
 ## PWA (browser install)
 
@@ -86,9 +131,14 @@ connection returns (last write wins; a notice appears when the server copy moved
 
 ## Known issues
 
-- `npm run apps:test` (and therefore `npm run verify`) currently fails: `apps-script/Code.gs`
-  (1,312 lines) diverged from the test suite and `apps-script/paste-chunks/` (~2,410 lines) —
-  `normalizeRecord_`/`oneOf_` exist only in `_backup/Code.gs.monolith.bak` and the chunks.
-  Reconcile `Code.gs` with the backup before deploying backend changes.
+- `npm run apps:test` (and therefore `npm run verify`) still fails: the test harness
+  `scripts/test-apps-script.ts` targets the **superseded** backend API. It calls helpers such as
+  `normalizeRecord_` and `oneOf_`, which the live backend does not define. The live backend is the
+  single file `src/apps-script/Code.gs`, which implements the HTTP actions the
+  front-end uses and needs no porting of its own — the harness does.
+- `npm run apps:register` also targets the superseded API (`api_registrationInfo_`
+  is missing from the current backend). These legacy harness failures prevent the
+  aggregate `npm run verify` command from completing. The save-specific checks above
+  exercise the current backend and client directly.
 - `npm run clean` references a `server.js` that has never existed (template leftover).
 
