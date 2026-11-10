@@ -44,31 +44,55 @@ async function main() {
     Utilities: { newBlob: (value: string) => ({ getBytes: () => Buffer.from(value) }) },
     UrlFetchApp: { fetch: (url: string, options: any) => {
       request = { url, options };
-      return { getResponseCode: () => 200, getContentText: () => '{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}' };
+      return { getResponseCode: () => 200, getContentText: () => '{"choices":[{"finish_reason":"stop","message":{"content":"{\\"customer\\":{}}"}}]}' };
     } },
   };
   vm.createContext(sandbox);
   vm.runInContext(loadAppsScriptSource(), sandbox);
-  sandbox.analyzeIntake_({ rawText });
-  assert.ok(request);
-  const response = await fetch(request.url, {
-    method: 'POST', headers: { ...request.options.headers, 'Content-Type': 'application/json' },
-    body: request.options.payload, signal: AbortSignal.timeout(120000),
-  });
-  const body = await response.text();
-  let diagnostics: Record<string, unknown> = { httpStatus: response.status };
-  try {
-    const envelope = JSON.parse(body);
-    const choice = envelope.choices?.[0];
-    diagnostics = { ...diagnostics, model: envelope.model, finishReason: choice?.finish_reason,
-      contentType: typeof choice?.message?.content, contentLength: choice?.message?.content?.length,
-      fenced: typeof choice?.message?.content === 'string' && choice.message.content.trim().startsWith('```'),
-      cost: envelope.usage?.cost };
-  } catch { /* Do not print upstream bodies or extracted values. */ }
-  console.log('OpenRouter response metadata:', JSON.stringify(diagnostics));
-  // Pass the real response through the backend's normal validation and error handling.
-  sandbox.UrlFetchApp.fetch = () => ({ getResponseCode: () => response.status, getContentText: () => body });
-  const payload = sandbox.analyzeIntake_({ rawText });
+  const models: string[] = Array.from(sandbox.INTAKE_MODELS);
+  if (process.argv.includes('--fallback')) models.splice(0, 1);
+  const responses = new Map<string, { status: number; body: string }>();
+  let payload: any;
+  let lastError: unknown;
+  for (const model of models) {
+    sandbox.INTAKE_MODELS = [model];
+    sandbox.UrlFetchApp.fetch = (url: string, options: any) => {
+      request = { url, options };
+      return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '{"customer":{}}' } }] }) };
+    };
+    sandbox.analyzeIntake_({ rawText });
+    assert.ok(request);
+    const response = await fetch(request.url, {
+      method: 'POST', headers: { ...request.options.headers, 'Content-Type': 'application/json' },
+      body: request.options.payload, signal: AbortSignal.timeout(120000),
+    });
+    const body = await response.text();
+    responses.set(model, { status: response.status, body });
+    let metadata: Record<string, unknown> = { httpStatus: response.status, requestedModel: model };
+    try {
+      const envelope = JSON.parse(body);
+      const choice = envelope.choices?.[0];
+      metadata = { ...metadata, model: envelope.model, finishReason: choice?.finish_reason,
+        contentType: typeof choice?.message?.content, contentLength: choice?.message?.content?.length,
+        cost: envelope.usage?.cost };
+    } catch { /* Never print document content or upstream bodies. */ }
+    console.log('OpenRouter response metadata:', JSON.stringify(metadata));
+    sandbox.UrlFetchApp.fetch = () => ({ getResponseCode: () => response.status, getContentText: () => body });
+    try { payload = sandbox.analyzeIntake_({ rawText }); break; }
+    catch (error: any) {
+      lastError = error;
+      if (!['ai_unavailable', 'ai_invalid_response', 'ai_response_truncated'].includes(error.code)) throw error;
+    }
+  }
+  if (!payload) throw lastError;
+  // Replay the real replies through the complete backend, including its fallback policy.
+  sandbox.INTAKE_MODELS = models;
+  sandbox.UrlFetchApp.fetch = (_url: string, options: any) => {
+    const captured = responses.get(JSON.parse(options.payload).model);
+    assert.ok(captured, 'The backend requested an untested model');
+    return { getResponseCode: () => captured.status, getContentText: () => captured.body };
+  };
+  payload = sandbox.analyzeIntake_({ rawText });
   const existing = createEmptyJob();
   existing.insurance.specialInstructions = 'Keep these manually entered instructions.';
   const result = applyAiExtractionToJob(payload, existing);
@@ -83,8 +107,9 @@ async function main() {
   assert.equal(payload.financials.deductible, null);
   assert.equal(result.jobData.insurance.dateOfLoss, '2026-08-14');
   assert.equal(result.jobData.insurance.specialInstructions, existing.insurance.specialInstructions);
-  const usage = JSON.parse(body).usage;
-  assert.equal(usage?.cost, 0, 'The live check must report zero cost.');
+  for (const captured of responses.values()) {
+    if (captured.status === 200) assert.equal(JSON.parse(captured.body).usage?.cost, 0, 'The live check must report zero cost.');
+  }
   console.log(`OpenRouter extraction and job autofill passed. ${result.extractionSummary.fieldsExtractedCount} fields extracted; reported cost: $0.`);
 }
 

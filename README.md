@@ -57,11 +57,14 @@ customer reference list. Image-only scans still require a text layer or OCR befo
 
 Set `OPENROUTER_API_KEY` in **Apps Script > Project Settings > Script Properties**,
 then deploy the updated `src/apps-script/Code.gs` as a new version of the existing
-web app. The backend always uses `openrouter/auto` (free router), requires JSON support, and
-limits provider prompt, completion, request and image prices to zero. No paid
-model fallback is configured. Free-model availability and account quotas can
+web app. The backend requests `google/gemma-4-31b-it:free` and can try
+`dots-studio/dots-3-note-preview:free` once if the first provider is unavailable
+or its completed response is malformed. It requires JSON support and limits
+provider prompt, completion, request and image prices to zero. Account quota,
+authentication and refusal errors stop immediately. No paid model is configured.
+Free-model availability and account quotas can
 cause an analysis error; job fields stay unchanged on failure.
-See the [OpenRouter free router](https://openrouter.ai/openrouter/free) and
+See [OpenRouter free model fallbacks](https://openrouter.ai/docs/guides/routing/model-fallbacks) and
 [provider price limits](https://openrouter.ai/docs/guides/routing/provider-selection#max-price).
 
 For a local live check using synthetic document text, place the key in the ignored

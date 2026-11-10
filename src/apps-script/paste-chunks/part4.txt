@@ -1,4 +1,76 @@
 
+function createUser(email, name, password, role) {
+  ensureDatabaseReady_();
+  if (!email || !password) throw appError_('bad_request', 'Email and password are required.');
+  email = String(email).trim().toLowerCase();
+  role = role || 'editor';
+
+  if (ROLE_VALUES.indexOf(role) === -1) {
+    throw appError_('invalid_role', 'Role must be one of: ' + ROLE_VALUES.join(', '));
+  }
+  if (String(password).length < DEFAULTS.MIN_PASSWORD_LENGTH) {
+    throw appError_('weak_password', 'Password must be at least ' + DEFAULTS.MIN_PASSWORD_LENGTH + ' characters.');
+  }
+
+  var sheet = usersSheet_();
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === email) {
+      throw appError_('user_exists', 'A user with this email already exists.');
+    }
+  }
+
+  var salt = generateSalt_();
+  var hash = hashPassword_(password, salt);
+  var now = new Date().toISOString();
+
+  sheet.appendRow([
+    email,
+    name || email,
+    role,
+    salt,
+    hash,
+    true, // Active
+    0,    // FailedAttempts
+    '',   // LockedUntil
+    now,  // CreatedAt
+    ''    // LastLoginAt
+  ]);
+
+  appendLog_('SYSTEM', 'USER_CREATED', '', '', 'Created account for ' + email + ' (' + role + ')');
+  return { email: email, name: name || email, role: role };
+}
+
+function removeUser_(email) {
+  var sheet = usersSheet_();
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === String(email).toLowerCase()) {
+      sheet.deleteRow(i + 1);
+      return true;
+    }
+  }
+  return false;
+}
+
+function listUsers() {
+  var sheet = usersSheet_();
+  var data = sheet.getDataRange().getValues();
+  var users = [];
+  for (var i = 1; i < data.length; i++) {
+    users.push({
+      email: data[i][0],
+      name: data[i][1],
+      role: data[i][2],
+      active: data[i][5],
+      createdAt: data[i][8],
+      lastLoginAt: data[i][9]
+    });
+  }
+  Logger.log(JSON.stringify(users, null, 2));
+  return users;
+}
+
 function loginUser_(email, password) {
   ensureDatabaseReady_();
   if (!email || !password) throw appError_('bad_request', 'Email and password are required.');
@@ -396,61 +468,4 @@ function saveDraftUnlocked_(user, draft) {
     recordId: recordId,
     job: job
   };
-}
-
-/** Returns the shared workspace draft, or null when the workspace is empty. */
-function getDraft_(user) {
-  var sheet = draftsSheet_();
-  var data = sheet.getDataRange().getValues();
-
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]) !== DRAFT_ROW_ID) continue;
-
-    var payloadJson = data[i][7];
-    if (!payloadJson) return null;
-
-    var job = null;
-    try {
-      job = JSON.parse(payloadJson);
-    } catch (err) {
-      throw appError_('data_corrupt', 'The stored draft could not be parsed: ' + err);
-    }
-    if (!job) return null;
-
-    return {
-      draftId: DRAFT_ROW_ID,
-      updatedAt: data[i][1] ? String(data[i][1]) : '',
-      updatedBy: data[i][2] ? String(data[i][2]) : '',
-      recordId: data[i][3] ? String(data[i][3]) : '',
-      job: job
-    };
-  }
-
-  return null;
-}
-
-/* ---------------------------------------------------------------------------
- * 8. AUDIT LOGGING & UTILITIES
- * ------------------------------------------------------------------------ */
-
-function appendLog_(userEmail, action, recordId, jobNumber, detail) {
-  try {
-    var sheet = logSheet_();
-    if (!sheet) return;
-    sheet.appendRow([
-      new Date().toISOString(),
-      userEmail || 'ANONYMOUS',
-      action || '',
-      recordId || '',
-      jobNumber || '',
-      detail || ''
-    ]);
-  } catch (err) {
-    Logger.log('Audit log failure: ' + err);
-  }
-}
-
-function currentSchemaVersion_() {
-  var props = PropertiesService.getScriptProperties();
-  return Number(props.getProperty(PROP.SCHEMA_VERSION)) || DEFAULTS.SCHEMA_VERSION;
 }

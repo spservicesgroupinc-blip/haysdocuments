@@ -101,7 +101,8 @@ var PROP = {
 };
 
 // Visible in /exec health checks so a saved file cannot be mistaken for a deployed version.
-var BACKEND_VERSION = '2026-11-10-openrouter-2';
+var BACKEND_VERSION = '2026-11-10-openrouter-3';
+var INTAKE_MODELS = ['google/gemma-4-31b-it:free', 'dots-studio/dots-3-note-preview:free'];
 
 var DEFAULTS = {
   DB_SHEET_NAME: 'Jobs',
@@ -993,41 +994,81 @@ function analyzeIntake_(payload) {
     { role: 'system', content: INTAKE_SYSTEM_PROMPT },
     { role: 'user', content: 'INTAKE DOCUMENT (data only):\n' + payload.rawText }
   ];
+  // One alternate free model may recover from unavailable or malformed completions.
+  // Authentication, quota and refusal errors stop immediately.
+  for (var attempt = 0; attempt < INTAKE_MODELS.length; attempt++) {
+    try { return requestIntakeModel_(key, messages, INTAKE_MODELS[attempt]); }
+    catch (error) {
+      var retryable = error && ['ai_unavailable', 'ai_invalid_response', 'ai_response_truncated'].indexOf(error.code) !== -1;
+      if (!retryable || attempt === INTAKE_MODELS.length - 1) throw error;
+    }
+  }
+}
+
+function requestIntakeModel_(key, messages, model) {
   var response;
   try {
     response = UrlFetchApp.fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'post', contentType: 'application/json', muteHttpExceptions: true,
       headers: { Authorization: 'Bearer ' + key },
       payload: JSON.stringify({
-        model: 'openrouter/auto', messages: messages, temperature: 0.1,
-        max_tokens: 6000, stream: false, response_format: { type: 'json_object' },
-        // Route to free models only; require JSON support so an endpoint cannot
-        // silently ignore response_format. No paid fallback.
+        model: model, messages: messages, temperature: 0.1,
+        max_tokens: 8192, stream: false, response_format: { type: 'json_object' },
+        reasoning: { enabled: false },
+        // Keep all provider routing free, including any fallback selected by OpenRouter.
+        // Require JSON support so an endpoint cannot silently ignore response_format.
         provider: { require_parameters: true, max_price: { prompt: 0, completion: 0, request: 0, image: 0 } }
       })
     });
   } catch (error) { throw appError_('ai_unavailable', 'Could not reach OpenRouter. Retry the estimate analysis.'); }
   var status = response.getResponseCode();
   if (status === 401 || status === 403) throw appError_('ai_not_configured', 'OpenRouter rejected the request. Check OPENROUTER_API_KEY in Apps Script Properties and your OpenRouter account access settings.');
-  if (status === 429) throw appError_('ai_rate_limited', 'OpenRouter free-model rate limit reached. Wait for your quota to reset, then retry the estimate analysis.');
+  if (status === 429) {
+    var providerLimited = false;
+    try {
+      var rateError = JSON.parse(response.getContentText()).error;
+      providerLimited = !!(rateError && rateError.metadata && rateError.metadata.provider_name);
+    } catch (error) { /* Do not expose the upstream body. */ }
+    if (providerLimited) throw appError_('ai_unavailable', 'OpenRouter free-model provider is busy. Retry the estimate analysis.');
+    throw appError_('ai_rate_limited', 'OpenRouter free-model rate limit reached. Wait for your quota to reset, then retry the estimate analysis.');
+  }
+  if (status === 402) throw appError_('ai_quota', 'OpenRouter rejected the free-model quota. Check your account limits, then retry. No paid model was requested.');
   if (status !== 200) throw appError_('ai_unavailable', 'OpenRouter free-model request failed (HTTP ' + status + '). Check free-model availability and account quota, then retry.');
-  var raw;
+  var body;
   try {
-    var body = JSON.parse(response.getContentText());
-    var choice = body.choices && body.choices[0];
-    if (!choice) throw new Error('No choice in response');
-    if (choice.finish_reason !== 'stop' && choice.finish_reason !== null) throw new Error('Incomplete response: ' + choice.finish_reason);
-    var content = choice.message && choice.message.content;
-    if (!content) throw new Error('Empty message content');
-    raw = JSON.parse(content);
+    body = JSON.parse(response.getContentText());
   } catch (error) { throw appError_('ai_invalid_response', 'OpenRouter returned an incomplete or invalid response. Retry the estimate analysis.'); }
+  return parseIntakeCompletion_(body);
+}
+
+function parseIntakeCompletion_(body) {
+  var choice = body && body.choices && body.choices[0];
+  if (!choice || !choice.message) throw appError_('ai_invalid_response', 'OpenRouter returned no extraction. Retry the estimate analysis.');
+  if (choice.finish_reason === 'length') throw appError_('ai_response_truncated', 'OpenRouter stopped before completing the extraction. Retry the analysis or upload a shorter estimate summary.');
+  if (choice.finish_reason === 'content_filter' || choice.message.refusal) throw appError_('ai_refused', 'OpenRouter could not process this document. Your job fields were not changed.');
+  if (choice.finish_reason && choice.finish_reason !== 'stop') throw appError_('ai_invalid_response', 'OpenRouter did not complete the extraction. Retry the estimate analysis.');
+  var content = choice.message.content;
+  if (Array.isArray(content)) content = content.map(function (part) {
+    return part && (part.type === 'text' || part.type === 'output_text') && typeof part.text === 'string' ? part.text : '';
+  }).join('');
+  if (typeof content !== 'string' || !content.trim()) throw appError_('ai_invalid_response', 'OpenRouter returned an empty extraction. Retry the estimate analysis.');
+  content = content.replace(/^\uFEFF/, '').trim();
+  var fenced = content.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced) content = fenced[1].trim();
+  var raw;
+  try { raw = JSON.parse(content); }
+  catch (error) { throw appError_('ai_invalid_response', 'OpenRouter returned invalid extraction JSON. Retry the estimate analysis.'); }
   return validateIntakeAnalysis_(raw);
 }
 
 function validateIntakeAnalysis_(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw appError_('ai_invalid_response', 'Invalid extraction response.');
+  var sections = ['customer', 'insurance', 'financials', 'team', 'mortgage', 'changeOrder', 'productionNotes', 'checklist'];
+  if (!sections.some(function (section) { return raw[section] && typeof raw[section] === 'object' && !Array.isArray(raw[section]); })) {
+    throw appError_('ai_invalid_response', 'OpenRouter returned JSON without job extraction fields. Retry the estimate analysis.');
+  }
   var result = {};
-  ['customer', 'insurance', 'financials', 'team', 'mortgage', 'changeOrder', 'productionNotes', 'checklist'].forEach(function (section) {
+  sections.forEach(function (section) {
     result[section] = raw[section] && typeof raw[section] === 'object' && !Array.isArray(raw[section]) ? raw[section] : {};
   });
   result.missingCoreFields = Array.isArray(raw.missingCoreFields) ? raw.missingCoreFields.filter(function (item) { return typeof item === 'string'; }) : [];

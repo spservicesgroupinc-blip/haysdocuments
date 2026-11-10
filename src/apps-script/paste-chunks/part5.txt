@@ -1,4 +1,61 @@
 
+/** Returns the shared workspace draft, or null when the workspace is empty. */
+function getDraft_(user) {
+  var sheet = draftsSheet_();
+  var data = sheet.getDataRange().getValues();
+
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) !== DRAFT_ROW_ID) continue;
+
+    var payloadJson = data[i][7];
+    if (!payloadJson) return null;
+
+    var job = null;
+    try {
+      job = JSON.parse(payloadJson);
+    } catch (err) {
+      throw appError_('data_corrupt', 'The stored draft could not be parsed: ' + err);
+    }
+    if (!job) return null;
+
+    return {
+      draftId: DRAFT_ROW_ID,
+      updatedAt: data[i][1] ? String(data[i][1]) : '',
+      updatedBy: data[i][2] ? String(data[i][2]) : '',
+      recordId: data[i][3] ? String(data[i][3]) : '',
+      job: job
+    };
+  }
+
+  return null;
+}
+
+/* ---------------------------------------------------------------------------
+ * 8. AUDIT LOGGING & UTILITIES
+ * ------------------------------------------------------------------------ */
+
+function appendLog_(userEmail, action, recordId, jobNumber, detail) {
+  try {
+    var sheet = logSheet_();
+    if (!sheet) return;
+    sheet.appendRow([
+      new Date().toISOString(),
+      userEmail || 'ANONYMOUS',
+      action || '',
+      recordId || '',
+      jobNumber || '',
+      detail || ''
+    ]);
+  } catch (err) {
+    Logger.log('Audit log failure: ' + err);
+  }
+}
+
+function currentSchemaVersion_() {
+  var props = PropertiesService.getScriptProperties();
+  return Number(props.getProperty(PROP.SCHEMA_VERSION)) || DEFAULTS.SCHEMA_VERSION;
+}
+
 /* ---------------------------------------------------------------------------
  * 9. SELF TEST & DIAGNOSTICS
  * ------------------------------------------------------------------------ */

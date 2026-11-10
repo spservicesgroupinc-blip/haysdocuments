@@ -103,10 +103,13 @@ Editors/admins can replace it; signed-in users can read it. The list is a shared
 reference for the team only - it is never sent to the AI.
 
 Set `OPENROUTER_API_KEY` in **Project Settings > Script Properties**. No API key is
-embedded in the frontend. Intake uses `openrouter/auto` (free router) with temperature 0.1,
-a 6,000-token output limit and JSON-object output. Provider routing requires
+embedded in the frontend. Intake uses `google/gemma-4-31b-it:free` with temperature 0.1,
+an 8,192-token output limit and JSON-object output. It can use
+`dots-studio/dots-3-note-preview:free` once for unavailable providers or malformed
+completed responses. Account quota/authentication errors and refusals are not
+retried. Provider routing requires
 parameter support and sets maximum prompt, completion, request and image prices
-to zero. There is no paid fallback or automatic retry loop. The existing
+to zero. There is no paid fallback or unbounded retry loop. The existing
 external-request OAuth scope is sufficient.
 
 **If the app says "Deploy the latest Apps Script backend":** the `/exec` URL is
@@ -114,14 +117,17 @@ serving a version without the `analyzeIntake` action. Replace the entire Code.gs
 save it, then choose **Deploy > Manage deployments > Edit (pencil) > Version:
 New version > Deploy** on the deployment whose URL the app uses. Saving the file
 alone does not update `/exec`. Keep the current URL. Opening `/exec` afterward
-must show `backendVersion: "2026-11-10-openrouter-2"`, `analyzeIntake` in
+must show `backendVersion: "2026-11-10-openrouter-3"`, `analyzeIntake` in
 `capabilities`, and `aiConfigured: true`. If `aiConfigured` is false, set the
 `OPENROUTER_API_KEY` Script Property. The health check never displays the key.
 
 Intake disables optional model reasoning and allows up to two minutes for the
 non-streaming response. It distinguishes the insured's contact information from
 the contractor's and uses the combined RCV on multi-coverage estimates.
-See the [OpenRouter free router](https://openrouter.ai/openrouter/auto) and
+Complete JSON wrapped in code fences or returned as text parts is normalized.
+Truncated output, refusals, empty output and unrelated JSON are rejected before
+job fields can change. Backend login/session and role checks are retained.
+See [OpenRouter model fallbacks](https://openrouter.ai/docs/guides/routing/model-fallbacks) and
 [provider price limits](https://openrouter.ai/docs/guides/routing/provider-selection#max-price).
 The old `DEEPSEEK_API_KEY` property is no longer read. A local
 `.env.openrouter.local` supports `npm run ai:check` only; it does not configure

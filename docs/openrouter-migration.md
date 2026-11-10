@@ -1,10 +1,10 @@
 # OpenRouter document autofill migration
 
 The active document app now sends intake text through Apps Script to
-`https://openrouter.ai/api/v1/chat/completions`, using `openrouter/auto` (free router). Provider
+`https://openrouter.ai/api/v1/chat/completions`, using allowlisted `:free` models. Provider
 prompt, completion, request and image price caps are all zero. JSON support is
 required. Client payloads cannot override the model, routing, prompt or key.
-No paid fallback or automatic retry loop is configured.
+No paid fallback is configured; one alternate free model may recover a failed extraction.
 
 PDF/text uploads and pastes use the same extraction schema and job-field mapping
 as before. AI-extracted fields are marked OpenRouter for review. Existing field
@@ -79,3 +79,28 @@ the frontend or committed to GitHub. The frontend now targets that replacement U
 The subsequent replacement deployment provided after key setup was verified with
 `backendVersion: "2026-11-10-openrouter-2"`, `analyzeIntake` support, and
 `aiConfigured: true`. Its URL is now the bundled endpoint in `src/config/appsScript.ts`.
+
+## Repair version 2026-11-10-openrouter-3
+
+The authentication-removal rewrite was backed up outside the repository before
+repair. The backend retains login, sessions, role checks and owner-attributed
+audit records. The frontend targets the last deployment URL explicitly supplied
+by the user; the other agent's unconfirmed URL change was not published.
+
+The model list is Gemma 4 31B free, then Dots3-Note Preview free. Both endpoints
+were checked against OpenRouter's model/endpoint catalog for JSON support and
+zero prices. At most two attempts are made; price caps apply to each request.
+Malformed JSON, missing output and provider unavailability may use the alternate
+model. Account rate limits, authentication failures, quota failures and refusals
+stop immediately. Markdown fences and text parts containing complete JSON are
+normalized without repairing truncated JSON or inventing missing data.
+
+The live synthetic estimate check reproduced provider throttling on Google AI
+Studio and completed successfully through the Dots fallback: twelve fields,
+correct combined RCV and insured contact attribution, with reported cost zero.
+The root TypeScript config now excludes the separately bundled `docaoppp/`
+project, so the active app's ordinary `npm run lint` checks the right project.
+
+Deploy the full Code.gs as a new version of the existing Apps Script deployment
+to activate this backend repair. Publishing frontend source to GitHub/Vercel
+does not change the deployed Apps Script version.
