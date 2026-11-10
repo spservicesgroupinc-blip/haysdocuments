@@ -48,3 +48,24 @@ The files responsible for these failures are unchanged by this migration.
 
 Live Apps Script was not updated: local Google CLI authentication is not configured.
 Source publication to GitHub does not activate the deployed backend.
+
+## Intake failure and save recovery follow-up
+
+The deployed Vercel bundle was verified to use the intended Apps Script URL.
+The reported `unknown_action` intake failure indicates that URL is serving a
+backend version without the `analyzeIntake` handler. The full Code.gs now exposes
+its backend version, supported actions and a key-configured boolean in `ping`,
+so activation can be verified without exposing credentials. Publish **New
+version** through **Manage deployments > Edit** after replacing Code.gs; saving
+editor contents alone does not update the version behind `/exec`.
+
+Optional model reasoning is disabled and the client AI timeout is two minutes.
+A live synthetic six-page estimate-text check passed: twelve extracted fields,
+combined dwelling/contents total, insured contact attribution, missing claim
+and deductible values retained as missing, and zero reported cost.
+
+Local autosave now forgets unexpectedly closed IndexedDB connections and retries
+`UnknownError`/`InvalidStateError` once with a fresh connection. It never deletes
+the database or pending writes. Both new failure/recovery regressions and all
+sixteen sync-engine tests pass. A persistent browser storage fault still raises
+an error and retains the in-memory pending draft.

@@ -73,6 +73,14 @@ const OUTBOX = 'outbox';
 const DRAFTS = 'drafts';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
+let currentDb: IDBDatabase | null = null;
+
+/** Reconnect without deleting the database or any pending writes. */
+export function reopenDeviceDatabase(): void {
+  currentDb?.close();
+  currentDb = null;
+  dbPromise = null;
+}
 
 function openDb(): Promise<IDBDatabase> {
   if (!dbPromise) {
@@ -88,7 +96,12 @@ function openDb(): Promise<IDBDatabase> {
       };
       request.onsuccess = () => {
         const db = request.result;
-        db.onversionchange = () => { db.close(); dbPromise = null; };
+        currentDb = db;
+        const forget = () => {
+          if (currentDb === db) { currentDb = null; dbPromise = null; }
+        };
+        db.onversionchange = () => { db.close(); forget(); };
+        db.onclose = forget;
         resolve(db);
       };
       request.onerror = () => reject(request.error);

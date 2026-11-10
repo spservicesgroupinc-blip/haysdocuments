@@ -46,6 +46,29 @@ function backend() {
 }
 const first = [{ customerName: '=do not execute', jobNumber: 'F-1', contractPrice: 15 }, { customerName: 'Two', jobNumber: 'F-2', contractPrice: 0 }];
 
+test('the complete Code.gs identifies the deployed AI version without exposing its key', () => {
+  const env = backend();
+  const ping = env.sandbox.doGet({ parameter: {} });
+  assert.equal(ping.ok, true);
+  assert.equal(ping.data.backendVersion, '2026-11-10-openrouter-2');
+  assert.ok(ping.data.capabilities.includes('analyzeIntake'));
+  assert.equal(ping.data.aiConfigured, true);
+  assert.doesNotMatch(JSON.stringify(ping), /test-key|Bearer/);
+});
+
+test('the deployed doPost entry point routes uploaded document text through OpenRouter', () => {
+  const env = backend();
+  env.sandbox.UrlFetchApp = { fetch: (url: string, options: any) => {
+    assert.equal(url, 'https://openrouter.ai/api/v1/chat/completions');
+    assert.match(JSON.parse(options.payload).messages[1].content, /Uploaded estimate/);
+    return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '{"customer":{"customerName":"Example"},"financials":{"totalApprovedRcv":12000}}' } }] }) };
+  } };
+  const response = env.sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'analyzeIntake', sessionToken: 'editor', rawText: 'Uploaded estimate. Customer: Example. Total RCV $12,000.' }) } });
+  assert.equal(response.ok, true);
+  assert.equal(response.data.customer.customerName, 'Example');
+  assert.equal(response.data.financials.totalApprovedRcv, 12000);
+});
+
 test('new-job intake sends only the document and never reads or modifies the saved CSV', () => {
   const env = backend();
   env.sandbox.replaceCustomerReference_({ email: 'editor', role: 'editor' }, { customers: first, fileName: 'keep-for-later.csv' });
@@ -61,6 +84,7 @@ test('new-job intake sends only the document and never reads or modifies the sav
   assert.equal(request.provider.require_parameters, true);
   assert.deepEqual(request.provider.max_price, { prompt: 0, completion: 0, request: 0, image: 0 });
   assert.deepEqual(request.response_format, { type: 'json_object' });
+  assert.deepEqual(request.reasoning, { enabled: false });
   assert.equal(request.max_tokens, 6000);
   assert.equal(request.thinking, undefined);
   assert.equal(request.messages.length, 2);

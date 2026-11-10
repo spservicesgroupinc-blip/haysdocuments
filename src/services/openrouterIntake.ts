@@ -5,10 +5,10 @@ import type { AiIntakePayload } from './intakeParser';
 export async function analyzeIntakeWithAi(rawText: string): Promise<AiIntakePayload> {
   if (!rawText.trim()) throw new Error('No intake text to analyze.');
   try {
-    return await callAuthenticatedAppsScript<AiIntakePayload>('analyzeIntake', { rawText }, 60000);
+    return await callAuthenticatedAppsScript<AiIntakePayload>('analyzeIntake', { rawText }, 120000);
   } catch (error) {
     if (error instanceof DatabaseError && error.code === 'unknown_action') {
-      throw new Error('Deploy the latest Apps Script backend to enable AI intake analysis.');
+      throw new Error('The Apps Script URL is serving a version without AI analysis. Replace the entire Code.gs, then select Deploy > Manage deployments > Edit > Version: New version > Deploy. Keep the existing deployment URL. Saving Code.gs alone does not update the live app.');
     }
     throw error;
   }

@@ -38,6 +38,7 @@ import {
   updateOutboxOp,
   persistJobAndOutbox,
   persistDraftAndOutbox,
+  reopenDeviceDatabase,
   completeOutboxOp,
   cacheServerMirrorJob,
   deleteSyncedMirrorJob,
@@ -761,8 +762,17 @@ export function flushDraftSave(): Promise<void> {
   if (!next) return draftWrite;
   pendingDraft = null;
   draftWrite = draftWrite.catch(() => {}).then(async () => {
-    const previous = await getDraft(next.owner);
-    await persistDraftAndOutbox({ ...next, serverUpdatedAt: previous?.serverUpdatedAt }, next.owner);
+    const persist = async () => {
+      const previous = await getDraft(next.owner);
+      await persistDraftAndOutbox({ ...next, serverUpdatedAt: previous?.serverUpdatedAt }, next.owner);
+    };
+    try { await persist(); }
+    catch (err) {
+      const name = err && typeof err === 'object' && 'name' in err ? err.name : '';
+      if (name !== 'UnknownError' && name !== 'InvalidStateError') throw err;
+      reopenDeviceDatabase();
+      await persist();
+    }
     if (state.errorCode === 'device_storage') patchState({ lastError: null, errorCode: null });
     await refreshPendingState();
     if (next.savedAt === draftSequence) patchState({ draftStatus: 'saved', lastDraftSavedAt: next.savedAt });

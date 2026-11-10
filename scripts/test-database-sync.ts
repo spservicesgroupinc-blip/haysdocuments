@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { test, type TestContext } from 'node:test';
 import { build } from 'esbuild';
-import { IDBFactory, IDBKeyRange, IDBObjectStore } from 'fake-indexeddb';
+import { IDBFactory, IDBKeyRange, IDBObjectStore, IDBDatabase, forceCloseDatabase } from 'fake-indexeddb';
 
 // Exercise the real sync engine, transport and IndexedDB transactions together.
 const bundle = await build({
@@ -249,6 +249,47 @@ test('a failed device autosave can retry without requiring the user to type agai
   assert.equal(engine.getSyncState().draftStatus, 'saved');
   assert.equal((await engine.storage.getDraft(owner)).job.recordId, job.recordId);
   assert.equal(engine.getSyncState().lastError, null);
+});
+
+test('autosave reopens an unexpectedly closed browser database without losing the draft', async (t) => {
+  const engine = setup(t, (body) => reply({ job: body.draft.job, updatedAt: '2026-11-10T12:00:00Z' }));
+  const original = IDBDatabase.prototype.transaction;
+  let connection: IDBDatabase | undefined;
+  IDBDatabase.prototype.transaction = function (...args: Parameters<typeof original>) {
+    connection = this;
+    return original.apply(this, args);
+  };
+  try {
+    await engine.storage.getDraft(owner);
+  } finally { IDBDatabase.prototype.transaction = original; }
+  assert.ok(connection);
+  forceCloseDatabase(connection as any);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  engine.scheduleDraftSave(job, job.recordId);
+  await engine.flushDraftSave();
+  assert.equal((await engine.storage.getDraft(owner)).job.recordId, job.recordId);
+});
+
+test('a transient internal browser storage error retries once with a fresh connection', async (t) => {
+  const engine = setup(t, () => reply({}));
+  await engine.storage.getDraft(owner);
+  const original = IDBDatabase.prototype.transaction;
+  let fail = true;
+  IDBDatabase.prototype.transaction = function (...args: Parameters<typeof original>) {
+    if (fail) {
+      fail = false;
+      const error = new Error('Internal error.');
+      error.name = 'UnknownError';
+      throw error;
+    }
+    return original.apply(this, args);
+  };
+  try {
+    engine.scheduleDraftSave(job, job.recordId);
+    await engine.flushDraftSave();
+    assert.equal(engine.getSyncState().draftStatus, 'saved');
+    assert.equal((await engine.storage.getOutboxOps()).length, 1);
+  } finally { IDBDatabase.prototype.transaction = original; }
 });
 
 test('a delayed customer list cannot replace a job saved and synced after the read started', async (t) => {
