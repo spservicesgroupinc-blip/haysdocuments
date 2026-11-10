@@ -1,7 +1,7 @@
 # OpenRouter document autofill migration
 
 The active document app now sends intake text through Apps Script to
-`https://openrouter.ai/api/v1/chat/completions`, using `openrouter/free`. Provider
+`https://openrouter.ai/api/v1/chat/completions`, using `openrouter/auto` (free router). Provider
 prompt, completion, request and image price caps are all zero. JSON support is
 required. Client payloads cannot override the model, routing, prompt or key.
 No paid fallback or automatic retry loop is configured.

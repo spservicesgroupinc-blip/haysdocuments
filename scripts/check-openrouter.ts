@@ -56,6 +56,16 @@ async function main() {
     body: request.options.payload, signal: AbortSignal.timeout(120000),
   });
   const body = await response.text();
+  let diagnostics: Record<string, unknown> = { httpStatus: response.status };
+  try {
+    const envelope = JSON.parse(body);
+    const choice = envelope.choices?.[0];
+    diagnostics = { ...diagnostics, model: envelope.model, finishReason: choice?.finish_reason,
+      contentType: typeof choice?.message?.content, contentLength: choice?.message?.content?.length,
+      fenced: typeof choice?.message?.content === 'string' && choice.message.content.trim().startsWith('```'),
+      cost: envelope.usage?.cost };
+  } catch { /* Do not print upstream bodies or extracted values. */ }
+  console.log('OpenRouter response metadata:', JSON.stringify(diagnostics));
   // Pass the real response through the backend's normal validation and error handling.
   sandbox.UrlFetchApp.fetch = () => ({ getResponseCode: () => response.status, getContentText: () => body });
   const payload = sandbox.analyzeIntake_({ rawText });

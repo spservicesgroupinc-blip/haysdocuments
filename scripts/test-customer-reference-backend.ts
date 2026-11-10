@@ -80,11 +80,11 @@ test('new-job intake sends only the document and never reads or modifies the sav
     return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ customer: { customerName: 'New document customer' }, financials: { totalApprovedRcv: 4250 }, analysisNotes: 'Document-only extraction.' }) } }] }) };
   } };
   const result = env.sandbox.analyzeIntake_({ rawText: 'Customer: New document customer. Approved total: $4,250.' });
-  assert.equal(request.model, 'openrouter/free');
+  assert.equal(request.model, 'openrouter/auto');
   assert.equal(request.provider.require_parameters, true);
   assert.deepEqual(request.provider.max_price, { prompt: 0, completion: 0, request: 0, image: 0 });
   assert.deepEqual(request.response_format, { type: 'json_object' });
-  assert.deepEqual(request.reasoning, { enabled: false });
+  assert.equal(request.reasoning, undefined);
   assert.equal(request.max_tokens, 6000);
   assert.equal(request.thinking, undefined);
   assert.equal(request.messages.length, 2);
@@ -191,7 +191,7 @@ test('client settings cannot override the server key, prompt, or free-only routi
     assert.equal(url, 'https://openrouter.ai/api/v1/chat/completions');
     assert.equal(options.headers.Authorization, 'Bearer test-key');
     const request = JSON.parse(options.payload);
-    assert.equal(request.model, 'openrouter/free');
+    assert.equal(request.model, 'openrouter/auto');
     assert.equal(request.models, undefined);
     assert.deepEqual(request.provider.max_price, { prompt: 0, completion: 0, request: 0, image: 0 });
     assert.equal(request.messages[0].content, env.sandbox.INTAKE_SYSTEM_PROMPT);

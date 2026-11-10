@@ -57,7 +57,7 @@ customer reference list. Image-only scans still require a text layer or OCR befo
 
 Set `OPENROUTER_API_KEY` in **Apps Script > Project Settings > Script Properties**,
 then deploy the updated `src/apps-script/Code.gs` as a new version of the existing
-web app. The backend always uses `openrouter/free`, requires JSON support, and
+web app. The backend always uses `openrouter/auto` (free router), requires JSON support, and
 limits provider prompt, completion, request and image prices to zero. No paid
 model fallback is configured. Free-model availability and account quotas can
 cause an analysis error; job fields stay unchanged on failure.

@@ -105,11 +105,10 @@ function analyzeIntake_(payload) {
       method: 'post', contentType: 'application/json', muteHttpExceptions: true,
       headers: { Authorization: 'Bearer ' + key },
       payload: JSON.stringify({
-        model: 'openrouter/free', messages: messages, temperature: 0.1,
+        model: 'openrouter/auto', messages: messages, temperature: 0.1,
         max_tokens: 6000, stream: false, response_format: { type: 'json_object' },
-        reasoning: { enabled: false },
-        // Keep all provider routing free, including any fallback selected by OpenRouter.
-        // Require JSON support so an endpoint cannot silently ignore response_format.
+        // Route to free models only; require JSON support so an endpoint cannot
+        // silently ignore response_format. No paid fallback.
         provider: { require_parameters: true, max_price: { prompt: 0, completion: 0, request: 0, image: 0 } }
       })
     });
@@ -122,8 +121,11 @@ function analyzeIntake_(payload) {
   try {
     var body = JSON.parse(response.getContentText());
     var choice = body.choices && body.choices[0];
-    if (!choice || choice.finish_reason !== 'stop') throw new Error('Incomplete response');
-    raw = JSON.parse(choice.message.content);
+    if (!choice) throw new Error('No choice in response');
+    if (choice.finish_reason !== 'stop' && choice.finish_reason !== null) throw new Error('Incomplete response: ' + choice.finish_reason);
+    var content = choice.message && choice.message.content;
+    if (!content) throw new Error('Empty message content');
+    raw = JSON.parse(content);
   } catch (error) { throw appError_('ai_invalid_response', 'OpenRouter returned an incomplete or invalid response. Retry the estimate analysis.'); }
   return validateIntakeAnalysis_(raw);
 }

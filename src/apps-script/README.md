@@ -103,7 +103,7 @@ Editors/admins can replace it; signed-in users can read it. The list is a shared
 reference for the team only - it is never sent to the AI.
 
 Set `OPENROUTER_API_KEY` in **Project Settings > Script Properties**. No API key is
-embedded in the frontend. Intake uses `openrouter/free` with temperature 0.1,
+embedded in the frontend. Intake uses `openrouter/auto` (free router) with temperature 0.1,
 a 6,000-token output limit and JSON-object output. Provider routing requires
 parameter support and sets maximum prompt, completion, request and image prices
 to zero. There is no paid fallback or automatic retry loop. The existing
@@ -121,7 +121,7 @@ must show `backendVersion: "2026-11-10-openrouter-2"`, `analyzeIntake` in
 Intake disables optional model reasoning and allows up to two minutes for the
 non-streaming response. It distinguishes the insured's contact information from
 the contractor's and uses the combined RCV on multi-coverage estimates.
-See the [OpenRouter free router](https://openrouter.ai/openrouter/free) and
+See the [OpenRouter free router](https://openrouter.ai/openrouter/auto) and
 [provider price limits](https://openrouter.ai/docs/guides/routing/provider-selection#max-price).
 The old `DEEPSEEK_API_KEY` property is no longer read. A local
 `.env.openrouter.local` supports `npm run ai:check` only; it does not configure
