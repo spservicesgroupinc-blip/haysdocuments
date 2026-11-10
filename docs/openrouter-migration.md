@@ -69,3 +69,9 @@ Local autosave now forgets unexpectedly closed IndexedDB connections and retries
 the database or pending writes. Both new failure/recovery regressions and all
 sixteen sync-engine tests pass. A persistent browser storage fault still raises
 an error and retains the in-memory pending draft.
+
+The replacement Apps Script URL supplied during the follow-up was checked by GET
+and POST: it reports `2026-11-10-openrouter-2` and the `analyzeIntake` capability.
+It currently reports `aiConfigured: false`; the owner must add
+`OPENROUTER_API_KEY` in that project's Script Properties. No key is shipped in
+the frontend or committed to GitHub. The frontend now targets that replacement URL.
