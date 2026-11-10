@@ -18,7 +18,7 @@ import {
   FieldProvenanceType,
   ExtractedSectionSummary,
 } from '../services/intakeParser';
-import { analyzeIntakeWithAi } from '../services/deepseekIntake';
+import { analyzeIntakeWithAi } from '../services/openrouterIntake';
 import { extractTextFromPdfBuffer } from '../services/pdfExtractor';
 import { getMissingJobFields } from '../services/jobReadiness';
 

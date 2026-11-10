@@ -19,7 +19,7 @@ Copy `.env.example` to `.env.local` and set:
 | `VITE_APPS_SCRIPT_URL` | Deployed Apps Script `/exec` URL (the job database) |
 | `VITE_GOOGLE_CLIENT_ID` | OAuth client for Google Drive/Sheets features (web only) |
 | `VITE_DEV_SHARED_SECRET` | **Local development only** — disables auth. Never ship a build with this set. |
-| `DEEPSEEK_API_KEY` | Set in Google Apps Script Properties, never in the frontend environment |
+| `OPENROUTER_API_KEY` | Set in Google Apps Script Properties, never in the frontend environment |
 
 Vite inlines `VITE_*` values at build time — restart `npm run dev` (or rebuild) after changes.
 
@@ -47,6 +47,30 @@ After updating the backend, deploy `src/apps-script/Code.gs` as a **new version 
 existing deployment**, keeping its `/exec` URL. `npm run apps:paste` and
 `npm run apps:chunks` regenerate the editor paste files from this source.
 
+## AI document autofill
+
+Uploaded PDFs and text files (or pasted document text) are analyzed through the
+authenticated Apps Script `analyzeIntake` action. OpenRouter extracts the customer,
+insurance, financial, team and production fields; the app fills the job form and
+marks extracted fields for review. Only the uploaded text is sent, never the saved
+customer reference list. Image-only scans still require a text layer or OCR before intake.
+
+Set `OPENROUTER_API_KEY` in **Apps Script > Project Settings > Script Properties**,
+then deploy the updated `src/apps-script/Code.gs` as a new version of the existing
+web app. The backend always uses `openrouter/free`, requires JSON support, and
+limits provider prompt, completion, request and image prices to zero. No paid
+model fallback is configured. Free-model availability and account quotas can
+cause an analysis error; job fields stay unchanged on failure.
+See the [OpenRouter free router](https://openrouter.ai/openrouter/free) and
+[provider price limits](https://openrouter.ai/docs/guides/routing/provider-selection#max-price).
+
+For a local live check using synthetic document text, place the key in the ignored
+`.env.openrouter.local` as `OPENROUTER_API_KEY=...`, then run
+`npm run ai:check`. This exercises the backend request and the job autofill mapping
+without sending customer data. This local file is not read by Apps Script: the
+Script Property must still be set in the deployed project. Never use a `VITE_`
+variable for an AI key.
+
 ## Commands
 
 | Command | What it does |
@@ -57,6 +81,8 @@ existing deployment**, keeping its `/exec` URL. `npm run apps:paste` and
 | `npm run lint` | Type-check (`tsc --noEmit`) |
 | `npm run pdf:checklist:test` | Approved production checklist layout, populated fields, editing targets and long-value checks |
 | `npm run database:test` | Save/sync/transport regressions, including real IndexedDB transactions |
+| `npm run customers:test` | Customer reference and free-only OpenRouter intake regressions |
+| `npm run ai:check` | Live OpenRouter extraction and autofill check using synthetic text and the locally stored key |
 | `npm run apps:test:drafts` | Current backend draft/job write locks, round trips and session heartbeat checks |
 | `npm run save:ui:test` | Chromium tests for recovery, saving while editing and connection failures (run `npx playwright install chromium` once) |
 | `npm run verify` | Full gate: lint + backend tests + parser tests + build |
