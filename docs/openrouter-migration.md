@@ -72,6 +72,10 @@ an error and retains the in-memory pending draft.
 
 The replacement Apps Script URL supplied during the follow-up was checked by GET
 and POST: it reports `2026-11-10-openrouter-2` and the `analyzeIntake` capability.
-It currently reports `aiConfigured: false`; the owner must add
+At that check it reported `aiConfigured: false`; the owner needed to add
 `OPENROUTER_API_KEY` in that project's Script Properties. No key is shipped in
 the frontend or committed to GitHub. The frontend now targets that replacement URL.
+
+The subsequent replacement deployment provided after key setup was verified with
+`backendVersion: "2026-11-10-openrouter-2"`, `analyzeIntake` support, and
+`aiConfigured: true`. Its URL is now the bundled endpoint in `src/config/appsScript.ts`.
