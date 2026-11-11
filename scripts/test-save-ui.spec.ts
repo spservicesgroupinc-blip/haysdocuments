@@ -36,6 +36,66 @@ async function start(page: Page, handler: (route: Route, body: any) => Promise<v
   await page.goto('/');
 }
 
+test('multiple change orders retain history, cumulative balances and historical PDFs', async ({ page }, testInfo) => {
+  let draft = structuredClone(SAMPLE_WATER);
+  draft.financials.totalApprovedRcv = 10000;
+  Object.assign(draft.changeOrder, { originalContractSum: 10000, netPreviousChanges: 0, changeAmount: 1250.15, changeType: 'increase', scopeDescription: 'Extra repairs' });
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await start(page, async (route, body) => {
+    if (body.action === 'getDraft') await ok(route, { draft: { job: draft, recordId: draft.recordId, updatedAt: '2026-10-15T12:00:00Z' } });
+    else if (body.action === 'saveDraft') { draft = body.draft.job; await ok(route, { job: draft, updatedAt: new Date().toISOString() }); }
+    else if (body.action === 'saveJob') { draft = body.job; await ok(route, body.job); }
+    else await ok(route, {});
+  });
+  await navigate(page, 'changeOrder');
+  const totals = page.getByLabel('Change order totals');
+  await expect(totals).toContainText('$11,250.15');
+  await page.getByRole('button', { name: 'Record order & start next', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Change Order Number', exact: true })).toHaveValue('CO-02');
+  await page.getByRole('combobox', { name: 'Contract Adjustment', exact: true }).selectOption('decrease');
+  await page.getByRole('spinbutton', { name: 'Change Amount', exact: true }).fill('250.05');
+  await page.getByRole('textbox', { name: 'Scope Description', exact: true }).fill('Credit for removed scope');
+  await expect(totals).toContainText('$1,250.15');
+  await expect(totals).toContainText('$11,000.10');
+  await page.screenshot({ path: testInfo.outputPath('change-orders-desktop.png'), fullPage: true });
+  await page.getByRole('button', { name: 'Record order & start next', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Change Order Number', exact: true })).toHaveValue('CO-03');
+  await page.reload();
+  await navigate(page, 'changeOrder');
+  const history = page.getByRole('region', { name: 'Recorded change orders', exact: true });
+  await expect(history).toContainText('Recorded change orders (2)');
+  await expect(totals).toContainText('$1,000.10');
+  await navigate(page, 'financials');
+  await page.locator('#rcv-input').fill('50000');
+  await navigate(page, 'changeOrder');
+  await expect(totals).toContainText('$10,000.00');
+  await expect(totals).toContainText('$11,000.10');
+  await history.getByRole('button', { name: 'Preview Change Order CO-01 (recorded) PDF', exact: true }).click();
+  const modal = page.locator('div.fixed.inset-0.z-50').filter({ has: page.getByTitle('Close modal') });
+  await expect(modal.locator('canvas')).toBeVisible();
+  await expect(modal.getByTitle('Edit fields directly on the PDF')).toHaveCount(0);
+  const downloaded = page.waitForEvent('download');
+  await modal.getByTitle('Download PDF', { exact: true }).click();
+  const download = await downloaded;
+  expect(download.suggestedFilename()).toContain('CO-01');
+  const stream = await download.createReadStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.js');
+  const pdf = await pdfjs.getDocument({ data: new Uint8Array(Buffer.concat(chunks)), isEvalSupported: false, useSystemFonts: true }).promise;
+  const content = await (await pdf.getPage(1)).getTextContent();
+  const text = content.items.map((item: any) => item.str || '').join(' ');
+  expect(text).toContain('$11,250.15');
+  expect(text).not.toContain('$50,000.00');
+  await modal.getByTitle('Close modal').click();
+  await page.setViewportSize({ width: 375, height: 850 });
+  await expect(page.getByRole('textbox', { name: 'Change Order Number', exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('change-orders-mobile.png'), fullPage: true });
+  expect(errors).toEqual([]);
+});
+
 test('approved production checklist previews, edits and downloads in the browser', async ({ page }, testInfo) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));

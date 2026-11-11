@@ -75,6 +75,7 @@ import { ConfirmModal } from './components/ConfirmModal';
 import { PwaStatus } from './components/PwaStatus';
 import { ProvenanceRecord } from './services/intakeParser';
 import { getMissingJobFields, type MissingJobField } from './services/jobReadiness';
+import { recordChangeOrder } from './services/changeOrders';
 import { CHECKLIST_BOXES } from './types/productionChecklist';
 import { ArrowLeft, ArrowRight, Loader2 } from 'lucide-react';
 
@@ -478,10 +479,6 @@ export default function App() {
         midProgressPayment,
         balancePayment,
       },
-      changeOrder: {
-        ...current.changeOrder,
-        originalContractSum: rcvVal,
-      },
     };
   };
 
@@ -523,6 +520,35 @@ export default function App() {
       ...prev,
       changeOrder: { ...prev.changeOrder, [field]: value },
     }));
+  };
+
+  const handleRecordChangeOrder = async () => {
+    if (saveInProgressRef.current) return;
+    const snapshot = jobDataRef.current;
+    const generation = workspaceGenerationRef.current;
+    saveInProgressRef.current = true;
+    setIsSavingJob(true);
+    try {
+      const next = recordChangeOrder(snapshot);
+      const outcome = await saveJobOffline(next);
+      if (workspaceGenerationRef.current !== generation) return;
+      // A recorded order must survive an immediate reload, without waiting for
+      // the normal debounced workspace autosave after the next render.
+      scheduleDraftSave(outcome.record, outcome.recordId);
+      await flushDraftSave();
+      if (workspaceGenerationRef.current !== generation) return;
+      setRecordId(outcome.recordId);
+      if (jobDataRef.current === snapshot) replaceJob(outcome.record);
+      else setJobData(latest => ({ ...latest, recordId: outcome.recordId,
+        changeOrderHistory: next.changeOrderHistory, changeOrder: next.changeOrder }));
+      void readCachedJobSummaries().then(setSavedJobs).catch(() => {});
+      showStatus('success', `${snapshot.changeOrder.changeOrderNumber} recorded on this device and queued for sync. ${next.changeOrder.changeOrderNumber} is ready.`);
+    } catch (err: any) {
+      showStatus('error', err?.message || 'Could not record this change order.');
+    } finally {
+      saveInProgressRef.current = false;
+      setIsSavingJob(false);
+    }
   };
 
   const handleChecklistChange = (
@@ -621,6 +647,8 @@ export default function App() {
 
   /** Routes an edit from the click-to-edit PDF preview into the job record. */
   const handlePdfFieldChange = (field: string, value: string) => {
+    if (jobDataRef.current.changeOrderHistory?.length &&
+      ['changeOrder.originalContractSum', 'changeOrder.netPreviousChanges'].includes(field)) return;
     const dot = field.indexOf('.');
     if (dot === -1) return;
     const section = field.slice(0, dot);
@@ -1011,10 +1039,11 @@ export default function App() {
             {activeTab === 'changeOrder' && (
               <SectionChangeOrder
                 data={jobData.changeOrder}
-                contractRcv={jobData.financials.totalApprovedRcv}
                 jobData={jobData}
                 onPreview={handleOpenPreview}
                 onChange={handleChangeOrderChange}
+                onRecordOrder={handleRecordChangeOrder}
+                isSaving={isSavingJob}
               />
             )}
 
@@ -1099,7 +1128,8 @@ export default function App() {
         }}
         onDownload={handlePreviewDownload}
         jobData={jobData}
-        editableFields={previewDoc ? getPdfFieldSchema(previewDoc.id) : []}
+        editableFields={previewDoc ? getPdfFieldSchema(previewDoc.id).filter(field =>
+          !jobData.changeOrderHistory?.length || !['changeOrder.originalContractSum', 'changeOrder.netPreviousChanges'].includes(field.key)) : []}
         spans={previewSpans}
         onFieldChange={handlePdfFieldChange}
         onSaveToDrive={previewDoc ? handleSaveDocToDrive : undefined}

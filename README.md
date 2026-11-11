@@ -80,6 +80,26 @@ The manager line uses the branch manager. To regenerate the embedded blank artwo
 from the approved reference, run `python scripts/prepare-checklist-template.py <reference.pdf>`
 with `pypdf` installed. The script checks the source fingerprint before removing entries.
 
+## Multiple change orders
+
+The Change Order section keeps a draft and a history of recorded orders for each job.
+After an order is authorized, choose **Record order & start next**. This saves the
+order on the device, queues the job for cloud sync, and starts the next numbered
+draft. Previewing or downloading an order never adds it to the balance a second time.
+
+The original contract sum is locked when the first order is recorded. Each later
+order uses that original sum plus the net of all recorded increases and decreases,
+then applies the current adjustment. “Unchanged” applies $0. Calculations use integer
+cents and are shared by the screen, standalone PDF and combined packet. Earlier
+orders can be previewed and downloaded from history with their original figures;
+filenames include the order number. Correct a recorded order with another order.
+
+For an existing job whose earlier orders were made outside this app, enter their
+net amount in **Earlier changes made outside this app** before recording the first
+order here. Old PDFs cannot reconstruct that history automatically. The job's
+existing database record size limit still applies to the combined history and notes.
+Run `npm run changes:test` for the calculation and PDF checks.
+
 ## PWA (browser install)
 
 The production build ships a web app manifest and service worker (`src/sw.ts`) that precache
