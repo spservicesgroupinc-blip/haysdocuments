@@ -1,7 +1,7 @@
 import { callAuthenticatedAppsScript, DatabaseError } from './appsScriptService';
 import type { AiIntakePayload } from './intakeParser';
 
-/** Apps Script calls DeepSeek with its server-side key; the uploaded text is the only context. */
+/** Apps Script calls OpenRouter's free router with its server-side key and only the uploaded text. */
 export async function analyzeIntakeWithAi(rawText: string): Promise<AiIntakePayload> {
   if (!rawText.trim()) throw new Error('No intake text to analyze.');
   try {

@@ -257,6 +257,26 @@ const intakePayload = {
 const aiResponse = (route: Route) => ok(route, intakePayload);
 const intakeInput = (page: Page) => page.getByRole('textbox', { name: 'Or paste intake notes', exact: true });
 
+test('OpenRouter free-model limits show a retry message without changing the current job', async ({ page }) => {
+  await start(page, async (route, body) => {
+    if (body.action === 'getDraft') await ok(route, { draft: { job, recordId: job.recordId, updatedAt: '2026-10-06T12:00:00Z' } });
+    else if (body.action === 'saveDraft') await ok(route, { job: body.draft.job, updatedAt: new Date().toISOString() });
+    else await ok(route, {});
+  });
+  await page.route(/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/, async route => {
+    if (route.request().postDataJSON().action !== 'analyzeIntake') return route.fallback();
+    await route.fulfill({ contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' },
+      body: JSON.stringify({ ok: false, code: 'ai_rate_limited', error: 'OpenRouter free-model request limit reached. Wait and retry the estimate analysis.' }) });
+  });
+  await navigate(page, 'intake');
+  await intakeInput(page).fill('Synthetic estimate for a new test customer. Approved RCV: $5,000.');
+  await page.getByRole('button', { name: 'Analyze intake', exact: true }).click();
+  await expect(page.getByText(/OpenRouter free-model request limit reached/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Analyze intake', exact: true })).toBeEnabled();
+  await navigate(page, 'customer');
+  await expect(page.locator('#customer-customerName')).toHaveValue('Recovered customer');
+});
+
 async function openNewJob(page: Page) {
   await page.getByRole('banner').getByRole('button', { name: 'New job', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Start New Restoration Job?' })).toBeVisible();

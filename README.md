@@ -19,9 +19,19 @@ Copy `.env.example` to `.env.local` and set:
 | `VITE_APPS_SCRIPT_URL` | Deployed Apps Script `/exec` URL (the job database) |
 | `VITE_GOOGLE_CLIENT_ID` | OAuth client for Google Drive/Sheets features (web only) |
 | `VITE_DEV_SHARED_SECRET` | **Local development only** — disables auth. Never ship a build with this set. |
-| `DEEPSEEK_API_KEY` | Set in Google Apps Script Properties, never in the frontend environment |
+| `OPENROUTER_API_KEY` | Set in Google Apps Script Properties, never in the frontend environment |
 
 Vite inlines `VITE_*` values at build time — restart `npm run dev` (or rebuild) after changes.
+
+AI intake uses OpenRouter's `openrouter/free` router to select an available free
+model. Set `OPENROUTER_API_KEY` in the backend's **Project Settings > Script
+Properties** and deploy the updated `Code.gs` as a new version of the existing
+deployment. The key is never bundled in the web or desktop app. No paid-model
+fallback is configured; free-model limits or outages return an error and leave
+the current job untouched. Manual entry, PDFs, and change-order math work without AI.
+Only the uploaded or pasted intake text is sent, never the shared customer list.
+The selected free model/provider may vary; review OpenRouter's account privacy
+settings and the selected providers' data policies before submitting customer data.
 
 If saving reports a non-JSON response, check the configured `/exec` URL first. The client
 normalizes copied links and Google account-specific URLs to the public deployment URL.

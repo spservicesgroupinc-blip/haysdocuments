@@ -7,7 +7,7 @@ function backend() {
   const sheets = new Map<string, any>();
   let writes = 0, locked = false, released = 0, failWrite = false;
   const sandbox: any = {
-    PropertiesService: { getScriptProperties: () => ({ getProperty: (key: string) => key === 'DEEPSEEK_API_KEY' ? 'test-key' : null }) },
+    PropertiesService: { getScriptProperties: () => ({ getProperty: (key: string) => key === 'OPENROUTER_API_KEY' ? 'test-key' : null }) },
     Utilities: { getUuid: () => `version-${writes}`, newBlob: (value: string) => ({ getBytes: () => Buffer.from(value) }), sleep: () => {} },
     LockService: { getScriptLock: () => ({ tryLock: () => { assert.equal(locked, false); locked = true; return true; }, releaseLock: () => { locked = false; released++; } }) },
     SpreadsheetApp: { flush: () => {} },
@@ -57,8 +57,12 @@ test('new-job intake sends only the document and never reads or modifies the sav
     return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ customer: { customerName: 'New document customer' }, financials: { totalApprovedRcv: 4250 }, analysisNotes: 'Document-only extraction.' }) } }] }) };
   } };
   const result = env.sandbox.analyzeIntake_({ rawText: 'Customer: New document customer. Approved total: $4,250.' });
-  assert.equal(request.model, 'deepseek-chat');
+  assert.equal(request.model, 'openrouter/free');
   assert.equal(request.max_tokens, 6000);
+  assert.equal(request.stream, false);
+  assert.equal(request.response_format.type, 'json_object');
+  assert.equal(request.reasoning.enabled, false);
+  assert.equal(request.models, undefined, 'No fallback model list may request a paid model');
   assert.equal(request.thinking, undefined);
   assert.equal(request.messages.length, 2);
   assert.doesNotMatch(request.messages[0].content, /knowledge.?base|customer reference|knowledgeMatch/i);
@@ -95,7 +99,7 @@ test('estimate analysis sends only the uploaded document and never reads the cus
   env.sandbox.getCustomerReference_ = () => { throw new Error('The customer list must not be read by analyzeIntake'); };
   let request: any;
   env.sandbox.UrlFetchApp = { fetch: (url: string, options: any) => {
-    assert.equal(url, 'https://api.deepseek.com/chat/completions');
+    assert.equal(url, 'https://openrouter.ai/api/v1/chat/completions');
     request = JSON.parse(options.payload);
     assert.equal(options.headers.Authorization, 'Bearer test-key');
     return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ customer: { customerName: 'Smith Jane', jobNumber: 'DASH-2', lossAddress: '20 Second St' }, financials: { totalApprovedRcv: 2200 } }) } }] }) };
@@ -143,17 +147,68 @@ test('extraction responses are normalized and any legacy match fields are droppe
 test('missing configuration and API errors fail explicitly, and storage is never touched', () => {
   const env = backend();
   env.sandbox.PropertiesService = { getScriptProperties: () => ({ getProperty: () => null }) };
-  assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Estimate' }), /DEEPSEEK_API_KEY/);
+  assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Estimate' }), /OPENROUTER_API_KEY/);
   env.sandbox.PropertiesService = { getScriptProperties: () => ({ getProperty: () => 'test-key' }) };
   for (const [status, body] of [[503, 'unavailable'], [200, '{}'], [200, JSON.stringify({ choices: [{ finish_reason: 'length' }] })]] as const) {
     env.sandbox.UrlFetchApp = { fetch: () => ({ getResponseCode: () => status, getContentText: () => body }) };
-    assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Estimate' }), /DeepSeek/);
+    assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Estimate' }), /OpenRouter/);
   }
   // Storage outages are irrelevant: analysis must not read the shared customer list.
   env.sandbox.UrlFetchApp = { fetch: () => ({ getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ customer: { customerName: 'Jane Smith' } }) } }] }) }) };
   env.sandbox.getCustomerReference_ = () => { throw new Error('Storage unavailable'); };
   const analyzed = env.sandbox.analyzeIntake_({ rawText: 'Estimate for Jane Smith' });
   assert.equal(analyzed.customer.customerName, 'Jane Smith');
+});
+
+test('OpenRouter auth, quota, rate limits, and unavailable free models return safe actionable errors', () => {
+  const env = backend();
+  for (const [status, code, message] of [
+    [401, 'ai_not_configured', /API key/],
+    [403, 'ai_not_configured', /permissions/],
+    [402, 'ai_quota', /quota/],
+    [429, 'ai_rate_limited', /Wait and retry/],
+    [404, 'ai_unavailable', /No paid fallback/],
+    [503, 'ai_unavailable', /free model/],
+  ] as const) {
+    let requests = 0;
+    env.sandbox.UrlFetchApp = { fetch: (_url: string, options: any) => {
+      requests++;
+      assert.equal(JSON.parse(options.payload).model, 'openrouter/free');
+      return { getResponseCode: () => status, getContentText: () => 'sensitive provider response with test-key' };
+    } };
+    assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Synthetic test estimate' }), (error: any) => {
+      assert.equal(error.code, code);
+      assert.match(error.message, message);
+      assert.doesNotMatch(error.message, /sensitive provider response|test-key/);
+      return true;
+    });
+    assert.equal(requests, 1, 'Failures must not silently retry against another model');
+  }
+  env.sandbox.UrlFetchApp = { fetch: () => { throw new Error('private transport error test-key'); } };
+  assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Estimate' }), (error: any) => {
+    assert.equal(error.code, 'ai_unavailable');
+    assert.doesNotMatch(error.message, /private transport|test-key/);
+    return true;
+  });
+});
+
+test('only complete JSON content is applied; reasoning, refusals and partial output are rejected', () => {
+  const env = backend();
+  const response = (body: unknown) => {
+    env.sandbox.UrlFetchApp = { fetch: () => ({ getResponseCode: () => 200, getContentText: () => JSON.stringify(body) }) };
+  };
+  response({ choices: [{ finish_reason: 'stop', message: { content: '```json\n{"customer":{"customerName":"Synthetic customer"}}\n```', reasoning: 'Not extraction data' } }], usage: { completion_tokens_details: { reasoning_tokens: 50 } } });
+  assert.equal(env.sandbox.analyzeIntake_({ rawText: 'Test document' }).customer.customerName, 'Synthetic customer');
+  for (const body of [
+    { error: { message: 'provider failure' } },
+    { choices: [{ finish_reason: 'length', message: { content: '{"customer":{}}' } }] },
+    { choices: [{ finish_reason: 'stop', message: { content: null, reasoning: '{"customer":{}}' } }] },
+    { choices: [{ finish_reason: 'stop', message: { content: 'Here is the answer: {"customer":{}}' } }] },
+    { choices: [{ finish_reason: 'stop', message: { content: '[]' } }] },
+  ]) {
+    response(body);
+    assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Test document' }), (error: any) => error.code === 'ai_invalid_response');
+  }
 });
 test('viewer, duplicate, empty and invalid uploads cannot alter the shared snapshot', () => {
   const env = backend();

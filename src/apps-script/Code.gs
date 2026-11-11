@@ -974,8 +974,8 @@ function analyzeIntake_(payload) {
   if (typeof payload.rawText !== 'string' || !payload.rawText.trim()) throw appError_('bad_request', 'No intake text to analyze.');
   if (Utilities.newBlob(payload.rawText).getBytes().length > 100000) throw appError_('context_too_large', 'Estimate text exceeds 100 KB. Upload a shorter estimate summary.');
   var props = PropertiesService.getScriptProperties();
-  var key = props.getProperty('DEEPSEEK_API_KEY');
-  if (!key) throw appError_('ai_not_configured', 'Set DEEPSEEK_API_KEY in Apps Script Properties to enable estimate analysis.');
+  var key = String(props.getProperty('OPENROUTER_API_KEY') || '').trim();
+  if (!key) throw appError_('ai_not_configured', 'Set OPENROUTER_API_KEY in Apps Script Properties to enable estimate analysis.');
   // The uploaded document is the ONLY context: no customer list data is read or sent.
   var messages = [
     { role: 'system', content: INTAKE_SYSTEM_PROMPT },
@@ -983,20 +983,28 @@ function analyzeIntake_(payload) {
   ];
   var response;
   try {
-    response = UrlFetchApp.fetch('https://api.deepseek.com/chat/completions', {
+    response = UrlFetchApp.fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'post', contentType: 'application/json', muteHttpExceptions: true,
       headers: { Authorization: 'Bearer ' + key },
-      payload: JSON.stringify({ model: 'deepseek-chat', messages: messages, temperature: 0.1, max_tokens: 6000, stream: false, response_format: { type: 'json_object' } })
+      // Apps Script returns one complete JSON response; no Node SDK is needed.
+      // The free router selects a compatible free model, never a paid fallback.
+      payload: JSON.stringify({ model: 'openrouter/free', messages: messages, temperature: 0.1, max_tokens: 6000, stream: false, response_format: { type: 'json_object' }, reasoning: { enabled: false } })
     });
-  } catch (error) { throw appError_('ai_unavailable', 'Could not reach DeepSeek. Retry the estimate analysis.'); }
-  if (response.getResponseCode() !== 200) throw appError_('ai_unavailable', 'DeepSeek request failed (HTTP ' + response.getResponseCode() + '). Check the server API key, quota and model configuration, then retry.');
+  } catch (error) { throw appError_('ai_unavailable', 'Could not reach OpenRouter. Retry the estimate analysis.'); }
+  var status = response.getResponseCode();
+  if (status === 401 || status === 403) throw appError_('ai_not_configured', 'OpenRouter rejected the server API key or account permissions. Check OPENROUTER_API_KEY in Apps Script Properties.');
+  if (status === 402) throw appError_('ai_quota', 'OpenRouter could not serve this free request. Check the account quota and key limits, then retry. No paid model was requested.');
+  if (status === 429) throw appError_('ai_rate_limited', 'OpenRouter free-model request limit reached. Wait and retry the estimate analysis.');
+  if (status !== 200) throw appError_('ai_unavailable', 'OpenRouter free-model request failed (HTTP ' + status + '). Retry when a free model is available. No paid fallback is configured.');
   var raw;
   try {
     var body = JSON.parse(response.getContentText());
     var choice = body.choices && body.choices[0];
-    if (!choice || choice.finish_reason !== 'stop') throw new Error('Incomplete response');
-    raw = JSON.parse(choice.message.content);
-  } catch (error) { throw appError_('ai_invalid_response', 'DeepSeek returned an incomplete or invalid response. Retry the estimate analysis.'); }
+    if (!choice || choice.finish_reason !== 'stop' || !choice.message || typeof choice.message.content !== 'string') throw new Error('Incomplete response');
+    // Accept a single JSON code fence, but never guess from prose or reasoning.
+    var content = choice.message.content.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i, '$1');
+    raw = JSON.parse(content);
+  } catch (error) { throw appError_('ai_invalid_response', 'OpenRouter returned an incomplete or invalid extraction. Retry the estimate analysis.'); }
   return validateIntakeAnalysis_(raw);
 }
 

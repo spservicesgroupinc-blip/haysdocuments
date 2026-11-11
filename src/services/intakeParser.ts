@@ -63,7 +63,7 @@ export interface IntakeParseResult {
 }
 
 /**
- * Structured extraction returned by the DeepSeek intake analysis call.
+ * Structured extraction returned by the OpenRouter intake analysis call.
  * Section objects mirror the Master Job Record shape; values are raw JSON
  * (strings, numbers, booleans, null) that the intake engine sanitizes before
  * they are routed into the record.
@@ -1535,9 +1535,9 @@ export function parseRawIntakeText(rawText: string, existingJob?: RestorationJob
 }
 
 /* ------------------------------------------------------------------ *
- * AI (DeepSeek) extraction routing
+ * AI (OpenRouter) extraction routing
  *
- * The DeepSeek intake service returns a structured extraction of the
+ * The OpenRouter intake service returns a structured extraction of the
  * document. This engine sanitizes each AI value, routes it into the
  * master record through the same labelled field definitions and
  * provenance tracking as the rules parser, and computes the same
@@ -1636,13 +1636,13 @@ const AI_PROD_NOTE_LABELS: Record<keyof ProductionNotesData, string> = {
 };
 
 /**
- * Routes a DeepSeek AI extraction into the Master Job Record.
+ * Routes an OpenRouter AI extraction into the Master Job Record.
  *
  * Mirrors parseRawIntakeText: when an existing job is supplied the AI result is
  * MERGED into it - fields the document does not mention keep their current
  * values - and all derived defaults (payment splits, net claim value, drafted
  * loss description) are computed the same way. Provenance records the source
- * as AI (DeepSeek) extractions so the review chips distinguish them from the
+ * as AI (OpenRouter) extractions so the review chips distinguish them from the
  * built-in rules parser.
  */
 export function applyAiExtractionToJob(
@@ -1692,7 +1692,7 @@ export function applyAiExtractionToJob(
     }
 
     const short = display.length > 70 ? display.slice(0, 67).trim() + '...' : display;
-    applyExtractedValue(state, def, { value, display }, `AI (DeepSeek) extracted: "${short}"`);
+    applyExtractedValue(state, def, { value, display }, `AI (OpenRouter) extracted: "${short}"`);
   }
 
   // Production Notes - drafted by the AI from the loss narrative. Never clobber
@@ -1722,7 +1722,7 @@ export function applyAiExtractionToJob(
       { key: 'mailingCityStateZip', label: 'Mailing City/State/ZIP', section: 'customer' },
       cityZip.slice(0, 100),
       'EXTRACTED',
-      'AI (DeepSeek) extracted the city/state/ZIP from the address'
+      'AI (OpenRouter) extracted the city/state/ZIP from the address'
     );
   }
 
@@ -1737,7 +1737,7 @@ export function applyAiExtractionToJob(
         { key: 'spouseLast4Ssn', label: 'Spouse Last 4 SSN', section: 'mortgage' },
         '\u2022\u2022\u2022\u2022 ' + digits.slice(-4),
         'EXTRACTED',
-        'AI (DeepSeek) extracted the spouse last-4 SSN'
+        'AI (OpenRouter) extracted the spouse last-4 SSN'
       );
     }
   }

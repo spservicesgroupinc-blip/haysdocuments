@@ -92,7 +92,7 @@ Two things stay on the device on purpose, and neither is customer data:
 `saveDraft` / `getDraft` are the two actions behind the shared draft, and the `Drafts` sheet is
 created on first use, so an already-provisioned spreadsheet does not need a repair run.
 
-### Customer list and DeepSeek estimate analysis
+### Customer list and OpenRouter estimate analysis
 
 The Customer Knowledge Base page imports Customer, Job Number, Estimate Amount
 (or Contract Price), Job Address, Loss City, Loss State, and Loss ZIP. Other CSV
@@ -102,13 +102,26 @@ write, including clearing old trailing rows. The source CSV is not retained.
 Editors/admins can replace it; signed-in users can read it. The list is a shared
 reference for the team only - it is never sent to the AI.
 
-Set `DEEPSEEK_API_KEY` in **Project Settings > Script Properties**. No API key is
-embedded in the frontend. Intake uses the earlier `deepseek-chat` request with
-temperature 0.1 and a 6,000-token output limit. The existing external-request OAuth scope is sufficient.
-See [DeepSeek chat completions](https://api-docs.deepseek.com/api/create-chat-completion/).
+Set `OPENROUTER_API_KEY` in **Project Settings > Script Properties**. Do not put the
+key in source files, `.env.example`, `VITE_*` variables, or the browser. Intake uses
+`openrouter/free`, the automatic free-model router, with temperature 0.1, a
+6,000-token output limit, and JSON-object responses. Reasoning is disabled when
+supported so the output budget is available for the extraction. The existing
+external-request OAuth scope is sufficient. The backend calls the HTTP API
+directly: Apps Script does not run the Node SDK or stream partial results.
+See [OpenRouter's free router](https://openrouter.ai/openrouter/free) and
+[API reference](https://openrouter.ai/docs/api/reference/overview).
+
+There is no paid-model fallback. Missing/invalid credentials, free-model limits,
+unavailable models, and malformed/truncated responses produce actionable errors.
+Only a validated, complete extraction is returned to the browser; no API key,
+raw provider error, or reasoning is returned or logged. The selected free
+model/provider may vary. Review account privacy settings and provider data
+policies before submitting customer information; some free endpoints restrict
+personal or confidential data. Test deployments with synthetic data first.
 
 The authenticated `analyzeIntake` action accepts `{ rawText }`. Apps Script sends
-the uploaded document text to DeepSeek as the ONLY context and returns the
+the uploaded document text to OpenRouter as the ONLY context and returns the
 extraction fields (customer, insurance, financials, team, mortgage, changeOrder,
 productionNotes, checklist, missingCoreFields, analysisNotes). The shared
 customer list is never read or sent, and the model never receives a
