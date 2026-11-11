@@ -23,6 +23,16 @@ Copy `.env.example` to `.env.local` and set:
 
 Vite inlines `VITE_*` values at build time — restart `npm run dev` (or rebuild) after changes.
 
+AI intake uses OpenRouter's `openrouter/free` router to select an available free
+model. Set `OPENROUTER_API_KEY` in the backend's **Project Settings > Script
+Properties** and deploy the updated `Code.gs` as a new version of the existing
+deployment. The key is never bundled in the web or desktop app. No paid-model
+fallback is configured; free-model limits or outages return an error and leave
+the current job untouched. Manual entry, PDFs, and change-order math work without AI.
+Only the uploaded or pasted intake text is sent, never the shared customer list.
+The selected free model/provider may vary; review OpenRouter's account privacy
+settings and the selected providers' data policies before submitting customer data.
+
 If saving reports a non-JSON response, check the configured `/exec` URL first. The client
 normalizes copied links and Google account-specific URLs to the public deployment URL.
 Google sign-in pages, unavailable deployments and invalid responses produce separate
@@ -108,6 +118,26 @@ from the printed form (loss address, job name and self-pay) remain in the fields
 The manager line uses the branch manager. To regenerate the embedded blank artwork
 from the approved reference, run `python scripts/prepare-checklist-template.py <reference.pdf>`
 with `pypdf` installed. The script checks the source fingerprint before removing entries.
+
+## Multiple change orders
+
+The Change Order section keeps a draft and a history of recorded orders for each job.
+After an order is authorized, choose **Record order & start next**. This saves the
+order on the device, queues the job for cloud sync, and starts the next numbered
+draft. Previewing or downloading an order never adds it to the balance a second time.
+
+The original contract sum is locked when the first order is recorded. Each later
+order uses that original sum plus the net of all recorded increases and decreases,
+then applies the current adjustment. “Unchanged” applies $0. Calculations use integer
+cents and are shared by the screen, standalone PDF and combined packet. Earlier
+orders can be previewed and downloaded from history with their original figures;
+filenames include the order number. Correct a recorded order with another order.
+
+For an existing job whose earlier orders were made outside this app, enter their
+net amount in **Earlier changes made outside this app** before recording the first
+order here. Old PDFs cannot reconstruct that history automatically. The job's
+existing database record size limit still applies to the combined history and notes.
+Run `npm run changes:test` for the calculation and PDF checks.
 
 ## PWA (browser install)
 

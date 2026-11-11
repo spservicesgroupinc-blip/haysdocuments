@@ -1,42 +1,34 @@
 import React from 'react';
-import { FileEdit, DollarSign, Calendar, PlusCircle, MinusCircle } from 'lucide-react';
+import { FileEdit, DollarSign, Plus, Loader2 } from 'lucide-react';
 import { ChangeOrderData, RestorationJobData } from '../types/jobData';
 import { DOC } from '../services/documentCatalog';
 import { formatCurrency } from '../services/pdfService';
 import { SectionPdfActions, type PdfPreviewRequest } from './SectionPdfActions';
+import { calculateChangeOrder } from '../services/changeOrders';
 
 interface SectionChangeOrderProps {
   data: ChangeOrderData;
-  contractRcv: number | '';
   jobData: RestorationJobData;
   onPreview: PdfPreviewRequest;
   onChange: (field: keyof ChangeOrderData, value: any) => void;
-  hidePdfActions?: boolean;
+  onRecordOrder: () => Promise<void>;
+  isSaving: boolean;
 }
 
 export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
   data,
-  contractRcv,
   jobData,
   onPreview,
   onChange,
-  hidePdfActions = false,
+  onRecordOrder,
+  isSaving,
 }) => {
-  const origSum =
-    typeof data.originalContractSum === 'number'
-      ? data.originalContractSum
-      : typeof contractRcv === 'number'
-      ? contractRcv
-      : 0;
-
-  const prevChanges = typeof data.netPreviousChanges === 'number' ? data.netPreviousChanges : 0;
-  const currentDelta =
-    (data.changeType === 'decrease' ? -1 : data.changeType === 'increase' ? 1 : 0) *
-    (typeof data.changeAmount === 'number' ? data.changeAmount : 0);
-  const newContractTotal = origSum + prevChanges + currentDelta;
+  const history = jobData.changeOrderHistory ?? [];
+  const totals = calculateChangeOrder(jobData);
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5">
+      <fieldset disabled={isSaving} className="min-w-0">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-5 pb-4 border-b border-slate-100">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-slate-100 text-slate-500">
@@ -85,6 +77,7 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
           </label>
           <input
             id="change-order-number"
+            aria-label="Change Order Number"
             type="text"
             value={data.changeOrderNumber}
             onChange={(e) => onChange('changeOrderNumber', e.target.value)}
@@ -100,6 +93,7 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
           </label>
           <input
             id="change-order-date"
+            aria-label="Change Order Date"
             type="date"
             value={data.changeOrderDate}
             onChange={(e) => onChange('changeOrderDate', e.target.value)}
@@ -109,11 +103,12 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
 
         {/* Change Type: Increase / Decrease */}
         <div>
-          <label htmlFor="change-order-type" className="block text-xs font-semibold text-slate-700 mb-1">
+          <label htmlFor="change-order-adjustment" className="block text-xs font-semibold text-slate-700 mb-1">
             Contract Adjustment
           </label>
           <select
-            id="change-order-type"
+            id="change-order-adjustment"
+            aria-label="Contract Adjustment"
             value={data.changeType}
             onChange={(e) => onChange('changeType', e.target.value)}
             className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg text-slate-900 font-medium focus:bg-white focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition"
@@ -135,9 +130,12 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
             </span>
             <input
               id="change-order-amount"
+              aria-label="Change Amount"
               type="number"
+              min="0"
               step="0.01"
-              value={data.changeAmount}
+              disabled={data.changeType === 'unchanged'}
+              value={data.changeType === 'unchanged' ? 0 : data.changeAmount}
               onChange={(e) =>
                 onChange('changeAmount', e.target.value === '' ? '' : parseFloat(e.target.value))
               }
@@ -154,10 +152,13 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
           </label>
           <input
             id="change-order-days"
+            aria-label="Added Working Days"
             type="number"
+            min="0"
+            step="1"
             value={data.addedDays}
             onChange={(e) =>
-              onChange('addedDays', e.target.value === '' ? '' : parseInt(e.target.value))
+              onChange('addedDays', e.target.value === '' ? '' : Number(e.target.value))
             }
             placeholder="5"
             className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg text-slate-900 focus:bg-white focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition"
@@ -165,29 +166,55 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
         </div>
 
         {/* Summary Mini Bar */}
-        <div className="sm:col-span-2 lg:col-span-3 bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="sm:col-span-2 lg:col-span-3 bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs" aria-label="Change order totals">
           <div>
             <span className="text-slate-400 block text-[10px]">Orig Contract Sum:</span>
-            <span className="font-semibold text-slate-800">{formatCurrency(origSum)}</span>
+            <span className="font-semibold text-slate-800">{formatCurrency(totals.original)}</span>
+          </div>
+          <div>
+            <span className="text-slate-500 block text-[11px]">Previous changes:</span>
+            <span className="font-semibold text-slate-800">{formatCurrency(totals.previous)}</span>
+          </div>
+          <div>
+            <span className="text-slate-500 block text-[11px]">Before this order:</span>
+            <span className="font-semibold text-slate-800">{formatCurrency(totals.prior)}</span>
           </div>
           <div>
             <span className="text-slate-400 block text-[10px]">Adjustment:</span>
             <span
               className={`font-semibold ${
-                currentDelta >= 0 ? 'text-emerald-600' : 'text-rose-600'
+                totals.adjustment >= 0 ? 'text-emerald-600' : 'text-rose-600'
               }`}
             >
-              {currentDelta >= 0 ? '+' : ''}
-              {formatCurrency(currentDelta)}
+              {totals.adjustment >= 0 ? '+' : ''}
+              {formatCurrency(totals.adjustment)}
             </span>
           </div>
           <div>
             <span className="text-slate-400 block text-[10px]">New Adjusted Total:</span>
             <span className="font-black text-slate-900 text-sm">
-              {formatCurrency(newContractTotal)}
+              {formatCurrency(totals.total)}
             </span>
           </div>
         </div>
+
+        {history.length === 0 && <>
+          <div className="sm:col-span-2">
+            <label htmlFor="change-order-original" className="block text-xs font-semibold text-slate-700 mb-1">Original contract sum ($)</label>
+            <input id="change-order-original" type="number" min="0" step="0.01" value={data.originalContractSum}
+              placeholder={String(jobData.financials.totalApprovedRcv || '0.00')}
+              onChange={event => onChange('originalContractSum', event.target.value === '' ? '' : Number(event.target.value))}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+            <p className="mt-1 text-xs text-slate-500">Uses the approved RCV if blank. Locked after recording the first order.</p>
+          </div>
+          <div className="sm:col-span-2">
+            <label htmlFor="change-order-opening" className="block text-xs font-semibold text-slate-700 mb-1">Earlier changes made outside this app (net $)</label>
+            <input id="change-order-opening" type="number" step="0.01" value={data.netPreviousChanges}
+              onChange={event => onChange('netPreviousChanges', event.target.value === '' ? '' : Number(event.target.value))}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+            <p className="mt-1 text-xs text-slate-500">Use a negative amount for net decreases. Leave at $0 for a new job.</p>
+          </div>
+        </>}
 
         {/* Scope Description */}
         <div className="sm:col-span-2 lg:col-span-4">
@@ -196,6 +223,7 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
           </label>
           <textarea
             id="change-order-scope"
+            aria-label="Scope Description"
             rows={3}
             value={data.scopeDescription}
             onChange={(e) => onChange('scopeDescription', e.target.value)}
@@ -205,7 +233,38 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
         </div>
       </div>
 
-      {!hidePdfActions && <SectionPdfActions jobData={jobData} docs={[DOC.changeOrder]} onPreview={onPreview} />}
+      <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+        <p className="text-sm text-slate-700">Record an authorized order to include it in all following balances. Previews and repeated downloads do not add it again.</p>
+        <button type="button" onClick={() => void onRecordOrder()} disabled={isSaving}
+          className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50">
+          {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+          Record order & start next
+        </button>
+        <p className="mt-2 text-xs text-slate-500">Keeps this order in the job history and opens a new draft with the next number. Recorded orders cannot be edited; use another order for corrections.</p>
+      </div>
+
+      <SectionPdfActions jobData={jobData} docs={[DOC.changeOrder]} onPreview={onPreview} />
+      </fieldset>
+
+      {history.length > 0 && <section className="mt-6 border-t border-slate-200 pt-4" aria-label="Recorded change orders">
+        <h4 className="font-semibold text-slate-900">Recorded change orders ({history.length})</h4>
+        <div className="mt-3 space-y-3">
+          {history.map(order => {
+            const historicalJob = { ...jobData, changeOrder: order, changeOrderHistory: [] };
+            const historicalTotals = calculateChangeOrder(historicalJob);
+            const doc = { ...DOC.changeOrder, id: 'recordedChangeOrder',
+              label: `${order.changeOrderNumber} — ${formatCurrency(historicalTotals.adjustment)}`,
+              title: `Change Order ${order.changeOrderNumber} (recorded)`,
+              generator: () => DOC.changeOrder.generator(historicalJob),
+              buildFileName: () => DOC.changeOrder.buildFileName(historicalJob) };
+            return <div key={order.id} className="rounded-lg border border-slate-200 p-3">
+              <p className="text-sm font-semibold text-slate-900">{order.changeOrderNumber} · {order.changeOrderDate} · Total after order: {formatCurrency(historicalTotals.total)}</p>
+              <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-600">{order.scopeDescription}</p>
+              <SectionPdfActions jobData={historicalJob} docs={[doc]} onPreview={onPreview} />
+            </div>;
+          })}
+        </div>
+      </section>}
     </div>
   );
 };

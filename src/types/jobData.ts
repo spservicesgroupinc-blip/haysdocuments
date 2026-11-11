@@ -83,6 +83,12 @@ export interface ChangeOrderData {
   addedDays: number | '';
 }
 
+/** Recorded orders are retained separately from the next editable draft. */
+export interface RecordedChangeOrder extends ChangeOrderData {
+  id: string;
+  recordedAt: string;
+}
+
 export interface ProductionNotesData {
   /** Narrative summary of the scope and repairs for this loss. */
   scopeSummary: string;
@@ -128,6 +134,7 @@ export interface RestorationJobData {
   team: TeamData;
   mortgage: MortgageData;
   changeOrder: ChangeOrderData;
+  changeOrderHistory?: RecordedChangeOrder[];
   // Production Notes — free-form fields filled by the production team.
   productionNotes: ProductionNotesData;
   // Production Checklist specific flags
@@ -320,6 +327,7 @@ export function ensureRecordDefaults(record: RestorationJobData): RestorationJob
     team: { ...base.team, ...(record.team ?? {}) },
     mortgage: { ...base.mortgage, ...(record.mortgage ?? {}) },
     changeOrder: { ...base.changeOrder, ...(record.changeOrder ?? {}) },
+    changeOrderHistory: Array.isArray(record.changeOrderHistory) ? record.changeOrderHistory : [],
     productionNotes: { ...base.productionNotes, ...(record.productionNotes ?? {}) },
     checklist: { ...base.checklist, ...(record.checklist ?? {}) },
   };

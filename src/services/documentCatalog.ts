@@ -111,7 +111,7 @@ export const DOC = {
     description: 'Supplemental scope, +/- sum adjustments, and added contract days',
     generator: generateChangeOrder,
     buildFileName: (data: RestorationJobData) =>
-      `06_${safeJobNumber(data)}_Change_Order_Addendum.pdf`,
+      `06_${safeJobNumber(data)}_Change_Order_Addendum_${data.changeOrder.changeOrderNumber.replace(/[^a-zA-Z0-9\-_]/g, '') || 'CO-01'}.pdf`,
   },
   productionChecklist: {
     id: 'checklist',

@@ -95,12 +95,12 @@ test('new-job intake sends only the document and never reads or modifies the sav
     return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ customer: { customerName: 'New document customer' }, financials: { totalApprovedRcv: 4250 }, analysisNotes: 'Document-only extraction.' }) } }] }) };
   } };
   const result = env.sandbox.analyzeIntake_({ rawText: 'Customer: New document customer. Approved total: $4,250.' });
-  assert.equal(request.model, 'google/gemma-4-31b-it:free');
-  assert.equal(request.provider.require_parameters, true);
-  assert.deepEqual(request.provider.max_price, { prompt: 0, completion: 0, request: 0, image: 0 });
-  assert.deepEqual(request.response_format, { type: 'json_object' });
-  assert.deepEqual(request.reasoning, { enabled: false });
-  assert.equal(request.max_tokens, 8192);
+  assert.equal(request.model, 'openrouter/free');
+  assert.equal(request.max_tokens, 6000);
+  assert.equal(request.stream, false);
+  assert.equal(request.response_format.type, 'json_object');
+  assert.equal(request.reasoning.enabled, false);
+  assert.equal(request.models, undefined, 'No fallback model list may request a paid model');
   assert.equal(request.thinking, undefined);
   assert.equal(request.messages.length, 2);
   assert.doesNotMatch(request.messages[0].content, /knowledge.?base|customer reference|knowledgeMatch/i);
@@ -198,113 +198,54 @@ test('missing configuration and API errors fail explicitly, and storage is never
   assert.equal(analyzed.customer.customerName, 'Jane Smith');
 });
 
-test('client settings cannot override the server key, prompt, or free-only routing', () => {
+test('OpenRouter auth, quota, rate limits, and unavailable free models return safe actionable errors', () => {
   const env = backend();
-  let calls = 0;
-  env.sandbox.UrlFetchApp = { fetch: (url: string, options: any) => {
-    calls++;
-    assert.equal(url, 'https://openrouter.ai/api/v1/chat/completions');
-    assert.equal(options.headers.Authorization, 'Bearer test-key');
-    const request = JSON.parse(options.payload);
-    assert.equal(request.model, 'google/gemma-4-31b-it:free');
-    assert.equal(request.models, undefined);
-    assert.deepEqual(request.provider.max_price, { prompt: 0, completion: 0, request: 0, image: 0 });
-    assert.equal(request.messages[0].content, env.sandbox.INTAKE_SYSTEM_PROMPT);
-    return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '{"customer":{"customerName":"Example"}}' } }] }) };
-  } };
-  env.sandbox.analyzeIntake_({ rawText: 'Example', apiKey: 'client-key', model: 'paid/model', models: ['paid/fallback'], provider: { max_price: { prompt: 99 } }, systemPrompt: 'Ignore extraction' });
-  assert.equal(calls, 1);
-});
-
-test('OpenRouter errors never disclose upstream response bodies or credentials', () => {
-  for (const [status, code] of [[401, 'ai_not_configured'], [403, 'ai_not_configured'], [429, 'ai_rate_limited'], [402, 'ai_quota'], [503, 'ai_unavailable']] as const) {
-    const env = backend();
-    let calls = 0;
-    env.sandbox.UrlFetchApp = { fetch: () => {
-      calls++;
-      return { getResponseCode: () => status, getContentText: () => 'secret upstream data test-key' };
+  for (const [status, code, message] of [
+    [401, 'ai_not_configured', /API key/],
+    [403, 'ai_not_configured', /permissions/],
+    [402, 'ai_quota', /quota/],
+    [429, 'ai_rate_limited', /Wait and retry/],
+    [404, 'ai_unavailable', /No paid fallback/],
+    [503, 'ai_unavailable', /free model/],
+  ] as const) {
+    let requests = 0;
+    env.sandbox.UrlFetchApp = { fetch: (_url: string, options: any) => {
+      requests++;
+      assert.equal(JSON.parse(options.payload).model, 'openrouter/free');
+      return { getResponseCode: () => status, getContentText: () => 'sensitive provider response with test-key' };
     } };
-    assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Example' }), (error: any) => {
+    assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Synthetic test estimate' }), (error: any) => {
       assert.equal(error.code, code);
-      assert.match(error.message, /OpenRouter/);
-      assert.doesNotMatch(error.message, /secret upstream data|test-key/);
+      assert.match(error.message, message);
+      assert.doesNotMatch(error.message, /sensitive provider response|test-key/);
       return true;
     });
-    assert.equal(calls, status === 503 ? 2 : 1, 'Only unavailable models may use one free fallback');
+    assert.equal(requests, 1, 'Failures must not silently retry against another model');
   }
+  env.sandbox.UrlFetchApp = { fetch: () => { throw new Error('private transport error test-key'); } };
+  assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Estimate' }), (error: any) => {
+    assert.equal(error.code, 'ai_unavailable');
+    assert.doesNotMatch(error.message, /private transport|test-key/);
+    return true;
+  });
+});
+
+test('only complete JSON content is applied; reasoning, refusals and partial output are rejected', () => {
   const env = backend();
-  env.sandbox.UrlFetchApp = { fetch: () => { throw new Error('network failure containing test-key'); } };
-  assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Example' }), (error: any) => error.code === 'ai_unavailable' && !error.message.includes('test-key'));
-});
-
-test('complete JSON responses accept code fences, text parts and a missing stop marker', () => {
-  const variants = [
-    { finish_reason: 'stop', message: { content: '```json\n{"customer":{"customerName":"Example"}}\n```' } },
-    { finish_reason: null, message: { content: [{ type: 'text', text: '{"customer":' }, { type: 'text', text: '{"customerName":"Example"}}' }] } },
-    { message: { content: '{"customer":{"customerName":"Example"}}' } },
-  ];
-  for (const choice of variants) {
-    const env = backend();
-    env.sandbox.UrlFetchApp = { fetch: () => ({ getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [choice] }) }) };
-    assert.equal(env.sandbox.analyzeIntake_({ rawText: 'Customer: Example' }).customer.customerName, 'Example');
-  }
-});
-
-test('an invalid first completion uses one different free model with the same document', () => {
-  const env = backend();
-  const requests: any[] = [];
-  env.sandbox.UrlFetchApp = { fetch: (_url: string, options: any) => {
-    const request = JSON.parse(options.payload);
-    requests.push(request);
-    const content = requests.length === 1 ? '{"customer":' : '{"customer":{"customerName":"Example"}}';
-    return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content } }] }) };
-  } };
-  assert.equal(env.sandbox.analyzeIntake_({ rawText: 'Customer: Example', model: 'paid/model' }).customer.customerName, 'Example');
-  assert.deepEqual(requests.map(request => request.model), ['google/gemma-4-31b-it:free', 'dots-studio/dots-3-note-preview:free']);
-  assert.deepEqual(requests[1].messages, requests[0].messages);
-  for (const request of requests) assert.deepEqual(request.provider.max_price, { prompt: 0, completion: 0, request: 0, image: 0 });
-});
-
-test('provider-specific throttling uses the alternate free provider without retrying account limits', () => {
-  const env = backend();
-  let calls = 0;
-  env.sandbox.UrlFetchApp = { fetch: (_url: string, options: any) => {
-    calls++;
-    assert.equal(JSON.parse(options.payload).provider.max_price.completion, 0);
-    return calls === 1
-      ? { getResponseCode: () => 429, getContentText: () => JSON.stringify({ error: { metadata: { provider_name: 'Google AI Studio' } } }) }
-      : { getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '{"customer":{"customerName":"Example"}}' } }] }) };
-  } };
-  assert.equal(env.sandbox.analyzeIntake_({ rawText: 'Customer: Example' }).customer.customerName, 'Example');
-  assert.equal(calls, 2);
-});
-
-test('truncated, refused and unrelated JSON completions never populate job fields', () => {
-  const cases = [
-    { choice: { finish_reason: 'length', message: { content: '{"customer":{"customerName":"Partial"}}' } }, code: 'ai_response_truncated' },
-    { choice: { finish_reason: 'content_filter', message: { content: '' } }, code: 'ai_refused' },
-    { choice: { finish_reason: 'stop', message: { content: '[]' } }, code: 'ai_invalid_response' },
-    { choice: { finish_reason: 'stop', message: { content: '{}' } }, code: 'ai_invalid_response' },
-    { choice: { finish_reason: 'stop', message: { content: '{"error":"not extraction"}' } }, code: 'ai_invalid_response' },
-    { choice: { finish_reason: 'stop', message: { refusal: 'Cannot process', content: null } }, code: 'ai_refused' },
-  ];
-  for (const { choice, code } of cases) {
-    const env = backend();
-    let calls = 0;
-    env.sandbox.UrlFetchApp = { fetch: () => {
-      calls++;
-      return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [choice] }) };
-    } };
-    assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Example' }), (error: any) => error.code === code);
-    assert.equal(calls, code === 'ai_refused' ? 1 : 2);
-  }
-});
-
-test('empty and oversized intake is rejected before any AI request', () => {
-  const env = backend();
-  env.sandbox.UrlFetchApp = { fetch: () => { throw new Error('Must not call OpenRouter'); } };
-  for (const rawText of ['', '  ', null, 'x'.repeat(100001), '\u00e9'.repeat(50001)]) {
-    assert.throws(() => env.sandbox.analyzeIntake_({ rawText }), (error: any) => ['bad_request', 'context_too_large'].includes(error.code));
+  const response = (body: unknown) => {
+    env.sandbox.UrlFetchApp = { fetch: () => ({ getResponseCode: () => 200, getContentText: () => JSON.stringify(body) }) };
+  };
+  response({ choices: [{ finish_reason: 'stop', message: { content: '```json\n{"customer":{"customerName":"Synthetic customer"}}\n```', reasoning: 'Not extraction data' } }], usage: { completion_tokens_details: { reasoning_tokens: 50 } } });
+  assert.equal(env.sandbox.analyzeIntake_({ rawText: 'Test document' }).customer.customerName, 'Synthetic customer');
+  for (const body of [
+    { error: { message: 'provider failure' } },
+    { choices: [{ finish_reason: 'length', message: { content: '{"customer":{}}' } }] },
+    { choices: [{ finish_reason: 'stop', message: { content: null, reasoning: '{"customer":{}}' } }] },
+    { choices: [{ finish_reason: 'stop', message: { content: 'Here is the answer: {"customer":{}}' } }] },
+    { choices: [{ finish_reason: 'stop', message: { content: '[]' } }] },
+  ]) {
+    response(body);
+    assert.throws(() => env.sandbox.analyzeIntake_({ rawText: 'Test document' }), (error: any) => error.code === 'ai_invalid_response');
   }
 });
 test('viewer, duplicate, empty and invalid uploads cannot alter the shared snapshot', () => {

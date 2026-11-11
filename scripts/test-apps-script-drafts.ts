@@ -12,6 +12,8 @@
  */
 import vm from 'node:vm';
 import { loadAppsScriptSource } from './appsscript-source';
+import { createEmptyJob } from '../src/types/jobData';
+import { calculateChangeOrder, recordChangeOrder } from '../src/services/changeOrders';
 
 const source = loadAppsScriptSource();
 
@@ -297,6 +299,24 @@ check('recent session does not trigger a sheet write', heartbeatWrites === 0);
 sessionSheet.rows[1][6] = new Date(now.getTime() - 360000).toISOString();
 call('validateSession_', 'token');
 check('stale heartbeat is updated once', heartbeatWrites === 1);
+
+console.log('\n9. Multiple change orders survive saved-job and draft round trips');
+const initialOrderJob = createEmptyJob();
+initialOrderJob.recordId = 'change-order-history';
+initialOrderJob.financials.totalApprovedRcv = 10000;
+initialOrderJob.changeOrder.scopeDescription = 'Additional repairs';
+initialOrderJob.changeOrder.changeAmount = 1250.15;
+const secondOrderJob = recordChangeOrder(initialOrderJob);
+Object.assign(secondOrderJob.changeOrder, { scopeDescription: 'Credit', changeType: 'decrease', changeAmount: 250.05 });
+const historicalJob = recordChangeOrder(secondOrderJob);
+call('saveJob_', editor, historicalJob);
+const reopenedJob = call<any>('getJob_', editor, historicalJob.recordId);
+check('saved job retains both order snapshots', JSON.stringify(reopenedJob.changeOrderHistory) === JSON.stringify(historicalJob.changeOrderHistory));
+check('saved job retains the cumulative total', calculateChangeOrder(reopenedJob).total === 11000.1);
+call('saveDraft_', editor, { job: historicalJob, recordId: historicalJob.recordId });
+const reopenedDraft = call<any>('getDraft_', editor);
+check('draft retains both order snapshots', JSON.stringify(reopenedDraft.job.changeOrderHistory) === JSON.stringify(historicalJob.changeOrderHistory));
+check('draft retains the next order number', reopenedDraft.job.changeOrder.changeOrderNumber === 'CO-03');
 
 console.log(failures === 0 ? '\n>>> DRAFT BACKEND TESTS: PASS <<<' : `\n>>> DRAFT BACKEND TESTS: ${failures} FAILURE(S) <<<`);
 process.exit(failures === 0 ? 0 : 1);

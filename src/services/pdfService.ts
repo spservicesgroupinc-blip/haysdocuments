@@ -2,6 +2,7 @@ import { PDFDocument, rgb, StandardFonts, PDFPage, PDFFont, PDFDict, PDFName, PD
 import { RestorationJobData } from '../types/jobData';
 import productionChecklistTemplate from '../templates/production-checklist.json';
 import { CHECKLIST_BOXES } from '../types/productionChecklist';
+import { calculateChangeOrder } from './changeOrders';
 
 // -------------------------------------------------------------
 // Text sanitisation (WinAnsi safety)
@@ -1876,18 +1877,20 @@ export async function generateChangeOrder(data: RestorationJobData): Promise<Uin
   });
 
   // Financial Lines
+  const totals = calculateChangeOrder(data);
   y -= 45;
   page.drawText('The original contract sum was: ............................................................................', { x: 50, y, size: 8, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'changeOrder.originalContractSum', value: formatCurrency(data.changeOrder.originalContractSum || data.financials.totalApprovedRcv), x: 450, y, size: 8, font: fontBold, color: COLOR_DARK, bold: true });
+  if (data.changeOrderHistory?.length) page.drawText(formatCurrency(totals.original), { x: 450, y, size: 8, font: fontBold, color: COLOR_DARK });
+  else drawFieldValue(page, { key: 'changeOrder.originalContractSum', value: formatCurrency(totals.original), x: 450, y, size: 8, font: fontBold, color: COLOR_DARK, bold: true });
 
   y -= 18;
   page.drawText('Net changes by previous authorized change orders: ...................................................', { x: 50, y, size: 8, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'changeOrder.netPreviousChanges', value: formatCurrency(data.changeOrder.netPreviousChanges || 0), x: 450, y, size: 8, font: fontBold, color: COLOR_DARK, bold: true });
+  if (data.changeOrderHistory?.length) page.drawText(formatCurrency(totals.previous), { x: 450, y, size: 8, font: fontBold, color: COLOR_DARK });
+  else drawFieldValue(page, { key: 'changeOrder.netPreviousChanges', value: formatCurrency(totals.previous), x: 450, y, size: 8, font: fontBold, color: COLOR_DARK, bold: true });
 
   y -= 18;
-  const priorSum = Number(data.changeOrder.originalContractSum || data.financials.totalApprovedRcv || 0) + Number(data.changeOrder.netPreviousChanges || 0);
   page.drawText('The contract sum prior to this change was: ...........................................................', { x: 50, y, size: 8, font, color: COLOR_DARK });
-  page.drawText(formatCurrency(priorSum), { x: 450, y, size: 8, font: fontBold, color: COLOR_DARK });
+  page.drawText(formatCurrency(totals.prior), { x: 450, y, size: 8, font: fontBold, color: COLOR_DARK });
 
   y -= 18;
   const changeTypePrefix = 'The contract sum will be (';
@@ -1897,13 +1900,11 @@ export async function generateChangeOrder(data: RestorationJobData): Promise<Uin
   drawFieldValue(page, { key: 'changeOrder.changeType', value: data.changeOrder.changeType, x: changeTypeX, y, size: 8, font, color: COLOR_DARK });
   changeTypeX += font.widthOfTextAtSize(val(data.changeOrder.changeType), 8);
   page.drawText(changeTypeSuffix, { x: changeTypeX, y, size: 8, font, color: COLOR_DARK });
-  drawFieldValue(page, { key: 'changeOrder.changeAmount', value: formatCurrency(data.changeOrder.changeAmount || 0), x: 450, y, size: 8, font: fontBold, color: COLOR_RED, bold: true });
+  drawFieldValue(page, { key: 'changeOrder.changeAmount', value: formatCurrency(totals.amount), x: 450, y, size: 8, font: fontBold, color: COLOR_RED, bold: true });
 
   y -= 18;
-  const delta = (data.changeOrder.changeType === 'decrease' ? -1 : 1) * Number(data.changeOrder.changeAmount || 0);
-  const newContractSum = priorSum + delta;
   page.drawText('The new contract sum including this change order will be: ...........................................', { x: 50, y, size: 8, font, color: COLOR_DARK });
-  page.drawText(formatCurrency(newContractSum), { x: 450, y, size: 8.5, font: fontBold, color: COLOR_DARK });
+  page.drawText(formatCurrency(totals.total), { x: 450, y, size: 8.5, font: fontBold, color: COLOR_DARK });
 
   y -= 18;
   const daysPrefix = 'The contract time will be (increased) by: (';

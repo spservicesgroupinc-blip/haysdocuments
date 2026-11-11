@@ -92,8 +92,8 @@ function analyzeIntake_(payload) {
   if (typeof payload.rawText !== 'string' || !payload.rawText.trim()) throw appError_('bad_request', 'No intake text to analyze.');
   if (Utilities.newBlob(payload.rawText).getBytes().length > 100000) throw appError_('context_too_large', 'Estimate text exceeds 100 KB. Upload a shorter estimate summary.');
   var props = PropertiesService.getScriptProperties();
-  var key = (props.getProperty('OPENROUTER_API_KEY') || '').trim();
-  if (!key) throw appError_('ai_not_configured', 'Set OPENROUTER_API_KEY in Apps Script Properties to enable OpenRouter estimate analysis.');
+  var key = String(props.getProperty('OPENROUTER_API_KEY') || '').trim();
+  if (!key) throw appError_('ai_not_configured', 'Set OPENROUTER_API_KEY in Apps Script Properties to enable estimate analysis.');
   // The uploaded document is the ONLY context: no customer list data is read or sent.
   var messages = [
     { role: 'system', content: INTAKE_SYSTEM_PROMPT },
@@ -116,53 +116,25 @@ function requestIntakeModel_(key, messages, model) {
     response = UrlFetchApp.fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'post', contentType: 'application/json', muteHttpExceptions: true,
       headers: { Authorization: 'Bearer ' + key },
-      payload: JSON.stringify({
-        model: model, messages: messages, temperature: 0.1,
-        max_tokens: 8192, stream: false, response_format: { type: 'json_object' },
-        reasoning: { enabled: false },
-        // Keep all provider routing free, including any fallback selected by OpenRouter.
-        // Require JSON support so an endpoint cannot silently ignore response_format.
-        provider: { require_parameters: true, max_price: { prompt: 0, completion: 0, request: 0, image: 0 } }
-      })
+      // Apps Script returns one complete JSON response; no Node SDK is needed.
+      // The free router selects a compatible free model, never a paid fallback.
+      payload: JSON.stringify({ model: 'openrouter/free', messages: messages, temperature: 0.1, max_tokens: 6000, stream: false, response_format: { type: 'json_object' }, reasoning: { enabled: false } })
     });
   } catch (error) { throw appError_('ai_unavailable', 'Could not reach OpenRouter. Retry the estimate analysis.'); }
   var status = response.getResponseCode();
-  if (status === 401 || status === 403) throw appError_('ai_not_configured', 'OpenRouter rejected the request. Check OPENROUTER_API_KEY in Apps Script Properties and your OpenRouter account access settings.');
-  if (status === 429) {
-    var providerLimited = false;
-    try {
-      var rateError = JSON.parse(response.getContentText()).error;
-      providerLimited = !!(rateError && rateError.metadata && rateError.metadata.provider_name);
-    } catch (error) { /* Do not expose the upstream body. */ }
-    if (providerLimited) throw appError_('ai_unavailable', 'OpenRouter free-model provider is busy. Retry the estimate analysis.');
-    throw appError_('ai_rate_limited', 'OpenRouter free-model rate limit reached. Wait for your quota to reset, then retry the estimate analysis.');
-  }
-  if (status === 402) throw appError_('ai_quota', 'OpenRouter rejected the free-model quota. Check your account limits, then retry. No paid model was requested.');
-  if (status !== 200) throw appError_('ai_unavailable', 'OpenRouter free-model request failed (HTTP ' + status + '). Check free-model availability and account quota, then retry.');
-  var body;
-  try {
-    body = JSON.parse(response.getContentText());
-  } catch (error) { throw appError_('ai_invalid_response', 'OpenRouter returned an incomplete or invalid response. Retry the estimate analysis.'); }
-  return parseIntakeCompletion_(body);
-}
-
-function parseIntakeCompletion_(body) {
-  var choice = body && body.choices && body.choices[0];
-  if (!choice || !choice.message) throw appError_('ai_invalid_response', 'OpenRouter returned no extraction. Retry the estimate analysis.');
-  if (choice.finish_reason === 'length') throw appError_('ai_response_truncated', 'OpenRouter stopped before completing the extraction. Retry the analysis or upload a shorter estimate summary.');
-  if (choice.finish_reason === 'content_filter' || choice.message.refusal) throw appError_('ai_refused', 'OpenRouter could not process this document. Your job fields were not changed.');
-  if (choice.finish_reason && choice.finish_reason !== 'stop') throw appError_('ai_invalid_response', 'OpenRouter did not complete the extraction. Retry the estimate analysis.');
-  var content = choice.message.content;
-  if (Array.isArray(content)) content = content.map(function (part) {
-    return part && (part.type === 'text' || part.type === 'output_text') && typeof part.text === 'string' ? part.text : '';
-  }).join('');
-  if (typeof content !== 'string' || !content.trim()) throw appError_('ai_invalid_response', 'OpenRouter returned an empty extraction. Retry the estimate analysis.');
-  content = content.replace(/^\uFEFF/, '').trim();
-  var fenced = content.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  if (fenced) content = fenced[1].trim();
+  if (status === 401 || status === 403) throw appError_('ai_not_configured', 'OpenRouter rejected the server API key or account permissions. Check OPENROUTER_API_KEY in Apps Script Properties.');
+  if (status === 402) throw appError_('ai_quota', 'OpenRouter could not serve this free request. Check the account quota and key limits, then retry. No paid model was requested.');
+  if (status === 429) throw appError_('ai_rate_limited', 'OpenRouter free-model request limit reached. Wait and retry the estimate analysis.');
+  if (status !== 200) throw appError_('ai_unavailable', 'OpenRouter free-model request failed (HTTP ' + status + '). Retry when a free model is available. No paid fallback is configured.');
   var raw;
-  try { raw = JSON.parse(content); }
-  catch (error) { throw appError_('ai_invalid_response', 'OpenRouter returned invalid extraction JSON. Retry the estimate analysis.'); }
+  try {
+    var body = JSON.parse(response.getContentText());
+    var choice = body.choices && body.choices[0];
+    if (!choice || choice.finish_reason !== 'stop' || !choice.message || typeof choice.message.content !== 'string') throw new Error('Incomplete response');
+    // Accept a single JSON code fence, but never guess from prose or reasoning.
+    var content = choice.message.content.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i, '$1');
+    raw = JSON.parse(content);
+  } catch (error) { throw appError_('ai_invalid_response', 'OpenRouter returned an incomplete or invalid extraction. Retry the estimate analysis.'); }
   return validateIntakeAnalysis_(raw);
 }
 

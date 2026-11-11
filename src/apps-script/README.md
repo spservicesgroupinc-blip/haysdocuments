@@ -102,37 +102,23 @@ write, including clearing old trailing rows. The source CSV is not retained.
 Editors/admins can replace it; signed-in users can read it. The list is a shared
 reference for the team only - it is never sent to the AI.
 
-Set `OPENROUTER_API_KEY` in **Project Settings > Script Properties**. No API key is
-embedded in the frontend. Intake uses `google/gemma-4-31b-it:free` with temperature 0.1,
-an 8,192-token output limit and JSON-object output. It can use
-`dots-studio/dots-3-note-preview:free` once for unavailable providers or malformed
-completed responses. Account quota/authentication errors and refusals are not
-retried. Provider routing requires
-parameter support and sets maximum prompt, completion, request and image prices
-to zero. There is no paid fallback or unbounded retry loop. The existing
-external-request OAuth scope is sufficient.
+Set `OPENROUTER_API_KEY` in **Project Settings > Script Properties**. Do not put the
+key in source files, `.env.example`, `VITE_*` variables, or the browser. Intake uses
+`openrouter/free`, the automatic free-model router, with temperature 0.1, a
+6,000-token output limit, and JSON-object responses. Reasoning is disabled when
+supported so the output budget is available for the extraction. The existing
+external-request OAuth scope is sufficient. The backend calls the HTTP API
+directly: Apps Script does not run the Node SDK or stream partial results.
+See [OpenRouter's free router](https://openrouter.ai/openrouter/free) and
+[API reference](https://openrouter.ai/docs/api/reference/overview).
 
-**If the app says "Deploy the latest Apps Script backend":** the `/exec` URL is
-serving a version without the `analyzeIntake` action. Replace the entire Code.gs,
-save it, then choose **Deploy > Manage deployments > Edit (pencil) > Version:
-New version > Deploy** on the deployment whose URL the app uses. Saving the file
-alone does not update `/exec`. Keep the current URL. Opening `/exec` afterward
-must show `backendVersion: "2026-11-10-openrouter-3"`, `analyzeIntake` in
-`capabilities`, and `aiConfigured: true`. If `aiConfigured` is false, set the
-`OPENROUTER_API_KEY` Script Property. The health check never displays the key.
-
-Intake disables optional model reasoning and allows up to two minutes for the
-non-streaming response. It distinguishes the insured's contact information from
-the contractor's and uses the combined RCV on multi-coverage estimates.
-Complete JSON wrapped in code fences or returned as text parts is normalized.
-Truncated output, refusals, empty output and unrelated JSON are rejected before
-job fields can change. Backend login/session and role checks are retained.
-See [OpenRouter model fallbacks](https://openrouter.ai/docs/guides/routing/model-fallbacks) and
-[provider price limits](https://openrouter.ai/docs/guides/routing/provider-selection#max-price).
-The old `DEEPSEEK_API_KEY` property is no longer read. A local
-`.env.openrouter.local` supports `npm run ai:check` only; it does not configure
-the deployed Apps Script. Free quota/rate-limit failures ask the user to retry
-later without modifying job fields or switching to a paid model.
+There is no paid-model fallback. Missing/invalid credentials, free-model limits,
+unavailable models, and malformed/truncated responses produce actionable errors.
+Only a validated, complete extraction is returned to the browser; no API key,
+raw provider error, or reasoning is returned or logged. The selected free
+model/provider may vary. Review account privacy settings and provider data
+policies before submitting customer information; some free endpoints restrict
+personal or confidential data. Test deployments with synthetic data first.
 
 The authenticated `analyzeIntake` action accepts `{ rawText }`. Apps Script sends
 the uploaded document text to OpenRouter as the ONLY context and returns the
