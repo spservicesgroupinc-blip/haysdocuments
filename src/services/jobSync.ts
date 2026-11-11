@@ -50,6 +50,7 @@ import {
 } from './localDb';
 import { createRecordId, type RestorationJobData } from '../types/jobData';
 import { requestOutboxSync } from './pwa';
+import { pushWorkspaceOperation, notifyWorkspace } from './jobWorkspaceService';
 
 export interface SyncState {
   online: boolean;
@@ -558,10 +559,13 @@ async function doFlush(): Promise<void> {
       if (currentOwner() !== owner || !state.online) return;
       // A replaced draft has a new operation ID; do not send the stale snapshot.
       if (!(await getOutboxOps()).some(item => item.id === op.id)) continue;
+      if (op.type === 'workspace' && ops.some(earlier => earlier.type === 'workspace' && earlier.id! <= op.id! && earlier.mutation?.id === op.mutation?.id && earlier.recordId === op.recordId && earlier.errorCode)) { hadFailure = true; continue; }
       const mirror = await getMirrorJob(op.recordId);
       try {
         let published = true;
-        if (op.type === 'draft' && op.draft) {
+        if (op.type === 'workspace' && op.mutation) {
+          await pushWorkspaceOperation(op);
+        } else if (op.type === 'draft' && op.draft) {
           published = await pushDraft(auth, op);
         } else if (op.type === 'save' && op.job) {
           const serverRow = serverRows?.get(op.recordId);
@@ -594,7 +598,7 @@ async function doFlush(): Promise<void> {
           patchState({ lastError: errorMessage(err) });
           throw err; // stop this run; retry on the next trigger
         }
-        if (err instanceof DatabaseError && err.code === 'not_found' && op.type !== 'draft') {
+        if (err instanceof DatabaseError && err.code === 'not_found' && op.type !== 'draft' && op.type !== 'workspace') {
           // The server no longer has this record — clear local traces and move on.
           if (op.type === 'delete') await completeOutboxOp(op);
           else throw err;
@@ -608,7 +612,9 @@ async function doFlush(): Promise<void> {
         }
         // Rejected write (role, validation, …): keep it queued, report, continue.
         hadFailure = true;
+        op.errorCode = err instanceof DatabaseError ? err.code : 'device_storage';
         await updateOutboxOp({ ...op, attempts: op.attempts + 1, lastError: errorMessage(err) });
+        if (op.type === 'workspace') notifyWorkspace();
         patchState({ lastError: errorMessage(err), errorCode: err instanceof DatabaseError ? err.code : 'device_storage' });
         // An invalid deployment response affects every operation. Keep the rest
         // queued rather than sending more writes without acknowledgements.

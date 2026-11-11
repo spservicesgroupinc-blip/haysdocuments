@@ -11,6 +11,7 @@
  */
 import type { RestorationJobData } from '../types/jobData';
 import type { JobSummary } from './appsScriptService';
+import type { WorkspaceMutation, WorkspaceSnapshot } from '../types/jobWorkspace';
 
 export type JobSyncStatus = 'synced' | 'pending-save' | 'pending-delete';
 
@@ -41,7 +42,9 @@ export interface MirrorJob {
 
 export interface OutboxOp {
   id?: number;
-  type: 'save' | 'delete' | 'draft';
+  type: 'save' | 'delete' | 'draft' | 'workspace';
+  mutation?: WorkspaceMutation;
+  errorCode?: string;
   recordId: string;
   job?: RestorationJobData;
   /** The autosaved workspace record, for `type: 'draft'` operations. */
@@ -66,7 +69,8 @@ export interface WorkspaceDraft {
 }
 
 const DB_NAME = 'hays.docsuite';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
+const WORKSPACES = 'workspaces';
 
 const JOBS = 'jobs';
 const OUTBOX = 'outbox';
@@ -93,6 +97,7 @@ function openDb(): Promise<IDBDatabase> {
           db.createObjectStore(OUTBOX, { keyPath: 'id', autoIncrement: true });
         }
         if (!db.objectStoreNames.contains(DRAFTS)) db.createObjectStore(DRAFTS, { keyPath: 'id' });
+        if (!db.objectStoreNames.contains(WORKSPACES)) db.createObjectStore(WORKSPACES, { keyPath: 'id' });
       };
       request.onsuccess = () => {
         const db = request.result;
@@ -305,7 +310,7 @@ export async function completeOutboxOp(op: OutboxOp, mirror?: MirrorJob, draft?:
       const ops = request.result as OutboxOp[];
       outbox.delete(op.id!);
       if (op.type !== 'draft') {
-        const newer = ops.some((item) => item.type !== 'draft' && item.recordId === op.recordId && item.id! > op.id!);
+        const newer = ops.some((item) => (item.type === 'save' || item.type === 'delete') && item.recordId === op.recordId && item.id! > op.id!);
         if (!newer) {
           if (mirror) tx.objectStore(JOBS).put(mirror);
           else if (op.type === 'delete') tx.objectStore(JOBS).delete(op.recordId);
@@ -353,4 +358,69 @@ export async function getDraft(owner?: string | null): Promise<WorkspaceDraft | 
   // Existing installations have an unowned draft under the original key.
   const legacy = await runRequest<WorkspaceDraft | undefined>(DRAFTS, 'readonly', (store) => store.get('current'));
   return legacy?.owner ? undefined : legacy;
+}
+
+// Account-scoped dashboard cache. Confirmed snapshots stay separate from pending
+// operations; the UI projects the latter without overwriting confirmed revisions.
+export async function getWorkspaceCache(owner: string, recordId: string): Promise<WorkspaceSnapshot | undefined> {
+  const row = await runRequest<{ snapshot: WorkspaceSnapshot } | undefined>(WORKSPACES, 'readonly', store => store.get(`${owner}:${recordId}`));
+  return row?.snapshot;
+}
+export async function cacheWorkspace(owner: string, recordId: string, snapshot: WorkspaceSnapshot): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(WORKSPACES, 'readwrite');
+    const store = tx.objectStore(WORKSPACES);
+    const key = `${owner}:${recordId}`;
+    const request = store.get(key);
+    request.onsuccess = () => {
+      const old = request.result?.snapshot as WorkspaceSnapshot | undefined;
+      const entities = new Map(snapshot.entities.map(e => [`${e.kind}:${e.id}`, e]));
+      for (const e of old?.entities ?? []) {
+        const key = `${e.kind}:${e.id}`;
+        if (!entities.has(key) || entities.get(key)!.revision < e.revision) entities.set(key, e);
+      }
+      store.put({ id: key, snapshot: { ...snapshot, entities: [...entities.values()] } });
+    };
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error);
+  });
+}
+export async function queueWorkspaceMutation(owner: string, mutation: WorkspaceMutation): Promise<void> {
+  await runRequest(OUTBOX, 'readwrite', store => store.add({ type: 'workspace', mutation, recordId: mutation.recordId, owner, createdAt: Date.now(), attempts: 0 }));
+}
+export async function acknowledgeWorkspace(op: OutboxOp, entity: import('../types/jobWorkspace').WorkspaceEntity): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([WORKSPACES, OUTBOX], 'readwrite');
+    const store = tx.objectStore(WORKSPACES);
+    const key = `${op.owner}:${op.recordId}`;
+    const request = store.get(key);
+    request.onsuccess = () => {
+      const snapshot: WorkspaceSnapshot = request.result?.snapshot ?? { entities: [], activity: [], staff: [], fetchedAt: '' };
+      const old = snapshot.entities.find(e => e.id === entity.id && e.kind === entity.kind);
+      if (!old || old.revision <= entity.revision) snapshot.entities = [...snapshot.entities.filter(e => e.id !== entity.id || e.kind !== entity.kind), entity];
+      store.put({ id: key, snapshot });
+      tx.objectStore(OUTBOX).delete(op.id!);
+    };
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error);
+  });
+}
+/** Explicit reconciliation replaces all this account's dependent edits together. */
+export async function reconcileWorkspace(owner: string, recordId: string, kind: string, entityId: string, replacement?: WorkspaceMutation): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(OUTBOX, 'readwrite');
+    const store = tx.objectStore(OUTBOX);
+    const request = store.getAll();
+    request.onsuccess = () => {
+      for (const op of request.result as OutboxOp[]) {
+        if (op.owner === owner && op.type === 'workspace' && op.recordId === recordId && op.mutation?.kind === kind && op.mutation.id === entityId) store.delete(op.id!);
+      }
+      if (replacement) store.add({ type: 'workspace', mutation: replacement, recordId, owner, createdAt: Date.now(), attempts: 0 });
+    };
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error);
+  });
 }

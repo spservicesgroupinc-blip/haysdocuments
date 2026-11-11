@@ -11,6 +11,7 @@ interface SectionChangeOrderProps {
   jobData: RestorationJobData;
   onPreview: PdfPreviewRequest;
   onChange: (field: keyof ChangeOrderData, value: any) => void;
+  hidePdfActions?: boolean;
 }
 
 export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
@@ -19,6 +20,7 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
   jobData,
   onPreview,
   onChange,
+  hidePdfActions = false,
 }) => {
   const origSum =
     typeof data.originalContractSum === 'number'
@@ -78,10 +80,11 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Change Order # */}
         <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">
+          <label htmlFor="change-order-number" className="block text-xs font-semibold text-slate-700 mb-1">
             Change Order Number *
           </label>
           <input
+            id="change-order-number"
             type="text"
             value={data.changeOrderNumber}
             onChange={(e) => onChange('changeOrderNumber', e.target.value)}
@@ -92,10 +95,11 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
 
         {/* Change Order Date */}
         <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">
+          <label htmlFor="change-order-date" className="block text-xs font-semibold text-slate-700 mb-1">
             Change Order Date
           </label>
           <input
+            id="change-order-date"
             type="date"
             value={data.changeOrderDate}
             onChange={(e) => onChange('changeOrderDate', e.target.value)}
@@ -105,10 +109,11 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
 
         {/* Change Type: Increase / Decrease */}
         <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">
+          <label htmlFor="change-order-type" className="block text-xs font-semibold text-slate-700 mb-1">
             Contract Adjustment
           </label>
           <select
+            id="change-order-type"
             value={data.changeType}
             onChange={(e) => onChange('changeType', e.target.value)}
             className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg text-slate-900 font-medium focus:bg-white focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition"
@@ -121,7 +126,7 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
 
         {/* Change Amount */}
         <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">
+          <label htmlFor="change-order-amount" className="block text-xs font-semibold text-slate-700 mb-1">
             Change Amount ($) *
           </label>
           <div className="relative">
@@ -129,6 +134,7 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
               <DollarSign className="w-4 h-4" />
             </span>
             <input
+              id="change-order-amount"
               type="number"
               step="0.01"
               value={data.changeAmount}
@@ -143,10 +149,11 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
 
         {/* Added Days */}
         <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">
+          <label htmlFor="change-order-days" className="block text-xs font-semibold text-slate-700 mb-1">
             Added Working Days
           </label>
           <input
+            id="change-order-days"
             type="number"
             value={data.addedDays}
             onChange={(e) =>
@@ -184,10 +191,11 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
 
         {/* Scope Description */}
         <div className="sm:col-span-2 lg:col-span-4">
-          <label className="block text-xs font-semibold text-slate-700 mb-1">
+          <label htmlFor="change-order-scope" className="block text-xs font-semibold text-slate-700 mb-1">
             This contract is changed as follows (Scope Description) *
           </label>
           <textarea
+            id="change-order-scope"
             rows={3}
             value={data.scopeDescription}
             onChange={(e) => onChange('scopeDescription', e.target.value)}
@@ -197,7 +205,7 @@ export const SectionChangeOrder: React.FC<SectionChangeOrderProps> = ({
         </div>
       </div>
 
-      <SectionPdfActions jobData={jobData} docs={[DOC.changeOrder]} onPreview={onPreview} />
+      {!hidePdfActions && <SectionPdfActions jobData={jobData} docs={[DOC.changeOrder]} onPreview={onPreview} />}
     </div>
   );
 };

@@ -13,6 +13,9 @@ import {
   Landmark,
   AlertCircle,
   Upload,
+  LayoutDashboard,
+  ClipboardList,
+  History,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -21,6 +24,10 @@ export type WorkspaceTab =
   | 'home'
   | 'customerImport'
   | 'intake'
+  | 'dashboard'
+  | 'tasks'
+  | 'activity'
+  | 'legacyChangeOrder'
   | 'customer'
   | 'insurance'
   | 'financials'
@@ -43,6 +50,9 @@ export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
   { id: 'home', label: 'Jobs', icon: Home, group: 'Workspace' },
   { id: 'customerImport', label: 'Customer Knowledge Base', icon: Upload, group: 'Workspace' },
   { id: 'intake', label: 'Intake', icon: FileInput, group: 'Workspace' },
+  { id: 'dashboard', label: 'Customer Dashboard', icon: LayoutDashboard, group: 'Job details' },
+  { id: 'tasks', label: 'Tasks & Issues', icon: ClipboardList, group: 'Job details' },
+  { id: 'activity', label: 'Activity', icon: History, group: 'Job details' },
   { id: 'customer', label: 'Customer & Property', icon: UserCircle, group: 'Job details' },
   { id: 'insurance', label: 'Insurance & Claim', icon: ShieldAlert, group: 'Job details' },
   { id: 'financials', label: 'Financials', icon: Coins, group: 'Job details' },
@@ -50,7 +60,8 @@ export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
   { id: 'team', label: 'Team', icon: Users2, group: 'Production' },
   { id: 'productionNotes', label: 'Production Notes', icon: StickyNote, group: 'Production' },
   { id: 'checklist', label: 'Checklist', icon: CheckCircle, group: 'Production' },
-  { id: 'changeOrder', label: 'Change Order', icon: FileEdit, group: 'Production' },
+  { id: 'changeOrder', label: 'Change Orders', icon: FileEdit, group: 'Production' },
+  { id: 'legacyChangeOrder', label: 'Legacy Change Order', icon: FileEdit, group: 'Production' },
   { id: 'documents', label: 'Documents', icon: FileCheck, group: 'Documents' },
 ];
 
