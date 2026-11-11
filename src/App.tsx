@@ -59,6 +59,7 @@ import { Navbar } from './components/Navbar';
 import { MobileSectionNav, Sidebar, WORKSPACE_SECTIONS } from './components/Sidebar';
 import type { WorkspaceTab } from './components/Sidebar';
 import { SavedCustomersPage } from './components/SavedCustomersPage';
+import { JobWorkspace } from './components/JobWorkspace';
 import { CustomerImportPage } from './components/CustomerImportPage';
 import { FinancialSummaryCard } from './components/FinancialSummaryCard';
 import { SectionCustomer } from './components/SectionCustomer';
@@ -94,6 +95,8 @@ export default function App() {
   // Preview Modal state
   const [previewTitle, setPreviewTitle] = useState<string>('');
   const [previewDoc, setPreviewDoc] = useState<JobDocument | null>(null);
+  const previewSnapshotRef = React.useRef<RestorationJobData | null>(null);
+  const [isSnapshotPreview, setIsSnapshotPreview] = useState(false);
   const [previewBytes, setPreviewBytes] = useState<Uint8Array | null>(null);
   const [previewSpans, setPreviewSpans] = useState<PdfFieldSpan[]>([]);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -397,18 +400,23 @@ export default function App() {
   const handleLoadJob = async (id: string) => {
     // Continue editing the open workspace without replacing its draft with a saved copy.
     if (recordId === id) {
-      setActiveTab('customer');
+      setActiveTab('dashboard');
       return;
     }
     const request = ++jobLoadRequestRef.current;
     const session = workspaceSessionRef.current;
     try {
+      // Keep the document draft discoverable in Jobs before replacing the form.
+      if (isDirty) {
+        await flushDraftSave();
+        await saveJobOffline(jobDataRef.current);
+      }
       const { job, fromCache } = await loadJobOffline(id);
       if (request !== jobLoadRequestRef.current || session !== workspaceSessionRef.current) return;
       replaceJob(job);
       setRecordId(job.recordId ?? id);
       clearJobArtifacts();
-      setActiveTab('customer');
+      setActiveTab('dashboard');
       const who = job.customer.customerName || 'record';
       const label = `(${job.customer.jobNumber || 'no job number'})`;
       showStatus(
@@ -572,7 +580,9 @@ export default function App() {
   };
 
   // Preview Document Handler
-  const handleOpenPreview = async (doc: JobDocument) => {
+  const handleOpenPreview = async (doc: JobDocument, snapshot?: RestorationJobData) => {
+    previewSnapshotRef.current = snapshot ?? null;
+    setIsSnapshotPreview(!!snapshot);
     setPreviewTitle(doc.title);
     setPreviewDoc(doc);
     setPreviewBytes(null);
@@ -581,7 +591,7 @@ export default function App() {
     setIsPreviewLoading(true);
 
     try {
-      const { bytes, spans } = await generateDocWithSpans(doc.generator, jobDataRef.current);
+      const { bytes, spans } = await generateDocWithSpans(doc.generator, snapshot ?? jobDataRef.current);
       setPreviewBytes(bytes);
       setPreviewSpans(spans);
     } catch (err: any) {
@@ -708,8 +718,9 @@ export default function App() {
   const handlePreviewDownload = async () => {
     if (!previewDoc) return;
     try {
-      const bytes = await previewDoc.generator(jobDataRef.current);
-      downloadPdf(bytes, previewDoc.buildFileName(jobDataRef.current));
+      const snapshot = previewSnapshotRef.current ?? jobDataRef.current;
+      const bytes = await previewDoc.generator(snapshot);
+      downloadPdf(bytes, previewDoc.buildFileName(snapshot));
     } catch (err) {
       console.error('Download error:', err);
     }
@@ -719,7 +730,7 @@ export default function App() {
   const handleSaveDocToDrive = () => {
     if (!previewDoc) return;
     const doc = previewDoc;
-    const snapshot = jobDataRef.current;
+    const snapshot = previewSnapshotRef.current ?? jobDataRef.current;
     const session = workspaceSessionRef.current;
     const fileName = doc.buildFileName(snapshot);
 
@@ -979,6 +990,12 @@ export default function App() {
               />
             )}
 
+            <JobWorkspace
+              key={`${currentUser?.email || 'developer'}:${recordId || 'unsaved'}`}
+              job={jobData} recordId={recordId} tab={activeTab} navigate={handleNavigate}
+              preview={handleOpenPreview} online={syncState.online}
+            />
+
             {activeTab === 'customerImport' && (
               <CustomerImportPage
                 key={currentUser?.email || 'developer'}
@@ -1036,7 +1053,7 @@ export default function App() {
               />
             )}
 
-            {activeTab === 'changeOrder' && (
+            {activeTab === 'legacyChangeOrder' && (
               <SectionChangeOrder
                 data={jobData.changeOrder}
                 jobData={jobData}

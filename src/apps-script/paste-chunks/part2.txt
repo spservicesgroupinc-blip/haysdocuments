@@ -266,7 +266,11 @@ function handleAction_(payload) {
 
   // Unauthenticated routes
   if (action === 'ping') {
-    return successResponse_({ status: 'ok', timestamp: new Date().toISOString() });
+    return successResponse_({
+      status: 'ok', timestamp: new Date().toISOString(), backendVersion: BACKEND_VERSION,
+      capabilities: ['analyzeIntake', 'saveJob', 'saveDraft'],
+      aiConfigured: !!(PropertiesService.getScriptProperties().getProperty('OPENROUTER_API_KEY') || '').trim()
+    });
   }
   if (action === 'login') {
     var loginResult = loginUser_(payload.email, payload.password);

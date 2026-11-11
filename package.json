@@ -25,6 +25,7 @@
     "apps:register": "tsx scripts/test-registration.ts",
     "parser:test": "tsx scripts/test-intake-parser.ts",
     "customers:test": "tsx --test scripts/test-customer-reference.ts scripts/test-customer-reference-backend.ts",
+    "ai:check": "tsx scripts/check-openrouter.ts",
     "spans:test": "tsx scripts/test-pdf-spans.ts",
     "pdf:checklist:test": "tsx --test scripts/test-production-checklist.ts",
     "changes:test": "tsx --test scripts/test-change-orders.ts",

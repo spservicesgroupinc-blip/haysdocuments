@@ -46,6 +46,44 @@ function backend() {
 }
 const first = [{ customerName: '=do not execute', jobNumber: 'F-1', contractPrice: 15 }, { customerName: 'Two', jobNumber: 'F-2', contractPrice: 0 }];
 
+test('the complete Code.gs identifies the deployed AI version without exposing its key', () => {
+  const env = backend();
+  const ping = env.sandbox.doGet({ parameter: {} });
+  assert.equal(ping.ok, true);
+  assert.equal(ping.data.backendVersion, '2026-11-10-openrouter-3');
+  assert.ok(ping.data.capabilities.includes('analyzeIntake'));
+  assert.equal(ping.data.aiConfigured, true);
+  assert.doesNotMatch(JSON.stringify(ping), /test-key|Bearer/);
+});
+
+test('the deployed doPost entry point routes uploaded document text through OpenRouter', () => {
+  const env = backend();
+  env.sandbox.UrlFetchApp = { fetch: (url: string, options: any) => {
+    assert.equal(url, 'https://openrouter.ai/api/v1/chat/completions');
+    assert.match(JSON.parse(options.payload).messages[1].content, /Uploaded estimate/);
+    return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '{"customer":{"customerName":"Example"},"financials":{"totalApprovedRcv":12000}}' } }] }) };
+  } };
+  const response = env.sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'analyzeIntake', sessionToken: 'editor', rawText: 'Uploaded estimate. Customer: Example. Total RCV $12,000.' }) } });
+  assert.equal(response.ok, true);
+  assert.equal(response.data.customer.customerName, 'Example');
+  assert.equal(response.data.financials.totalApprovedRcv, 12000);
+});
+
+test('job, draft, customer and AI routes require a session and login still routes correctly', () => {
+  const env = backend();
+  for (const action of ['saveJob', 'deleteJob', 'listJobs', 'getJob', 'saveDraft', 'getDraft', 'getCustomerReference', 'replaceCustomerReference', 'analyzeIntake']) {
+    assert.throws(() => env.sandbox.handleAction_({ action }), /Authentication/);
+  }
+  env.sandbox.loginUser_ = (email: string, password: string) => {
+    assert.equal(email, 'editor@example.invalid');
+    assert.equal(password, 'synthetic-test-password');
+    return { sessionToken: 'synthetic-session', user: { email, role: 'editor' } };
+  };
+  const response = env.sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'login', email: 'editor@example.invalid', password: 'synthetic-test-password' }) } });
+  assert.equal(response.ok, true);
+  assert.equal(response.data.sessionToken, 'synthetic-session');
+});
+
 test('new-job intake sends only the document and never reads or modifies the saved CSV', () => {
   const env = backend();
   env.sandbox.replaceCustomerReference_({ email: 'editor', role: 'editor' }, { customers: first, fileName: 'keep-for-later.csv' });
